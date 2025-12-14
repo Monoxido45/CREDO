@@ -140,6 +140,7 @@ class CredalCPRegressor(BaseEstimator):
             self.base_model.fit(X, y, **fit_params)
             self.base_is_fitted = True
         elif not self.base_is_sklearn:
+            # TODO: add deep ensemble option/add into epistemic_models
             # MDN + Dropout or other BNN approximations
             if self.base_model == "MDN":
                 self.base_model = MDN_model(
@@ -249,6 +250,7 @@ class CredalCPRegressor(BaseEstimator):
             Returns self.
         """
         # TODO: implement dropout-based imprecise method
+        # For this, use mixture quantile to derive the vector of quantiles to be used for each x
         # TODO: implement the BART and GP part also
         self.nc_score.calibrate(X_calib, y_calib)
         return self
