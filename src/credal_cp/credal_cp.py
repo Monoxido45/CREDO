@@ -17,6 +17,7 @@ from credal_cp.scores import (
 )
 
 from scipy.special import inv_boxcox
+from sklearn.utils.validation import check_is_fitted
 from credal_cp.epistemic_models import (
     MDN_model,
     GP_model,
@@ -35,31 +36,16 @@ class CredalCPRegressor(BaseEstimator):
     object around an existing fitted base model and stores configuration used to
     build credal sets.
 
-    nc_score : callable or class
-        Constructor (callable) for the nonconformity-score object. It will be called
-        as nc_score(base_model, is_fitted=True, ...) to produce a concrete scorer
-        instance used by this regressor. When the string "Quantile" appears in
-        str(nc_score) or when `base_model_type` is True, `alpha` will also be
-        forwarded to nc_score at construction time (i.e., nc_score(..., alpha=alpha, ...)).
-        Accepts either classes or factory functions that return an object implementing
-        the required nonconformity-score API.
+    nc_type : string
+        Type of nonconformity score to be used. Options include:
+        - "Quantile": Quantile-based imprecise nonconformity score.
 
-    base_model : estimator
-        A fitted base estimator (e.g., sklearn-like regressor). This object is
-        forwarded to the nc_score constructor as the underlying model for scoring.
-        The constructor assumes this model is already fitted and passes is_fitted=True
-        to the nc_score callable.
+    base_model : string or fitted estimator
+        String indicating the type of base model for Y given X to be used or a an already fitted estimator.
 
     alpha : float
         Significance level used when constructing credal sets or, when applicable,
         forwarded to the nc_score constructor. Typical values are in (0, 1).
-
-    base_model_type : bool, optional
-        Optional flag used as an explicit indicator that the base model / scoring
-        routine requires `alpha` to be passed to the nc_score constructor. If set
-        to True, `alpha` is forwarded to nc_score; if False or None, forwarding of
-        `alpha` is decided by inspecting str(nc_score) for the substring "Quantile".
-        Default: None.
 
     **kwargs
         Additional keyword arguments forwarded to the nc_score constructor.
@@ -76,9 +62,6 @@ class CredalCPRegressor(BaseEstimator):
 
     alpha : float
         Stored alpha value.
-
-    base_model_type : bool or None
-        Stored flag indicating the explicit behavior for forwarding `alpha`.
 
     Notes
     -----
@@ -100,49 +83,139 @@ class CredalCPRegressor(BaseEstimator):
     """
     def __init__(
         self,
-        nc_score,
+        nc_type,
         base_model,
         alpha,
-        base_model_type=None,
-        **kwargs,
     ):
-        self.base_model_type = base_model_type
+        self.nc_type = nc_type
         self.base_model = base_model
-        if ("Quantile" in str(nc_score)) or (base_model_type == True):
-            self.nc_score = nc_score(
-                base_model, is_fitted=True, alpha=alpha, **kwargs
-            )
-        else:
-            self.nc_score = nc_score(base_model, is_fitted=True, **kwargs)
 
+        # metadata about the provided base_model
+        # Simplify: require sklearn estimators to be instantiated (instances of BaseEstimator).
+        # If a user passes an estimator class, raise an informative error.
+        if isinstance(base_model, type) and issubclass(base_model, BaseEstimator):
+            raise ValueError("Please pass an instantiated sklearn estimator (an instance of BaseEstimator), not an estimator class.")
+        self.base_model_type = None
+        self.base_is_sklearn = False
+        self.base_is_fitted = False
+
+        # case 2: an sklearn Estimator instance
+        if isinstance(base_model, BaseEstimator):
+            self.base_model = base_model
+            self.base_is_sklearn = True
+            try:
+                check_is_fitted(self.base_model)
+                self.base_is_fitted = True
+            except Exception:
+                self.base_is_fitted = False
+            self.base_model_type = "sklearn_fitted_estimator" if self.base_is_fitted else "sklearn_unfitted_estimator"
+
+        # case 3: non-sklearn object
+        else:
+            self.base_model = base_model
+            self.base_is_sklearn = False
+            self.base_is_fitted = False
+            self.base_model_type = "string_unfitted"
         # checking if base model is fitted
         self.alpha = alpha
     
-    def fit(self, X = None, y = None):
-        """
-        Fit method for compatibility; does nothing as base_model is assumed fitted.
+    def fit(self, 
+            X, 
+            y, 
+            proportion_train=0.7,
+            epochs=500,
+            lr=0.001,
+            gamma=0.99,
+            batch_size=32,
+            step_size=5,
+            weight_decay=0,
+            verbose=0,
+            patience=30,
+            scale=False,
+            random_seed_split=0,
+            random_seed_fit=1250,
+            n_MCMC=2000,
+            **fit_params):
+        if self.base_is_sklearn and not self.base_is_fitted:
+            self.base_model.fit(X, y, **fit_params)
+            self.base_is_fitted = True
+        elif not self.base_is_sklearn:
+            # MDN + Dropout or other BNN approximations
+            if self.base_model == "MDN":
+                self.base_model = MDN_model(
+                    input_shape = X.shape[1],
+                   **fit_params
+                )
 
-        Parameters
-        ----------
-        X : array-like, shape (n_samples, n_features)
-            Training data features.
+                self.base_model.fit(
+                    X,
+                    y,
+                    proportion_train=proportion_train,
+                    epochs=epochs,
+                    lr=lr,
+                    gamma=gamma,
+                    batch_size=batch_size,
+                    step_size=step_size,
+                    weight_decay=weight_decay,
+                    verbose=verbose,
+                    patience=patience,
+                    scale=scale,
+                    random_seed_split=random_seed_split,
+                    random_seed_fit=random_seed_fit,
+                )
+                self.base_is_fitted = True
+            # Analytic GP (slow for large datasets)
+            elif self.base_model == "GP":
+                self.base_model = GP_model(
+                   **fit_params
+                )
 
-        y : array-like, shape (n_samples,)
-            Training data targets.
+                self.base_model.fit(
+                    X,
+                    y,
+                    scale = scale,
+                    random_state=random_seed_fit,
+                )
+                self.base_is_fitted = True
+            
+            # Variational GP (faster for large datasets)
+            elif self.base_model == "GP_Approx":
+                self.base_model = GPApprox_model(
+                   **fit_params
+                )
 
-        Returns
-        -------
-        self : object
-            Returns self.
-        """
+                self.base_model.fit(
+                    X,
+                    y,
+                    proportion_train=proportion_train,
+                    batch_size=batch_size,
+                    patience=patience,
+                    verbose=verbose,
+                    random_seed_split=random_seed_split,
+                    random_seed_fit=random_seed_fit,
+                )
+                self.base_is_fitted = True
+            
+            # BART model
+            elif self.base_model == "BART":
+                self.base_model = BART_model(
+                   **fit_params
+                )
+
+                self.base_model.fit(
+                    X,
+                    y,
+                    n_sample=n_MCMC, 
+                    random_seed=random_seed_fit
+                )
+                self.base_is_fitted = True
         return self
     
     def calibrate(
             self, 
             X_calib, 
             y_calib,
-            epistemic_model="MC_dropout",
-            scale=False,
+            bnn_type="MC_Dropout",
             num_components=5,
             hidden_layers=[64, 64],
             dropout_rate=0.5,
@@ -175,5 +248,7 @@ class CredalCPRegressor(BaseEstimator):
         self : object
             Returns self.
         """
+        # TODO: implement dropout-based imprecise method
+        # TODO: implement the BART and GP part also
         self.nc_score.calibrate(X_calib, y_calib)
         return self
