@@ -1223,6 +1223,62 @@ class GP_model(BaseEstimator):
             optimizer=optimizer,
         )
         self.model.fit(X, y)
+    
+    def sample_quantiles_from_posterior(self, X_test, quantiles, n_samples=100, random_seed = 0):
+        """
+        Sample from the posterior distribution of the GP model.
+
+        Input:
+            (i) X_test (np.ndarray): Testing feature matrix.
+            (ii) n_samples (int): Number of samples to draw from the posterior. Default is 100.
+        Output:
+            (i) np.ndarray: Samples drawn from the posterior distribution of shape (n_test, n_samples).
+        """
+        quantiles = np.asarray(quantiles)
+        rng = np.random.default_rng(random_seed)
+        if self.scale_x:
+            X_test_scaled = self.scaler_X.transform(X_test)
+        else:
+            X_test_scaled = X_test
+        
+        # Calculate parameters for latent function posterior f(X)|D
+        pred_mean, pred_cov_Y = self.model.predict(X_test_scaled, return_cov=True)
+        
+        # Observation noise variance (sigma_n^2)
+        sigma_n2 = self.model.alpha
+        pred_cov_f = pred_cov_Y - sigma_n2 * np.identity(pred_cov_Y.shape[0])
+
+        # Sample from the latent function posterior: f(X) ~ N(mu_f, Sigma_f)
+        # samples shape: (num_samples, n_test_samples)
+        f_samples = rng.multivariate_normal(
+            mean=pred_mean,
+            cov=pred_cov_f,
+            size=n_samples
+        ).T #(n_calib, n_samples)
+
+        # Calculate the quantile correction factor given by residuals
+        Z_alphas = norm.ppf(quantiles)
+        sigma_n = np.sqrt(sigma_n2)
+        
+        # Correction term shape: (n_quantiles,)
+        quantile_correction = Z_alphas * sigma_n
+
+        # Calculate the quantile for each function sample, using numpy broadcasting
+        # Result shape: (n_samples, n_test_samples, n_quantiles)
+        quantile_samples = f_samples[:, :, None] + quantile_correction[None, None, :]
+
+        # Rearrange axes to the desired (n_calib, n_samples, n_quantiles)
+        quantile_samples = np.transpose(quantile_samples, (1, 0, 2))
+        
+        # Inverse log transform if necessary
+        if self.log_y:
+            # Flatten to perform inverse transform, then reshape back
+            original_shape = quantile_samples.shape
+            samples_flat = quantile_samples.flatten()
+            samples_inverse_scaled = np.exp(samples_flat) 
+            quantile_samples = samples_inverse_scaled.reshape(original_shape)
+            
+        return quantile_samples
 
     def predict_cdf(self, X_test, y_test):
         """
@@ -1374,7 +1430,7 @@ class GPApprox_model(BaseEstimator):
         ).view(-1)
 
         # standardize validation data
-        X_val_standardized = torch.tensor(
+        X_val_standardized = torch.tensor(# 7. Inverse log transform if necessary
             self.scaler_X.transform(X_val), dtype=torch.float32
         )
         y_val_standardized = torch.tensor(
@@ -1542,7 +1598,7 @@ class GPApprox_model(BaseEstimator):
         return pred_mean, pred_std
 
     def predict_cdf(self, X_test, y_test):
-        """
+        """     
         Predict the conditional CDF of Y|X.
 
         Input:
@@ -1556,6 +1612,61 @@ class GPApprox_model(BaseEstimator):
         cdf_values = norm.cdf(y_test, loc=pred_mean, scale=pred_std)
 
         return cdf_values
+    
+    def sample_quantiles_from_posterior(self, X_test, quantiles, n_samples=100, random_seed=0):
+        """
+        Generate samples of the predictive quantiles Q_alpha(Y|X, f) based on samples 
+        from the latent function posterior f(X)|D using GPyTorch for multiple quantile levels.
+
+        Input:
+            (i) X_test: Testing input data.
+            (ii) quantile_levels (list or np.ndarray): The quantile levels (e.g., [0.05, 0.5, 0.95]).
+            (iii) num_samples (int): Number of function samples to generate.
+
+        Output:
+            (i) np.ndarray: Quantile samples Q_alpha(Y|X), shape (n_test_samples, num_samples, n_quantiles).
+        """
+        quantiles = np.asarray(quantiles)
+
+        self.model.eval()
+        self.likelihood.eval()
+
+        X_test_standardized = torch.tensor(# 7. Inverse log transform if necessary
+            self.scaler_X.transform(X_test), dtype=torch.float32
+        )
+
+        with torch.no_grad():
+            # Get the latent function distribution f(X*) from the model
+            latent_distribution = self.model(X_test_standardized)
+            
+            # Sample directly from the latent function distribution. 
+            f_samples_tensor = latent_distribution.sample(sample_shape=torch.Size([n_samples])) # (n_samples, n_test_samples)
+            
+        # Calculate the quantile correction factor (Z_alpha * sigma_n)
+        # Observation noise variance (sigma_n^2) from the likelihood
+        sigma_n2 = self.likelihood.noise.item() 
+        sigma_n = np.sqrt(sigma_n2)
+        Z_alphas = norm.ppf(quantiles)
+        quantile_correction = Z_alphas * sigma_n
+        correction_tensor = torch.tensor(quantile_correction, dtype=torch.float32)
+
+        # Calculate the quantile for each function sample
+        quantile_samples_tensor = f_samples_tensor[:, :, None] + correction_tensor[None, None, :] # (n_samples, n_test_samples, n_quantiles)
+        # Reshape to (n_test_samples, n_samples, n_quantiles)
+        quantile_samples = quantile_samples_tensor.permute(1, 0, 2).numpy()
+        
+        # Flatten the first two axes for inverse scaling, keeping n_quantiles separate
+        original_shape = quantile_samples.shape
+        samples_2d = quantile_samples.reshape(-1, original_shape[2])
+
+        samples_inverse_scaled = self.scaler_y.inverse_transform(samples_2d)
+        quantile_samples = samples_inverse_scaled.reshape(original_shape)
+        
+        # Inverse log transform if necessary
+        if self.log_y:
+            quantile_samples = np.exp(quantile_samples)
+
+        return quantile_samples
 
 
 #### BART model
@@ -1797,6 +1908,7 @@ class BART_model(BaseEstimator):
             self.model_bart = model_bart
         return self
 
+
     def predict_pmf(self, X_test, random_seed=0):
         """
         Predict the probability mass function (PMF) for the given test data.
@@ -1908,3 +2020,484 @@ class BART_model(BaseEstimator):
         if self.normalize_y:
             cutoffs = self.scaler_y.inverse_transform(cutoffs.reshape(-1, 1)).flatten()
         return cutoffs
+    
+    def sample_quantiles_from_posterior(self, X_test, quantile_levels, random_seed=0):
+        """
+        Generates quantile samples Q_alpha(Y|X, theta) from the BART posterior.
+        Each sample represents a quantile from a different function/noise draw (theta) from the posterior.
+
+        Input:
+        (i) X_test (array-like): Test data for which quantiles are to be predicted.
+        (ii) quantile_levels (list or np.ndarray): The quantile levels (e.g., [0.05, 0.95]).
+        (iii) random_seed (int, optional): Seed for reproducibility. Default is 0.
+
+        Output:
+        (i) np.ndarray: Quantile samples Q_alpha(Y|X), shape (n_test_samples, n_MCMC_samples, n_quantiles).
+        """
+        quantile_levels = np.asarray(quantile_levels)
+
+        if self.type_X:
+            X_test = X_test.astype(float)
+        
+        # 1. Set new test data in the PyMC model
+        with self.model_bart:
+            self.X_data.set_value(X_test)
+            
+            if self.type == "normal":
+                if self.var == "heteroscedastic":
+                    # Sample 'w' which contains both mu (w[0]) and log(sigma) (w[1])
+                    var_names = ["w"]
+                elif self.var == "homoscedastic":
+                    # Sample the mean function 'mu' and the scalar noise 'sigma'
+                    var_names = ["mu", "sigma"]
+                else:
+                    raise ValueError(f"Unknown variance type: {self.var}")
+            else:
+                 # TODO: Implement also for gamma
+                 raise NotImplementedError(f"Quantile sampling is not implemented for BART type: {self.type}")
+
+            # Sample the model parameters from the posterior (theta ~ P(theta|D))
+            posterior_samples = pm.sample_posterior_predictive(
+                trace=self.mc_sample,
+                var_names=var_names,
+                predictions=True,
+                random_seed=random_seed,
+                progressbar=self.progressbar,
+            )
+
+        # Calculate Z-scores for the required quantile levels
+        Z_alphas = norm.ppf(quantile_levels) # shape: (n_quantiles,)
+        n_quantiles = Z_alphas.shape[0]
+        n_test_samples = X_test.shape[0]
+
+        if self.type == "normal":
+            if self.var == "heteroscedastic":
+                # Extract 'w' samples (n_samples, n_test_samples, 2)
+                # The PyMC dimension order is usually (chain * draw, *data_dims)
+                w_samples = az.extract(
+                    posterior_samples,
+                    group="predictions",
+                    var_names=["w"],
+                ).transpose("sample", "y_dim_0", "y_dim_1").to_numpy()
+                
+                # mu_samples shape: (n_samples, n_test_samples)
+                mu_samples = w_samples[:, :, 0]
+                # sigma_samples shape: (n_samples, n_test_samples). Note: PyMC uses exp(w[1]) for sigma.
+                sigma_samples = np.exp(w_samples[:, :, 1])
+                
+            elif self.var == "homoscedastic":
+                # mu_samples shape: (n_samples, n_test_samples)
+                mu_samples = az.extract(
+                    posterior_samples,
+                    group="predictions",
+                    var_names=["mu"],
+                ).transpose("sample", "y_dim_0").to_numpy()
+                
+                # sigma is a scalar parameter, sampled (n_samples,)
+                sigma_samples = az.extract(
+                    posterior_samples,
+                    group="predictions",
+                    var_names=["sigma"],
+                ).to_numpy()
+                
+                # Broadcast scalar sigma to (n_samples, n_test_samples) for element-wise operation
+                sigma_samples = np.repeat(sigma_samples[:, None], n_test_samples, axis=1)
+            
+            # Calculate quantiles: Q_alpha = mu + Z_alpha * sigma
+            quantile_samples_temp = (
+                mu_samples[:, :, None] + sigma_samples[:, :, None] * Z_alphas[None, None, :]
+            )
+            
+            # (n_test_samples, n_MCMC_samples, n_quantiles)
+            quantile_samples = np.transpose(quantile_samples_temp, (1, 0, 2))
+
+        # Inverse scaling
+        if self.normalize_y:
+            original_shape = quantile_samples.shape
+            samples_2d = quantile_samples.reshape(-1, n_quantiles)
+            
+            samples_inverse_scaled = self.scaler_y.inverse_transform(samples_2d)
+            
+            quantile_samples = samples_inverse_scaled.reshape(original_shape)
+        
+        return quantile_samples
+
+
+class DE_MDN_model(BaseEstimator):
+    """
+    Deep Ensembles MDN model for regression tasks.
+    """
+
+    def __init__(
+        self,
+        input_shape,
+        n_models=15,
+        num_components=3,
+        hidden_layers=[64],
+        dropout_rate=0.4,
+        base_model_type=None,
+        alpha=None,
+        normalize_y=False,
+        type="gaussian",
+    ):
+        """
+        Input:
+            (i) n_models (int): Number of models in the ensemble.
+            (ii) n_epochs (int): Number of training epochs.
+            (iii) batch_size (int): Batch size for training.
+            (iv) learning_rate (float): Learning rate for the optimizer.
+            (v) scale_x (bool): Whether to standardize input features.
+            (vi) log_y (bool): Whether to apply log transformation to the target variable.
+            (vii) random_seed (int): Random seed for reproducibility.
+
+        Output:
+            (i) Initialized Deep_ensembles_model object.
+        """
+        self.input_shape = input_shape
+        self.n_models = n_models
+        self.num_components = num_components
+        self.hidden_layers = hidden_layers
+        self.dropout_rate = dropout_rate
+        # defining base model according to parameters
+        self.model = MDN_base(
+            self.input_shape, self.num_components, self.hidden_layers, self.dropout_rate
+        )
+        self.base_model_type = base_model_type
+        self.alpha = alpha
+        self.normalize_y = normalize_y
+        self.type = type
+    
+    @staticmethod
+    def mdn_loss(pi, mu, sigma, y_true, type="gaussian"):
+        y_true = y_true.view(-1, 1)
+        if type == "gaussian":
+            result = torch.sum(pi * gaussian_pdf(y_true, mu, sigma), dim=1)
+        elif type == "gamma":
+            result = torch.sum(pi * gamma_pdf(y_true, mu, sigma), dim=1)
+        loss = -torch.log(result + 1e-8)  # numerical stability
+        return torch.mean(loss)
+    
+
+    # Mixture coeficient obtention
+    def get_mixture_coef(self, y_pred):
+        pi = F.softmax(y_pred[:, : self.num_components], dim=1)
+        # pi = pi / pi.sum(dim=1, keepdim=True)
+        if self.type == "gaussian":
+            mu = y_pred[:, self.num_components : 2 * self.num_components]
+            sigma = F.softplus(y_pred[:, 2 * self.num_components :])
+
+        elif self.type == "gamma":
+            mu = F.softplus(y_pred[:, self.num_components : 2 * self.num_components])
+            sigma = F.softplus(y_pred[:, 2 * self.num_components :])
+        # sigma = torch.exp(y_pred[:, 2 * num_components:])
+        return pi, mu, sigma
+    
+
+    def fit(
+        self,
+        X,
+        y,
+        n_epochs=500,
+        patience=15,
+        lr=1e-3,
+        weight_decay=1e-4,
+        proportion_train=0.7,
+        gamma=0.99,
+        batch_size=32,
+        step_size=3,
+        scale=False,
+        random_seed_split=0,
+        random_seed_fit=1250,
+    ):
+        """
+        Fit the Deep Ensembles MDN model.
+
+        Input:
+            (i) X_train: Training input data.
+            (ii) y_train: Training target data.
+            (iii) n_epochs (int): Number of training epochs. Default is 500.
+            (iv) patience (int): Number of epochs with no improvement to trigger early stopping. Default is 15.
+            (v) lr (float): Learning rate for the optimizer. Default is 1e-3.
+            (vi) weight_decay (float): Weight decay for the optimizer. Default is 1e-4.
+            (vii) proportion_train (float): Proportion of data to be used for training. Default is 0.7.
+            (viii) gamma (float): Learning rate decay factor. Default is 0.99.
+            (ix) batch_size (int): Batch size for training. Default is 32.
+            (x) step_size (int): Step size for learning rate scheduler. Default is 5.
+            (xi) scale (bool): Whether to standardize input features. Default is False.
+            (xii) init_seed (int or None): Initial random seed for reproducibility. Default is None.
+            (xiii) random_seed_split (int): Random seed for data splitting. Default is 0.
+            (xiv) random_seed_fit (int): Random seed for model fitting. Default is 1250.
+
+        Output:
+            (i) Trained Deep_ensembles_model object.
+        """
+        # Splitting data into train and validation
+        x_train, x_val, y_train, y_val = train_test_split(
+            X, y, test_size=1 - proportion_train, random_state=random_seed_split
+        )
+
+        # checking if scaling is needed
+        if scale:
+            self.scaler = StandardScaler()
+            self.scaler.fit(x_train)
+            x_train = self.scaler.transform(x_train)
+            x_val = self.scaler.transform(x_val)
+            self.scale = True
+        else:
+            self.scale = False
+
+        # checking if scaling the response is needed
+        if self.normalize_y or self.log_y:
+            if self.log_y:
+                y_train, self.lmbda = st.boxcox(y_train)
+                y_val = st.boxcox(y_val, lmbda=self.lmbda)
+                if self.normalize_y:
+                    self.y_scaler = StandardScaler()
+                    self.y_scaler.fit(y_train.reshape(-1, 1))
+
+                    y_train = self.y_scaler.transform(y_train.reshape(-1, 1)).flatten()
+                    y_val = self.y_scaler.transform(y_val.reshape(-1, 1)).flatten()
+
+            elif self.normalize_y:
+                self.y_scaler = StandardScaler()
+                self.y_scaler.fit(y_train.reshape(-1, 1))
+                y_train = self.y_scaler.transform(y_train.reshape(-1, 1)).flatten()
+                y_val = self.y_scaler.transform(y_val.reshape(-1, 1)).flatten()
+
+        # checking if is an instance of numpy
+        if isinstance(X, np.ndarray) or isinstance(y, np.ndarray):
+            x_train, x_val = (
+                torch.tensor(x_train, dtype=torch.float32),
+                torch.tensor(x_val, dtype=torch.float32),
+            )
+            y_train, y_val = (
+                torch.tensor(y_train, dtype=torch.float32).view(-1, 1),
+                torch.tensor(y_val, dtype=torch.float32).view(-1, 1),
+            )
+
+        # Training and validation
+        train_dataset = TensorDataset(
+            x_train.clone().detach().float(),
+            (
+                y_train.clone().detach().float()
+                if isinstance(y_train, torch.Tensor)
+                else torch.tensor(y_train, dtype=torch.float32)
+            ),
+        )
+        val_dataset = TensorDataset(
+            x_val.clone().detach().float(),
+            (
+                y_val.clone().detach().float()
+                if isinstance(y_val, torch.Tensor)
+                else torch.tensor(y_val, dtype=torch.float32)
+            ),
+        )
+
+        # Setting batch size
+        batch_size_train = int(proportion_train * batch_size)
+        batch_size_val = int((1 - proportion_train) * batch_size)
+        train_loader = DataLoader(
+            train_dataset, batch_size=batch_size_train, shuffle=True
+        )
+        val_loader = DataLoader(
+            val_dataset, 
+            batch_size=batch_size_val, 
+            shuffle=False,
+            )
+
+        torch.manual_seed(random_seed_fit)
+        torch.cuda.manual_seed(random_seed_fit)
+
+        # Fitting each model in the ensemble
+        self.models = []
+        for i in tqdm(range(self.n_models), desc = "Fitting Deep Ensemble MDN models"):
+            model_i = self.fit_one_model(
+                train_loader,
+                val_loader,
+                patience,
+                n_epochs,
+                lr,
+                weight_decay,
+                step_size,
+                gamma,
+            )
+            self.models.append(model_i)
+        
+
+
+        return self
+
+    def fit_one_model(
+            self,
+            train_loader,
+            val_loader,
+            patience,
+            n_epochs,
+            lr,
+            weight_decay,
+            step_size,
+            gamma,
+        ):
+        """
+        Fit a single MDN model.
+        Input:
+            (i) train_loader: DataLoader for training data.
+            (ii) val_loader: DataLoader for validation data.
+            (iii) patience (int): Number of epochs with no improvement to trigger early stopping.
+            (iv) n_epochs (int): Maximum number of training epochs.
+            (v) verbose (int): Verbosity level (0, 1, or 2).
+        Output:
+            (i) Trained MDN model.
+        """
+        model = MDN_base(
+            self.input_shape, 
+            self.num_components, 
+            self.hidden_layers, 
+            self.dropout_rate,
+        )
+
+        optimizer = optim.Adamax(
+            model.parameters(), lr=lr, weight_decay=weight_decay
+        )
+        scheduler = optim.lr_scheduler.StepLR(
+            self.optimizer, step_size=step_size, gamma=gamma
+        )
+
+        losses_train = []
+        losses_val = []
+
+        # early stopping
+        best_val_loss = float("inf")
+        counter = 0
+
+        # Training loop
+        for epoch in tqdm(range(n_epochs), desc="Fitting MDN model"):
+            model.train()
+            train_loss_epoch = 0
+
+            # Looping through batches
+            for x_batch, y_batch in train_loader:
+                optimizer.zero_grad()
+                output_train = model(x_batch)  # Network output
+                pi_train, mu_train, sigma_train = self.get_mixture_coef(output_train)
+                loss_train = self.mdn_loss(
+                    pi_train, 
+                    mu_train, 
+                    sigma_train, 
+                    y_batch,
+                    type=self.type,
+                )
+                loss_train.backward()
+                optimizer.step()
+                train_loss_epoch += loss_train.item()
+
+            # Computing validation loss
+            model.eval()
+            val_loss_epoch = 0
+            with torch.no_grad():
+                for x_batch, y_batch in val_loader:
+                    output_val = model(x_batch)  # Network output
+                    pi_val, mu_val, sigma_val = self.get_mixture_coef(output_val)
+                    loss_val = self.mdn_loss(
+                        pi_val, mu_val, sigma_val, y_batch, type=self.type
+                    )
+                    val_loss_epoch += loss_val.item()
+
+            # average loss by epoch
+            train_loss_epoch /= len(train_loader)
+            val_loss_epoch /= len(val_loader)
+            losses_train.append(train_loss_epoch)
+            losses_val.append(val_loss_epoch)
+
+            scheduler.step()
+
+            # Early stopping
+            if val_loss_epoch < best_val_loss:
+                best_val_loss = val_loss_epoch
+                counter = 0
+            else:
+                counter += 1
+                if counter >= patience:
+                    break
+            
+        return model
+    
+    def mixture_quantile(self, alphas, pi, mu, sigma, rng=0, N=1000):
+        """
+        Compute quantiles for each mixture component.
+
+        Input:
+            (i) alphas (list): List of quantiles (e.g., [0.1, 0.5, 0.9]).
+            (ii) pi (np.ndarray): Mixture weights of shape (n_samples, n_components).
+            (iii) mu (np.ndarray): Means of the components of shape (n_samples, n_components).
+            (iv) sigma (np.ndarray): Standard deviations of the components of shape (n_samples, n_components).
+            (v) rng: Fixed random Seed or generator. Default is 0.
+            (vi) N (int): Number of samples to generate per mixture.
+
+        Output:
+            (i) np.ndarray: Quantile matrix of shape (n_sample, len(alphas)).
+        """
+        if isinstance(rng, int):
+            rng = np.random.default_rng(42)
+
+        pi = np.asarray(pi)
+        mu = np.asarray(mu)
+        sigma = np.asarray(sigma)
+
+        n_sample, _ = pi.shape
+        n_alphas = len(alphas)
+
+        # N samples from each mixture
+        samples = self.sample_from_mixture(pi, mu, sigma, N=N)
+
+        # Quantile computation
+        quantile_matrix = np.zeros((n_sample, n_alphas))
+        for j, alpha in enumerate(alphas):
+            quantile_matrix[:, j] = np.quantile(samples, alpha, axis=1)
+
+        return quantile_matrix
+    
+    def predict_ensemble(
+            self,
+            X_test,
+    ):
+        """
+        Predict parameters from each model in the ensemble.
+
+        Input:
+            (i) X_test (array-like): Test input data.
+        Output:
+            (i) pi_ensemble (np.ndarray): Mixture weights from each model, shape (n_test_samples, n_models, n_components).
+            (ii) mu_ensemble (np.ndarray): Means from each model, shape (n_test_samples, n_models, n_components).
+            (iii) sigma_ensemble (np.ndarray): Standard deviations from each model, shape (n_test_samples, n_models, n_components).
+        """
+        if self.scale:
+            X_test_standardized = self.scaler.transform(X_test)
+        else:
+            X_test_standardized = X_test
+
+        n_test_samples = X_test_standardized.shape[0]
+        n_models = len(self.models)
+
+        # Arrays to hold mixture parameters from each model
+        pi_ensemble = np.zeros((n_models, n_test_samples, self.num_components))
+        mu_ensemble = np.zeros((n_models, n_test_samples, self.num_components))
+        sigma_ensemble = np.zeros((n_models, n_test_samples, self.num_components))
+
+        # Get predictions from each model in the ensemble
+        for i, model in enumerate(self.models):
+            model.eval()
+            with torch.no_grad():
+                X_tensor = torch.tensor(X_test_standardized, dtype=torch.float32)
+                y_pred = model(X_tensor)
+                pi, mu, sigma = self.get_mixture_coef(y_pred)
+                
+                pi_ensemble[i, :, :] = pi.numpy()
+                mu_ensemble[i, :, :] = mu.numpy()
+                sigma_ensemble[i, :, :] = sigma.numpy()
+
+        return pi_ensemble, mu_ensemble, sigma_ensemble
+      
+
+
+
