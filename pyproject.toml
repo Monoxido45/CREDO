@@ -19,6 +19,7 @@ dependencies = [
     "pymc",
     "pymc-bart",
     "arviz",
+    "pyqt5 (>=5.15.11,<6.0.0)",
 ]
 
 

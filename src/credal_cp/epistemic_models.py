@@ -2138,6 +2138,7 @@ class DE_MDN_model(BaseEstimator):
         base_model_type=None,
         alpha=None,
         normalize_y=False,
+        log_y=False,
         type="gaussian",
     ):
         """
@@ -2166,6 +2167,7 @@ class DE_MDN_model(BaseEstimator):
         self.alpha = alpha
         self.normalize_y = normalize_y
         self.type = type
+        self.log_y = log_y
     
     @staticmethod
     def mdn_loss(pi, mu, sigma, y_true, type="gaussian"):
@@ -2177,7 +2179,6 @@ class DE_MDN_model(BaseEstimator):
         loss = -torch.log(result + 1e-8)  # numerical stability
         return torch.mean(loss)
     
-
     # Mixture coeficient obtention
     def get_mixture_coef(self, y_pred):
         pi = F.softmax(y_pred[:, : self.num_components], dim=1)
@@ -2192,6 +2193,89 @@ class DE_MDN_model(BaseEstimator):
         # sigma = torch.exp(y_pred[:, 2 * num_components:])
         return pi, mu, sigma
     
+    def mixture_quantile(self, alphas, pi, mu, sigma, rng=0, N=1000):
+        """
+        Compute quantiles for each mixture component.
+
+        Input:
+            (i) alphas (list): List of quantiles (e.g., [0.1, 0.5, 0.9]).
+            (ii) pi (np.ndarray): Mixture weights of shape (n_samples, n_components).
+            (iii) mu (np.ndarray): Means of the components of shape (n_samples, n_components).
+            (iv) sigma (np.ndarray): Standard deviations of the components of shape (n_samples, n_components).
+            (v) rng: Fixed random Seed or generator. Default is 0.
+            (vi) N (int): Number of samples to generate per mixture.
+
+        Output:
+            (i) np.ndarray: Quantile matrix of shape (n_sample, len(alphas)).
+        """
+        if isinstance(rng, int):
+            rng = np.random.default_rng(42)
+
+        pi = np.asarray(pi)
+        mu = np.asarray(mu)
+        sigma = np.asarray(sigma)
+
+        n_sample, _ = pi.shape
+        n_alphas = len(alphas)
+
+        # N samples from each mixture
+        samples = self.sample_from_mixture(pi, mu, sigma, N=N)
+
+        # Quantile computation
+        quantile_matrix = np.zeros((n_sample, n_alphas))
+        for j, alpha in enumerate(alphas):
+            quantile_matrix[:, j] = np.quantile(samples, alpha, axis=1)
+
+        return quantile_matrix
+    
+    def sample_from_mixture(self, pi, mu, sigma, rng=0, N=1):
+        """
+        Generates samples from the mixture network model for each observed sample x.
+
+        Input:
+            (i) pi (np.ndarray): Mixture weights of shape (n_samples, n_components).
+            (ii) mu (np.ndarray): Means of the components of shape (n_samples, n_components).
+            (iii) sigma (np.ndarray): Standard deviations of the components of shape (n_samples, n_components).
+            (iv) rng: Fixed random Seed or generator. Default is 0.
+            (v) N (int): Number of samples per mixture.
+
+        Output:
+            (i) np.ndarray: Generated samples, of shape (n_samples, N).
+        """
+        # fixing seed if a number is passed
+        if isinstance(rng, int):
+            rng = np.random.default_rng(42)
+
+        # Ensures that pi, mu, and sigma are numpy arrays
+        pi = np.asarray(pi)
+        mu = np.asarray(mu)
+        sigma = np.asarray(sigma)
+
+        n_samples, n_comp = pi.shape
+
+        # Normalize the weights to ensure they sum to 1
+        pi /= np.sum(pi, axis=1, keepdims=True)
+
+        # Repeat the weights for all samples
+        pi_cumsum = np.cumsum(pi, axis=1)  # Cumulative sum for sampling
+        random_vals = rng.random((n_samples, N))  # Random values between 0 and 1
+
+        # Determine the chosen components for each sample
+        components = (random_vals[..., None] < pi_cumsum[:, None, :]).argmax(axis=2)
+
+        # Select the means and standard deviations of the chosen components
+        chosen_mu = np.take_along_axis(mu, components, axis=1)
+        chosen_sigma = np.take_along_axis(sigma, components, axis=1)
+
+        if self.type == "gaussian":
+            # Generate normal samples
+            samples = rng.normal(loc=chosen_mu, scale=chosen_sigma)
+        elif self.type == "gamma":
+            alpha = (mu**2) / (sigma**2)
+            beta = mu / (sigma**2)
+            samples = rng.gamma(shape=alpha, scale=1 / beta)
+
+        return samples
 
     def fit(
         self,
@@ -2360,7 +2444,7 @@ class DE_MDN_model(BaseEstimator):
             model.parameters(), lr=lr, weight_decay=weight_decay
         )
         scheduler = optim.lr_scheduler.StepLR(
-            self.optimizer, step_size=step_size, gamma=gamma
+            optimizer, step_size=step_size, gamma=gamma
         )
 
         losses_train = []
@@ -2371,7 +2455,7 @@ class DE_MDN_model(BaseEstimator):
         counter = 0
 
         # Training loop
-        for epoch in tqdm(range(n_epochs), desc="Fitting MDN model"):
+        for epoch in range(n_epochs):
             model.train()
             train_loss_epoch = 0
 
@@ -2421,42 +2505,7 @@ class DE_MDN_model(BaseEstimator):
                     break
             
         return model
-    
-    def mixture_quantile(self, alphas, pi, mu, sigma, rng=0, N=1000):
-        """
-        Compute quantiles for each mixture component.
 
-        Input:
-            (i) alphas (list): List of quantiles (e.g., [0.1, 0.5, 0.9]).
-            (ii) pi (np.ndarray): Mixture weights of shape (n_samples, n_components).
-            (iii) mu (np.ndarray): Means of the components of shape (n_samples, n_components).
-            (iv) sigma (np.ndarray): Standard deviations of the components of shape (n_samples, n_components).
-            (v) rng: Fixed random Seed or generator. Default is 0.
-            (vi) N (int): Number of samples to generate per mixture.
-
-        Output:
-            (i) np.ndarray: Quantile matrix of shape (n_sample, len(alphas)).
-        """
-        if isinstance(rng, int):
-            rng = np.random.default_rng(42)
-
-        pi = np.asarray(pi)
-        mu = np.asarray(mu)
-        sigma = np.asarray(sigma)
-
-        n_sample, _ = pi.shape
-        n_alphas = len(alphas)
-
-        # N samples from each mixture
-        samples = self.sample_from_mixture(pi, mu, sigma, N=N)
-
-        # Quantile computation
-        quantile_matrix = np.zeros((n_sample, n_alphas))
-        for j, alpha in enumerate(alphas):
-            quantile_matrix[:, j] = np.quantile(samples, alpha, axis=1)
-
-        return quantile_matrix
-    
     def predict_ensemble(
             self,
             X_test,

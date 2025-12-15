@@ -18,6 +18,7 @@ from credal_cp.epistemic_models import (
     BART_model,
     DE_MDN_model,
 )
+from tqdm import tqdm
 
 
 
@@ -136,9 +137,9 @@ class CredalCPRegressor(BaseEstimator):
             self.base_model.fit(X, y, **fit_params)
             self.base_is_fitted = True
         elif not self.base_is_sklearn and self.base_model_type == "string_unfitted":
-            # TODO: add deep ensemble option/add into epistemic_models
             # MDN + Dropout or other BNN approximations
             if self.base_model == "MDN" and self.nn_type == "MC_Dropout":
+                print("Fitting MC Dropout MDN model")
                 self.base_model_type = "MDN"
                 self.base_model = MDN_model(
                     input_shape = X.shape[1],
@@ -163,16 +164,17 @@ class CredalCPRegressor(BaseEstimator):
                 )
                 self.base_is_fitted = True
             elif self.base_model == "MDN" and self.nn_type == "Ensemble":
+                print("Fitting Deep Ensemble MDN model")
                 self.base_model_type = "MDN"
                 self.base_model = DE_MDN_model(
                     input_shape = X.shape[1],
+                    n_models = n_models,
                      **fit_params
                 )
 
                 self.base_model.fit(
                     X,
                     y,
-                    n_models = n_models,
                     proportion_train=proportion_train,
                     n_epochs=epochs,
                     lr=lr,
@@ -189,6 +191,7 @@ class CredalCPRegressor(BaseEstimator):
 
             # Analytic GP (slow for large datasets)
             elif self.base_model == "GP":
+                print("Fitting Gaussian Process model")
                 self.base_model_type = "GP"
                 self.base_model = GP_model(
                    **fit_params
@@ -204,6 +207,7 @@ class CredalCPRegressor(BaseEstimator):
             
             # Variational GP (faster for large datasets)
             elif self.base_model == "GP_Approx":
+                print("Fitting Approximate Gaussian Process model")
                 self.base_model_type = "GP_Approx"
                 self.base_model = GPApprox_model(
                    **fit_params
@@ -223,6 +227,7 @@ class CredalCPRegressor(BaseEstimator):
             
             # BART model
             elif self.base_model == "BART":
+                print("Fitting BART model")
                 self.base_model_type = "BART"
                 self.base_model = BART_model(
                    **fit_params
@@ -241,7 +246,7 @@ class CredalCPRegressor(BaseEstimator):
             self, 
             X_calib, 
             y_calib,
-            gamma=0.1,
+            beta=0.1,
             random_seed_calib=0,
             N_samples_MC=300,
             ):
@@ -260,7 +265,7 @@ class CredalCPRegressor(BaseEstimator):
         self : object
             Returns self.
         """
-        self.gamma = gamma
+        self.beta = beta
         # For this, use mixture quantile to derive the vector of quantiles to be used for each x
         if self.base_model_type == "MDN" and self.nn_type == "MC_Dropout":
             # obtaining samples from posterior for each x_calib
@@ -268,7 +273,9 @@ class CredalCPRegressor(BaseEstimator):
                 X_calib, 
                 num_samples = N_samples_MC,
                 )
-        
+
+            self.pi_calib = pi_calib
+            self.mu_calib = mu_calib
             # using samples to obtain quantile vector for each x_calib
             if self.nc_type == "Quantile":
                 lower_q = self.alpha / 2
@@ -276,12 +283,12 @@ class CredalCPRegressor(BaseEstimator):
                 i = 0
                 q_low_raw, q_upp_raw = [], []
 
-                for x in X_calib:
+                for x in tqdm(X_calib, desc="Calibrating Credal CP with MC Dropout MDN"):
                     pi_chosen = pi_calib[:, i, :]
                     mu_chosen = mu_calib[:, i, :]
                     sigma_chosen = sigma_calib[:, i, :]
 
-                    q_grid = self.base_model.mixture_quantiles(
+                    q_grid = self.base_model.mixture_quantile(
                     [lower_q, upper_q], 
                     pi_chosen, 
                     mu_chosen, 
@@ -289,9 +296,11 @@ class CredalCPRegressor(BaseEstimator):
                     rng= random_seed_calib,
                     )
 
+                    self.q_grid = q_grid
+
                     # obtaining lower and upper quantiles for the current x
-                    q_low_raw.append(np.quantile(q_grid, gamma/2))
-                    q_upp_raw.append(np.quantile(q_grid, 1 - gamma/2))
+                    q_low_raw.append(np.quantile(q_grid[:, 0], self.beta/2))
+                    q_upp_raw.append(np.quantile(q_grid[:, 1], 1 - self.beta/2))
                     i += 1
                 
                 q_low_raw = np.array(q_low_raw)
@@ -305,8 +314,7 @@ class CredalCPRegressor(BaseEstimator):
         elif self.base_model_type == "MDN" and self.nn_type == "Ensemble":
             # obtaining samples from posterior for each x_calib
             pi_calib, mu_calib, sigma_calib = self.base_model.predict_ensemble(
-                X_calib, 
-                N_samples=N_samples_MC,
+                X_calib,
                 )
         
             # using samples to obtain quantile vector for each x_calib
@@ -316,12 +324,12 @@ class CredalCPRegressor(BaseEstimator):
                 i = 0
                 q_low_raw, q_upp_raw = [], []
 
-                for x in X_calib:
+                for x in tqdm(X_calib, desc="Calibrating Credal CP with Ensemble MDN"):
                     pi_chosen = pi_calib[:, i, :]
                     mu_chosen = mu_calib[:, i, :]
                     sigma_chosen = sigma_calib[:, i, :]
 
-                    q_grid = self.base_model.mixture_quantiles(
+                    q_grid = self.base_model.mixture_quantile(
                     [lower_q, upper_q], 
                     pi_chosen, 
                     mu_chosen, 
@@ -330,8 +338,8 @@ class CredalCPRegressor(BaseEstimator):
                     )
 
                     # obtaining lower and upper quantiles for the current x
-                    q_low_raw.append(np.quantile(q_grid, gamma/2))
-                    q_upp_raw.append(np.quantile(q_grid, 1 - gamma/2))
+                    q_low_raw.append(np.quantile(q_grid[:, 0], self.beta/2))
+                    q_upp_raw.append(np.quantile(q_grid[:, 1], 1 - self.beta/2))
                     i += 1
                 
                 q_low_raw = np.array(q_low_raw)
@@ -359,8 +367,8 @@ class CredalCPRegressor(BaseEstimator):
                 q_upp_grid = q_samples[:, :, 1]
 
                 # obtaining lower and upper quantiles for each x_calib
-                q_low_raw = np.quantile(q_low_grid, gamma/2, axis=1)
-                q_upp_raw = np.quantile(q_upp_grid, 1 - gamma/2, axis=1)
+                q_low_raw = np.quantile(q_low_grid, self.beta/2, axis=1)
+                q_upp_raw = np.quantile(q_upp_grid, 1 - self.beta/2, axis=1)
 
                 # with lower and upper quantiles, we can compute the modified nonconformity scores
                 self.nc_scores = np.maximum(q_low_raw - y_calib, y_calib - q_upp_raw)
@@ -385,8 +393,8 @@ class CredalCPRegressor(BaseEstimator):
                 q_upp_grid = q_samples[:, :, 1]
 
                 # obtaining lower and upper quantiles for each x_calib
-                q_low_raw = np.quantile(q_low_grid, gamma/2, axis=1)
-                q_upp_raw = np.quantile(q_upp_grid, 1 - gamma/2, axis=1)
+                q_low_raw = np.quantile(q_low_grid, self.beta/2, axis=1)
+                q_upp_raw = np.quantile(q_upp_grid, 1 - self.beta/2, axis=1)
 
                 # with lower and upper quantiles, we can compute the modified nonconformity scores
                 self.nc_scores = np.maximum(q_low_raw - y_calib, y_calib - q_upp_raw)
@@ -419,117 +427,120 @@ class CredalCPRegressor(BaseEstimator):
                 num_samples = n_samples,
                 )
             
-            # formulating lower and upper quantiles for each x_test
-            lower_q = self.alpha / 2
-            upper_q = 1 - self.alpha / 2
-            i = 0
-            q_low_pred, q_upp_pred = [], []
+            if self.nc_type == "Quantile":
+                # formulating lower and upper quantiles for each x_test
+                lower_q = self.alpha / 2
+                upper_q = 1 - self.alpha / 2
+                i = 0
+                q_low_pred, q_upp_pred = [], []
 
-            for x in X_test:
-                pi_chosen = pi_test[:, i, :]
-                mu_chosen = mu_test[:, i, :]
-                sigma_chosen = sigma_test[:, i, :]
+                for x in X_test:
+                    pi_chosen = pi_test[:, i, :]
+                    mu_chosen = mu_test[:, i, :]
+                    sigma_chosen = sigma_test[:, i, :]
 
-                q_grid = self.base_model.mixture_quantiles(
-                [lower_q, upper_q], 
-                pi_chosen, 
-                mu_chosen, 
-                sigma_chosen,
-                rng= None,
-                )
+                    q_grid = self.base_model.mixture_quantile(
+                    [lower_q, upper_q], 
+                    pi_chosen, 
+                    mu_chosen, 
+                    sigma_chosen,
+                    rng= None,
+                    )
+                    
+                    # obtaining lower and upper quantiles for the current x
+                    q_low_pred.append(np.quantile(q_grid[:, 0], self.beta/2))
+                    q_upp_pred.append(np.quantile(q_grid[:, 1], 1 - self.beta/2))
+                    i += 1
 
-                # obtaining lower and upper quantiles for the current x
-                q_low_pred.append(np.quantile(q_grid, self.gamma/2))
-                q_upp_pred.append(np.quantile(q_grid, 1 - self.gamma/2))
-                i += 1
+                q_low_pred = np.array(q_low_pred)
+                q_upp_pred = np.array(q_upp_pred)
 
-            q_low_pred = np.array(q_low_pred)
-            q_upp_pred = np.array(q_upp_pred)
+                lower_cp = q_low_pred - self.cutoff
+                upper_cp = q_upp_pred + self.cutoff
 
-            lower_cp = q_low_pred - self.cutoff
-            upper_cp = q_upp_pred + self.cutoff
-
-            y_pred = np.column_stack((lower_cp, upper_cp))
-            return y_pred
+                y_pred = np.column_stack((lower_cp, upper_cp))
+                return y_pred
         
         elif self.base_model_type == "MDN" and self.nn_type == "Ensemble":
             pi_test, mu_test, sigma_test = self.base_model.predict_ensemble(
-                X_test, 
-                N_samples=n_samples,
+                X_test,
                 )
-            
-            # formulating lower and upper quantiles for each x_test
-            lower_q = self.alpha / 2
-            upper_q = 1 - self.alpha / 2
-            i = 0
-            q_low_pred, q_upp_pred = [], []
+            print("a")
+            if self.nc_type == "Quantile":
+                # formulating lower and upper quantiles for each x_test
+                lower_q = self.alpha / 2
+                upper_q = 1 - self.alpha / 2
+                i = 0
+                q_low_pred, q_upp_pred = [], []
 
-            for x in X_test:
-                pi_chosen = pi_test[:, i, :]
-                mu_chosen = mu_test[:, i, :]
-                sigma_chosen = sigma_test[:, i, :]
+                for x in X_test:
+                    pi_chosen = pi_test[:, i, :]
+                    mu_chosen = mu_test[:, i, :]
+                    sigma_chosen = sigma_test[:, i, :]
 
-                q_grid = self.base_model.mixture_quantiles(
-                [lower_q, upper_q], 
-                pi_chosen, 
-                mu_chosen, 
-                sigma_chosen,
-                rng= None,
-                )
+                    q_grid = self.base_model.mixture_quantile(
+                    [lower_q, upper_q], 
+                    pi_chosen, 
+                    mu_chosen, 
+                    sigma_chosen,
+                    rng= None,
+                    )
 
-                # obtaining lower and upper quantiles for the current x
-                q_low_pred.append(np.quantile(q_grid, self.gamma/2))
-                q_upp_pred.append(np.quantile(q_grid, 1 - self.gamma/2))
-                i += 1
+                    # obtaining lower and upper quantiles for the current x
+                    q_low_pred.append(np.quantile(q_grid[:, 0], self.beta/2))
+                    q_upp_pred.append(np.quantile(q_grid[:, 1], 1 - self.beta/2))
+                    i += 1
 
-            q_low_pred = np.array(q_low_pred)
-            q_upp_pred = np.array(q_upp_pred)
+                q_low_pred = np.array(q_low_pred)
+                q_upp_pred = np.array(q_upp_pred)
 
-            lower_cp = q_low_pred - self.cutoff
-            upper_cp = q_upp_pred + self.cutoff
+                lower_cp = q_low_pred - self.cutoff
+                upper_cp = q_upp_pred + self.cutoff
 
-            y_pred = np.column_stack((lower_cp, upper_cp))
-            return y_pred
+                y_pred = np.column_stack((lower_cp, upper_cp))
+                return y_pred
         
         elif self.base_model_type == "GP" or self.base_model_type == "GP_Approx":
-            q_samples = self.base_model.sample_quantiles_from_posterior(
-                X_test,
-                quantiles=[self.alpha / 2, 1 - self.alpha / 2],
-                N_samples=n_samples,
-                random_seed=None,
-            )
+            if self.nc_type == "Quantile":
+                q_samples = self.base_model.sample_quantiles_from_posterior(
+                    X_test,
+                    quantiles=[self.alpha / 2, 1 - self.alpha / 2],
+                    N_samples=n_samples,
+                    random_seed=None,
+                )
 
-            q_low_grid = q_samples[:, :, 0]
-            q_upp_grid = q_samples[:, :, 1]
+                q_low_grid = q_samples[:, :, 0]
+                q_upp_grid = q_samples[:, :, 1]
 
-            # obtaining lower and upper quantiles for each x_test
-            q_low_pred = np.quantile(q_low_grid, self.gamma/2, axis=1)
-            q_upp_pred = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=1)
+                # obtaining lower and upper quantiles for each x_test
+                q_low_pred = np.quantile(q_low_grid, self.beta/2, axis=1)
+                q_upp_pred = np.quantile(q_upp_grid, 1 - self.beta/2, axis=1)
 
-            lower_cp = q_low_pred - self.cutoff
-            upper_cp = q_upp_pred + self.cutoff
+                lower_cp = q_low_pred - self.cutoff
+                upper_cp = q_upp_pred + self.cutoff
 
-            y_pred = np.column_stack((lower_cp, upper_cp))
-            return y_pred
+                y_pred = np.column_stack((lower_cp, upper_cp))
+                return y_pred
         
         elif self.base_model_type == "BART":
-            q_samples = self.base_model.sample_quantiles_from_posterior(
-                X_test,
-                quantiles=[self.alpha / 2, 1 - self.alpha / 2],
-                random_seed=None,
-            )
+            if self.nc_type == "Quantile":
+                q_samples = self.base_model.sample_quantiles_from_posterior(
+                    X_test,
+                    quantiles=[self.beta / 2, 1 - self.beta / 2],
+                    random_seed=None,
+                )
 
-            q_low_grid = q_samples[:, :, 0]
-            q_upp_grid = q_samples[:, :, 1]
+                q_low_grid = q_samples[:, :, 0]
+                q_upp_grid = q_samples[:, :, 1]
 
-            # obtaining lower and upper quantiles for each x_test
-            q_low_pred = np.quantile(q_low_grid, self.gamma/2, axis=1)
-            q_upp_pred = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=1)
+                # obtaining lower and upper quantiles for each x_test
+                q_low_pred = np.quantile(q_low_grid, self.beta/2, axis=1)
+                q_upp_pred = np.quantile(q_upp_grid, 1 - self.beta/2, axis=1)
 
-            lower_cp = q_low_pred - self.cutoff
-            upper_cp = q_upp_pred + self.cutoff
+                lower_cp = q_low_pred - self.cutoff
+                upper_cp = q_upp_pred + self.cutoff
 
-            y_pred = np.column_stack((lower_cp, upper_cp))
-            return y_pred
+                y_pred = np.column_stack((lower_cp, upper_cp))
+                return y_pred
         
             
