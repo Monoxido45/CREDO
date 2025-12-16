@@ -442,7 +442,7 @@ class MDN_model(BaseEstimator):
         elif self.base_model_type == "density" and (y_test is None):
             return pi, mu, sigma
 
-    def mixture_quantile(self, alphas, pi, mu, sigma, rng=0, N=1000):
+    def mixture_quantile(self, alphas, pi, mu, sigma, rng=0, N=1000):   
         """
         Compute quantiles for each mixture component.
 
@@ -457,8 +457,11 @@ class MDN_model(BaseEstimator):
         Output:
             (i) np.ndarray: Quantile matrix of shape (n_sample, len(alphas)).
         """
-        if isinstance(rng, int):
-            rng = np.random.default_rng(42)
+        # fixing seed if a number is passed
+        if rng == 0:
+            rng = np.random.default_rng() # Advance state naturally
+        else:
+            rng = np.random.default_rng(rng) # Use the explicit seed
 
         pi = np.asarray(pi)
         mu = np.asarray(mu)
@@ -516,7 +519,7 @@ class MDN_model(BaseEstimator):
 
         return cumulative_matrix
 
-    def sample_from_mixture(self, pi, mu, sigma, rng=0, N=1):
+    def sample_from_mixture(self, pi, mu, sigma, rng=0, N=100):
         """
         Generates samples from the mixture network model for each observed sample x.
 
@@ -531,8 +534,10 @@ class MDN_model(BaseEstimator):
             (i) np.ndarray: Generated samples, of shape (n_samples, N).
         """
         # fixing seed if a number is passed
-        if isinstance(rng, int):
-            rng = np.random.default_rng(42)
+        if rng == 0:
+            rng = np.random.default_rng() # Advance state naturally
+        else:
+            rng = np.random.default_rng(rng) # Use the explicit seed
 
         # Ensures that pi, mu, and sigma are numpy arrays
         pi = np.asarray(pi)
@@ -2208,9 +2213,11 @@ class DE_MDN_model(BaseEstimator):
         Output:
             (i) np.ndarray: Quantile matrix of shape (n_sample, len(alphas)).
         """
-        if isinstance(rng, int):
-            rng = np.random.default_rng(42)
-
+        # fixing seed if a number is passed
+        if rng == 0:
+            rng = np.random.default_rng() # Advance state naturally
+        else:
+            rng = np.random.default_rng(rng) # Use the explicit seed
         pi = np.asarray(pi)
         mu = np.asarray(mu)
         sigma = np.asarray(sigma)
@@ -2228,7 +2235,7 @@ class DE_MDN_model(BaseEstimator):
 
         return quantile_matrix
     
-    def sample_from_mixture(self, pi, mu, sigma, rng=0, N=1):
+    def sample_from_mixture(self, pi, mu, sigma, rng=0, N=100):
         """
         Generates samples from the mixture network model for each observed sample x.
 
@@ -2243,8 +2250,10 @@ class DE_MDN_model(BaseEstimator):
             (i) np.ndarray: Generated samples, of shape (n_samples, N).
         """
         # fixing seed if a number is passed
-        if isinstance(rng, int):
-            rng = np.random.default_rng(42)
+        if rng == 0:
+            rng = np.random.default_rng() # Advance state naturally
+        else:
+            rng = np.random.default_rng(rng) # Use the explicit seed
 
         # Ensures that pi, mu, and sigma are numpy arrays
         pi = np.asarray(pi)

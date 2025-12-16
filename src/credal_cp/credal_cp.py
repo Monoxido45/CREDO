@@ -251,7 +251,7 @@ class CredalCPRegressor(BaseEstimator):
             N_samples_MC=300,
             ):
         """
-        Fit poserior over parametric family then creates imprecise quantiles as the modified conformal scores.
+        Fit posterior over parametric family then creates imprecise quantiles as the modified conformal scores.
         Parameters
         ----------
         X_calib : array-like, shape (n_samples, n_features)
@@ -266,6 +266,7 @@ class CredalCPRegressor(BaseEstimator):
             Returns self.
         """
         self.beta = beta
+        self.rng = np.random.default_rng(random_seed_calib)
         # For this, use mixture quantile to derive the vector of quantiles to be used for each x
         if self.base_model_type == "MDN" and self.nn_type == "MC_Dropout":
             # obtaining samples from posterior for each x_calib
@@ -293,7 +294,7 @@ class CredalCPRegressor(BaseEstimator):
                     pi_chosen, 
                     mu_chosen, 
                     sigma_chosen,
-                    rng= random_seed_calib,
+                    rng= self.rng,
                     )
 
                     self.q_grid = q_grid
@@ -334,7 +335,7 @@ class CredalCPRegressor(BaseEstimator):
                     pi_chosen, 
                     mu_chosen, 
                     sigma_chosen,
-                    rng= random_seed_calib,
+                    rng= self.rng,
                     )
 
                     # obtaining lower and upper quantiles for the current x
@@ -342,13 +343,16 @@ class CredalCPRegressor(BaseEstimator):
                     q_upp_raw.append(np.quantile(q_grid[:, 1], 1 - self.beta/2))
                     i += 1
                 
-                q_low_raw = np.array(q_low_raw)
-                q_upp_raw = np.array(q_upp_raw)
+                q_low_array = np.array(q_low_raw)
+                q_upp_array = np.array(q_upp_raw)
                 # with lower and upper quantiles, we can compute the modified nonconformity scores
-                self.nc_scores = np.maximum(q_low_raw - y_calib, y_calib - q_upp_raw)
+                self.nc_scores = np.maximum(q_low_array - y_calib, 
+                                            y_calib - q_upp_array)
                 n = len(self.nc_scores)
-                self.cutoff = np.quantile(self.nc_scores, 
-                                          q=np.ceil((n + 1) * (1 - self.alpha)) / n)
+                self.cutoff = np.quantile(
+                    self.nc_scores,
+                    q=np.ceil((n + 1) * (1 - self.alpha)) / n
+                    )
                 
         elif self.base_model_type == "GP" or self.base_model_type == "GP_Approx":
             if self.nc_type == "Quantile":
@@ -444,7 +448,7 @@ class CredalCPRegressor(BaseEstimator):
                     pi_chosen, 
                     mu_chosen, 
                     sigma_chosen,
-                    rng= None,
+                    rng= self.rng,
                     )
                     
                     # obtaining lower and upper quantiles for the current x
@@ -452,12 +456,12 @@ class CredalCPRegressor(BaseEstimator):
                     q_upp_pred.append(np.quantile(q_grid[:, 1], 1 - self.beta/2))
                     i += 1
 
-                q_low_pred = np.array(q_low_pred)
-                q_upp_pred = np.array(q_upp_pred)
+                q_low_array = np.array(q_low_pred)
+                q_upp_array = np.array(q_upp_pred)
 
-                lower_cp = q_low_pred - self.cutoff
-                upper_cp = q_upp_pred + self.cutoff
-
+                lower_cp = q_low_array - self.cutoff
+                upper_cp = q_upp_array + self.cutoff
+                
                 y_pred = np.column_stack((lower_cp, upper_cp))
                 return y_pred
         
@@ -465,7 +469,6 @@ class CredalCPRegressor(BaseEstimator):
             pi_test, mu_test, sigma_test = self.base_model.predict_ensemble(
                 X_test,
                 )
-            print("a")
             if self.nc_type == "Quantile":
                 # formulating lower and upper quantiles for each x_test
                 lower_q = self.alpha / 2
@@ -478,12 +481,13 @@ class CredalCPRegressor(BaseEstimator):
                     mu_chosen = mu_test[:, i, :]
                     sigma_chosen = sigma_test[:, i, :]
 
+                    # generating quantiles
                     q_grid = self.base_model.mixture_quantile(
                     [lower_q, upper_q], 
                     pi_chosen, 
                     mu_chosen, 
                     sigma_chosen,
-                    rng= None,
+                    rng= self.rng,
                     )
 
                     # obtaining lower and upper quantiles for the current x
@@ -491,12 +495,11 @@ class CredalCPRegressor(BaseEstimator):
                     q_upp_pred.append(np.quantile(q_grid[:, 1], 1 - self.beta/2))
                     i += 1
 
-                q_low_pred = np.array(q_low_pred)
-                q_upp_pred = np.array(q_upp_pred)
+                q_low_array = np.array(q_low_pred)
+                q_upp_array = np.array(q_upp_pred)
 
-                lower_cp = q_low_pred - self.cutoff
-                upper_cp = q_upp_pred + self.cutoff
-
+                lower_cp = q_low_array - self.cutoff
+                upper_cp = q_upp_array + self.cutoff
                 y_pred = np.column_stack((lower_cp, upper_cp))
                 return y_pred
         
