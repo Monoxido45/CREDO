@@ -363,9 +363,11 @@ class CredalCPRegressor(BaseEstimator):
                 q_samples = self.base_model.sample_quantiles_from_posterior(
                     X_calib,
                     quantiles=[lower_q, upper_q],
-                    N_samples=N_samples_MC,
+                    n_samples=N_samples_MC,
                     random_seed=random_seed_calib,
                 )
+
+                self.q_samples = q_samples
 
                 q_low_grid = q_samples[:, :, 0]
                 q_upp_grid = q_samples[:, :, 1]
@@ -389,7 +391,7 @@ class CredalCPRegressor(BaseEstimator):
                 
                 q_samples = self.base_model.sample_quantiles_from_posterior(
                     X_calib,
-                    quantiles=[lower_q, upper_q],
+                    quantile_levels=[lower_q, upper_q],
                     random_seed=random_seed_calib,
                 )
 
@@ -397,8 +399,8 @@ class CredalCPRegressor(BaseEstimator):
                 q_upp_grid = q_samples[:, :, 1]
 
                 # obtaining lower and upper quantiles for each x_calib
-                q_low_raw = np.quantile(q_low_grid, self.beta/2, axis=1)
-                q_upp_raw = np.quantile(q_upp_grid, 1 - self.beta/2, axis=1)
+                q_low_raw = np.quantile(q_low_grid, self.beta/2, axis=0)
+                q_upp_raw = np.quantile(q_upp_grid, 1 - self.beta/2, axis=0)
 
                 # with lower and upper quantiles, we can compute the modified nonconformity scores
                 self.nc_scores = np.maximum(q_low_raw - y_calib, y_calib - q_upp_raw)
@@ -508,7 +510,7 @@ class CredalCPRegressor(BaseEstimator):
                 q_samples = self.base_model.sample_quantiles_from_posterior(
                     X_test,
                     quantiles=[self.alpha / 2, 1 - self.alpha / 2],
-                    N_samples=n_samples,
+                    n_samples=n_samples,
                     random_seed=None,
                 )
 
@@ -529,7 +531,7 @@ class CredalCPRegressor(BaseEstimator):
             if self.nc_type == "Quantile":
                 q_samples = self.base_model.sample_quantiles_from_posterior(
                     X_test,
-                    quantiles=[self.beta / 2, 1 - self.beta / 2],
+                    quantile_levels=[self.alpha / 2, 1 - self.alpha / 2],
                     random_seed=None,
                 )
 

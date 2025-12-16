@@ -1646,7 +1646,8 @@ class GPApprox_model(BaseEstimator):
             
             # Sample directly from the latent function distribution. 
             f_samples_tensor = latent_distribution.sample(sample_shape=torch.Size([n_samples])) # (n_samples, n_test_samples)
-            
+        
+        print(f_samples_tensor[:, 0])
         # Calculate the quantile correction factor (Z_alpha * sigma_n)
         # Observation noise variance (sigma_n^2) from the likelihood
         sigma_n2 = self.likelihood.noise.item() 
@@ -1913,7 +1914,6 @@ class BART_model(BaseEstimator):
             self.model_bart = model_bart
         return self
 
-
     def predict_pmf(self, X_test, random_seed=0):
         """
         Predict the probability mass function (PMF) for the given test data.
@@ -2083,12 +2083,14 @@ class BART_model(BaseEstimator):
                     posterior_samples,
                     group="predictions",
                     var_names=["w"],
-                ).transpose("sample", "y_dim_0", "y_dim_1").to_numpy()
+                ).to_numpy()
                 
+                self.w_samples = w_samples
+                print(w_samples.shape)
                 # mu_samples shape: (n_samples, n_test_samples)
-                mu_samples = w_samples[:, :, 0]
+                mu_samples = w_samples[0, :, :]
                 # sigma_samples shape: (n_samples, n_test_samples). Note: PyMC uses exp(w[1]) for sigma.
-                sigma_samples = np.exp(w_samples[:, :, 1])
+                sigma_samples = np.exp(w_samples[1, :, :])
                 
             elif self.var == "homoscedastic":
                 # mu_samples shape: (n_samples, n_test_samples)
@@ -2096,7 +2098,7 @@ class BART_model(BaseEstimator):
                     posterior_samples,
                     group="predictions",
                     var_names=["mu"],
-                ).transpose("sample", "y_dim_0").to_numpy()
+                ).to_numpy().T
                 
                 # sigma is a scalar parameter, sampled (n_samples,)
                 sigma_samples = az.extract(

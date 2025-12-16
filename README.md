@@ -18,8 +18,6 @@ cd credal_CP
 ```bash
 pip install --user poetry        # if needed
 poetry install                   # create env and install deps
-poetry run pytest                # run tests
-poetry run jupyter lab           # run notebooks
 ```
 
 ### With virtualenv

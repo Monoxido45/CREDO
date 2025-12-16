@@ -88,7 +88,7 @@ X_test = test["x"].values.astype(np.float32).reshape(-1, 1)
 Y_test = test["y"].values.astype(np.float32)
 
 # ============================================
-# 3. Train and calibrate credal CPs
+# 2. Train and calibrate credal CPs
 # ============================================
 credal_CP_ensemble = CredalCPRegressor(
     nc_type = 'Quantile',
