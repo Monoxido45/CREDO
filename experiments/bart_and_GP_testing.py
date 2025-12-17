@@ -16,7 +16,6 @@ import torch
 # importing our package
 from credal_cp.credal_cp import CredalCPRegressor
 import numpy as np
-from gpytorch.kernels import ScaleKernel, RBFKernel, MaternKernel, SpectralMixtureKernel
 
 # For reproducibility
 np.random.seed(125)
@@ -291,6 +290,18 @@ credal_CP_gp = CredalCPRegressor(
     alpha = 0.1,
 )
 
+# fitting GP-based credal CP
+credal_CP_gp.fit(
+    X_train,
+    Y_train,
+    num_inducing_points = 100,
+    lr_variational = 0.005,
+    lr_hyperparams = 0.01,
+    batch_size= 45,
+    n_epochs = 300,
+    patience = 30,
+)
+
 # starting fitting
 credal_CP_bart.fit(
     X_train, 
@@ -301,19 +312,6 @@ credal_CP_bart.fit(
     alpha_bart = 0.98,
 )
 
-
-# fitting GP-based credal CP
-credal_CP_gp.fit(
-    X_train,
-    Y_train,
-    num_inducing_points = 50,
-    lr_variational = 0.01,
-    lr_hyperparams = 0.01,
-    batch_size= 45,
-    n_epochs = 300,
-    patience = 30,
-    kernel_type = "RBF"
-)
 
 # calibration of the credal CPs
 bart_cutoff = credal_CP_bart.calibrate(X_cal, Y_cal, beta = 0.1,

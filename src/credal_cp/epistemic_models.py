@@ -1345,7 +1345,7 @@ class GP_base(gpytorch.models.ApproximateGP):
             learn_inducing_locations=True,
         )
         super(GP_base, self).__init__(variational_strategy)
-        self.mean_module = gpytorch.means.ConstantMean()
+        self.mean_module = gpytorch.means.ZeroMean()
         
         # Using Matern 2.5 as default for better uncertainty shapes
         if kernel_type == "matern":
@@ -1353,7 +1353,7 @@ class GP_base(gpytorch.models.ApproximateGP):
         else:
             base_kernel = gpytorch.kernels.RBFKernel()
             
-        self.covar_module = gpytorch.kernels.ScaleKernel(base_kernel)
+        self.covar_module = gpytorch.kernels.ScaleKernel(base_kernel + gpytorch.kernels.LinearKernel())
 
     def forward(self, x):
         mean_x = self.mean_module(x)
@@ -1457,7 +1457,9 @@ class GPApprox_model(BaseEstimator):
 
         # Initialize model and likelihood
         self.model = GP_base(inducing_points, kernel_type=self.kernel_type)
-        self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
+        self.likelihood = gpytorch.likelihoods.GaussianLikelihood(
+            noise_constraint=gpytorch.constraints.GreaterThan(1e-4)
+        )
 
         # Optimizers
         variational_ngd_optimizer = gpytorch.optim.NGD(
@@ -1516,57 +1518,59 @@ class GPApprox_model(BaseEstimator):
         torch.manual_seed(random_seed_fit)
         torch.cuda.manual_seed(random_seed_fit)
 
-        for epoch in tqdm(range(self.n_epochs), desc="Fitting GP model"):
-            train_loss_epoch = 0
-            self.model.train()
-            self.likelihood.train()
-            # Looping through batches
+        # Training loop
+        with gpytorch.settings.cholesky_jitter(1e-5):
+            for epoch in tqdm(range(self.n_epochs), desc="Fitting GP model"):
+                train_loss_epoch = 0
+                self.model.train()
+                self.likelihood.train()
+                # Looping through batches
 
-            for x_batch, y_batch in train_loader:
-                variational_ngd_optimizer.zero_grad()
-                hyperparameter_optimizer.zero_grad()
-                output = self.model(x_batch)
-                loss_train = -mll(output, y_batch)
-                loss_train.backward()
-                variational_ngd_optimizer.step()
-                hyperparameter_optimizer.step()
-                train_loss_epoch += loss_train.item()
+                for x_batch, y_batch in train_loader:
+                    variational_ngd_optimizer.zero_grad()
+                    hyperparameter_optimizer.zero_grad()
+                    output = self.model(x_batch)
+                    loss_train = -mll(output, y_batch)
+                    loss_train.backward()
+                    variational_ngd_optimizer.step()
+                    hyperparameter_optimizer.step()
+                    train_loss_epoch += loss_train.item()
 
-            self.model.eval()
-            self.likelihood.eval()
-            val_loss_epoch = 0
-            with torch.no_grad():
-                for x_batch, y_batch in val_loader:
-                    output_val = self.model(x_batch)
-                    loss_val = -mll(output_val, y_batch)
-                    val_loss_epoch += loss_val.item()
-            
+                self.model.eval()
+                self.likelihood.eval()
+                val_loss_epoch = 0
+                with torch.no_grad():
+                    for x_batch, y_batch in val_loader:
+                        output_val = self.model(x_batch)
+                        loss_val = -mll(output_val, y_batch)
+                        val_loss_epoch += loss_val.item()
+                
 
-            # average loss by epoch
-            train_loss_epoch /= len(train_loader)
-            val_loss_epoch /= len(val_loader)
-            losses_train.append(train_loss_epoch)
-            losses_val.append(val_loss_epoch)
+                # average loss by epoch
+                train_loss_epoch /= len(train_loader)
+                val_loss_epoch /= len(val_loader)
+                losses_train.append(train_loss_epoch)
+                losses_val.append(val_loss_epoch)
 
-            # Step the scheduler
-            scheduler.step(val_loss_epoch)
+                # Step the scheduler
+                scheduler.step(val_loss_epoch)
 
-            if verbose == 1:
-                print(
-                    f"Epoch {epoch}, Train Loss: {train_loss_epoch:.4f}, Validation Loss: {val_loss_epoch:.4f}"
-                )
-
-            # Early stopping
-            if val_loss_epoch < best_val_loss:
-                best_val_loss = val_loss_epoch
-                counter = 0
-            else:
-                counter += 1
-                if counter >= patience:
+                if verbose == 1:
                     print(
-                        f"Early stopping in epoch {epoch} with best validation loss:  {best_val_loss:.4f}"
+                        f"Epoch {epoch}, Train Loss: {train_loss_epoch:.4f}, Validation Loss: {val_loss_epoch:.4f}"
                     )
-                    break
+
+                # Early stopping
+                if val_loss_epoch < best_val_loss:
+                    best_val_loss = val_loss_epoch
+                    counter = 0
+                else:
+                    counter += 1
+                    if counter >= patience:
+                        print(
+                            f"Early stopping in epoch {epoch} with best validation loss:  {best_val_loss:.4f}"
+                        )
+                        break
 
         if verbose == 2:
             fig, ax = plt.subplots()
