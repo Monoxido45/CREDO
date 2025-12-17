@@ -539,8 +539,8 @@ class CredalCPRegressor(BaseEstimator):
                 q_upp_grid = q_samples[:, :, 1]
 
                 # obtaining lower and upper quantiles for each x_test
-                q_low_pred = np.quantile(q_low_grid, self.beta/2, axis=1)
-                q_upp_pred = np.quantile(q_upp_grid, 1 - self.beta/2, axis=1)
+                q_low_pred = np.quantile(q_low_grid, self.beta/2, axis=0)
+                q_upp_pred = np.quantile(q_upp_grid, 1 - self.beta/2, axis=0)
 
                 lower_cp = q_low_pred - self.cutoff
                 upper_cp = q_upp_pred + self.cutoff

@@ -1333,8 +1333,9 @@ class GP_base(gpytorch.models.ApproximateGP):
     strategy using inducing points.
     """
 
-    def __init__(self, inducing_points):
-        variational_distribution = gpytorch.variational.NaturalVariationalDistribution(
+    def __init__(self, inducing_points, kernel_type="matern"):
+        # Using Cholesky for a more faithful representation of the covariance
+        variational_distribution = gpytorch.variational.CholeskyVariationalDistribution(
             inducing_points.size(0)
         )
         variational_strategy = gpytorch.variational.VariationalStrategy(
@@ -1345,7 +1346,14 @@ class GP_base(gpytorch.models.ApproximateGP):
         )
         super(GP_base, self).__init__(variational_strategy)
         self.mean_module = gpytorch.means.ConstantMean()
-        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
+        
+        # Using Matern 2.5 as default for better uncertainty shapes
+        if kernel_type == "matern":
+            base_kernel = gpytorch.kernels.MaternKernel(nu=2.5)
+        else:
+            base_kernel = gpytorch.kernels.RBFKernel()
+            
+        self.covar_module = gpytorch.kernels.ScaleKernel(base_kernel)
 
     def forward(self, x):
         mean_x = self.mean_module(x)
@@ -1362,11 +1370,11 @@ class GPApprox_model(BaseEstimator):
     def __init__(
         self,
         num_inducing_points=100,
-        kernel=None,
-        lr_variational=0.01,
+        lr_variational=0.05,
         lr_hyperparams=0.01,
         n_epochs=50,
         log_y=False,
+        kernel_type="matern",
     ):
         """
         Input:
@@ -1381,7 +1389,6 @@ class GPApprox_model(BaseEstimator):
         (i) Initialized GPApprox_model object.
         """
         self.num_inducing_points = num_inducing_points
-        self.kernel = kernel or gpytorch.kernels.RBFKernel()
         self.lr_variational = lr_variational
         self.lr_hyperparams = lr_hyperparams
         self.n_epochs = n_epochs
@@ -1390,6 +1397,7 @@ class GPApprox_model(BaseEstimator):
         self.scaler_X = StandardScaler()
         self.scaler_y = StandardScaler()
         self.log_y = log_y
+        self.kernel_type = kernel_type
 
     def fit(
         self,
@@ -1448,7 +1456,7 @@ class GPApprox_model(BaseEstimator):
         ]
 
         # Initialize model and likelihood
-        self.model = GP_base(inducing_points)
+        self.model = GP_base(inducing_points, kernel_type=self.kernel_type)
         self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
 
         # Optimizers
@@ -1488,6 +1496,12 @@ class GPApprox_model(BaseEstimator):
         # Train the model
         self.model.train()
         self.likelihood.train()
+
+        # Scheduler to stabilize convergence
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            hyperparameter_optimizer, mode='min', factor=0.5, patience=10
+        )
+
         mll = gpytorch.mlls.VariationalELBO(
             self.likelihood, self.model, num_data=y_train_standardized.size(0)
         )
@@ -1526,12 +1540,16 @@ class GPApprox_model(BaseEstimator):
                     output_val = self.model(x_batch)
                     loss_val = -mll(output_val, y_batch)
                     val_loss_epoch += loss_val.item()
+            
 
             # average loss by epoch
             train_loss_epoch /= len(train_loader)
             val_loss_epoch /= len(val_loader)
             losses_train.append(train_loss_epoch)
             losses_val.append(val_loss_epoch)
+
+            # Step the scheduler
+            scheduler.step(val_loss_epoch)
 
             if verbose == 1:
                 print(
@@ -1640,18 +1658,15 @@ class GPApprox_model(BaseEstimator):
             self.scaler_X.transform(X_test), dtype=torch.float32
         )
 
-        with torch.no_grad():
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
             # Get the latent function distribution f(X*) from the model
             latent_distribution = self.model(X_test_standardized)
             
             # Sample directly from the latent function distribution. 
             f_samples_tensor = latent_distribution.sample(sample_shape=torch.Size([n_samples])) # (n_samples, n_test_samples)
         
-        print(f_samples_tensor[:, 0])
-        # Calculate the quantile correction factor (Z_alpha * sigma_n)
-        # Observation noise variance (sigma_n^2) from the likelihood
-        sigma_n2 = self.likelihood.noise.item() 
-        sigma_n = np.sqrt(sigma_n2)
+        # Aleatoric part
+        sigma_n = np.sqrt(self.likelihood.noise.item())
         Z_alphas = norm.ppf(quantiles)
         quantile_correction = Z_alphas * sigma_n
         correction_tensor = torch.tensor(quantile_correction, dtype=torch.float32)
@@ -1665,8 +1680,8 @@ class GPApprox_model(BaseEstimator):
         original_shape = quantile_samples.shape
         samples_2d = quantile_samples.reshape(-1, original_shape[2])
 
-        samples_inverse_scaled = self.scaler_y.inverse_transform(samples_2d)
-        quantile_samples = samples_inverse_scaled.reshape(original_shape)
+        samples_unscaled = self.scaler_y.inverse_transform(samples_2d)
+        quantile_samples = samples_unscaled.reshape(original_shape)
         
         # Inverse log transform if necessary
         if self.log_y:
@@ -1686,8 +1701,8 @@ class BART_model(BaseEstimator):
         m=100,
         type="normal",
         var="heteroscedastic",
-        alpha=0.95,
-        beta=2,
+        alpha_bart=0.95,
+        beta_bart=2,
         response="constant",
         split_prior=None,
         separate_trees=False,
@@ -1716,8 +1731,8 @@ class BART_model(BaseEstimator):
         self.m = m
         self.type = type
         self.var = var
-        self.alpha = alpha
-        self.beta = beta
+        self.alpha_bart = alpha_bart
+        self.beta_bart = beta_bart
         self.response = response
         self.split_prior = split_prior
         self.separate_trees = separate_trees
@@ -1776,14 +1791,14 @@ class BART_model(BaseEstimator):
             if self.var == "heteroscedastic":
                 with pm.Model() as model_bart:
                     self.X_data = pm.Data("data_X", X)
-                    w = pmb.BART(
+                    w = pmb.BART(       
                         "w",
                         self.X_data,
                         y,
                         m=self.m,
                         shape=(2, n_obs),
-                        alpha=self.alpha,
-                        beta=self.beta,
+                        alpha=self.alpha_bart,
+                        beta=self.beta_bart,
                         response=self.response,
                         split_prior=self.split_prior,
                         split_rules=split_types,
@@ -1818,8 +1833,8 @@ class BART_model(BaseEstimator):
                         self.X_data,
                         y,
                         m=self.m,
-                        alpha=self.alpha,
-                        beta=self.beta,
+                        alpha=self.alpha_bart,
+                        beta=self.beta_bart,
                         response=self.response,
                         split_prior=self.split_prior,
                         split_rules=split_types,
@@ -1858,8 +1873,8 @@ class BART_model(BaseEstimator):
                         np.log(Y),
                         m=100,
                         size=2,
-                        alpha=self.alpha,
-                        beta=self.beta,
+                        alpha=self.alpha_bart,
+                        beta=self.beta_bart,
                         response=self.response,
                         split_prior=self.split_prior,
                         split_rules=split_types,
