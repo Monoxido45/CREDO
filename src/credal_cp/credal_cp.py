@@ -21,7 +21,6 @@ from credal_cp.epistemic_models import (
 from tqdm import tqdm
 
 
-
 class CredalCPRegressor(BaseEstimator):
     """
     CredalCPRegressor

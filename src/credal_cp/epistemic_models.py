@@ -2148,7 +2148,7 @@ class BART_model(BaseEstimator):
         
         return quantile_samples
 
-
+# Deep Ensembles Mixture Density Network base
 class DE_MDN_model(BaseEstimator):
     """
     Deep Ensembles MDN model for regression tasks.
