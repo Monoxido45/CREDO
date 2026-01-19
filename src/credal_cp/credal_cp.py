@@ -2,14 +2,10 @@ from __future__ import division
 
 import numpy as np
 from sklearn.base import BaseEstimator
-from copy import deepcopy
-from sklearn.ensemble import RandomForestRegressor
 
 from sklearn.model_selection import train_test_split
 import scipy.stats as st
-import torch
 
-from scipy.special import inv_boxcox
 from sklearn.utils.validation import check_is_fitted
 from credal_cp.epistemic_models import (
     MDN_model,

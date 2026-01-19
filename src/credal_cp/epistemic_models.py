@@ -399,6 +399,18 @@ class MDN_model(BaseEstimator):
 
         return pi_predictions, mu_predictions, sigma_predictions
 
+    def set_type_base_model(self, base_model_type, alpha=None):
+        """
+        Set the type of base model for MDN.
+
+        Input: (i) base_model_type (str): Type of base model to be set. Options are "regression", "quantile", or "density".
+               (ii) alpha (float): Significance level for quantile base model. Default is None.
+        """
+        self.base_model_type = base_model_type
+        if base_model_type == "quantile":
+            self.alpha = alpha
+        return self
+    
     def predict(self, X_test, y_test=None, return_params=False):
         """
         Make predictions with MDN base model.
@@ -2576,7 +2588,54 @@ class DE_MDN_model(BaseEstimator):
                 sigma_ensemble[i, :, :] = sigma.numpy()
 
         return pi_ensemble, mu_ensemble, sigma_ensemble
-      
+
+    def predict(self,
+                X_test,
+                ):
+        """
+        Predict quantiles for the test data using the ensemble of MDN models.
+        Input:
+            (i) X_test (array-like): Test input data.
+        Output:
+            (i) quantiles_test (np.ndarray): Predicted quantiles for the test data, shape (n_test_samples, 2).
+        """ 
+        pi_ensemble, mu_ensemble, sigma_ensemble = self.predict_ensemble(X_test)
+        if self.base_model_type == "quantile":
+            alphas = [self.alpha / 2, 1 - (self.alpha / 2)]
+            low_quant_mod = np.zeros((X_test.shape[0], len(self.models)))
+            up_quant_mod = np.zeros((X_test.shape[0], len(self.models)))
+            for i in range(len(self.models)):
+                quantiles_mod = self.mixture_quantile(
+                    alphas, 
+                    pi_ensemble[i, :, :], 
+                    mu_ensemble[i, :, :], 
+                    sigma_ensemble[i, :, :],
+                    )
+                low_quant_mod[:, i] = quantiles_mod[:, 0]
+                up_quant_mod[:, i] = quantiles_mod[:, 1]
+                
+            # averaging over models
+            low_quantiles_test = np.mean(low_quant_mod, axis=0)
+            up_quantiles_test = np.mean(up_quant_mod, axis=0)
+            quantiles_test = np.column_stack((low_quantiles_test, up_quantiles_test))
+            return quantiles_test
+        else:
+            raise NotImplementedError("Only quantile base model prediction is implemented.")
+        # TODO: implement regression and density base model predictions
+    
+    def set_type_base_model(self, base_model_type, alpha=None):
+        """
+        Set the type of base model for MDN.
+
+        Input: (i) base_model_type (str): Type of base model to be set. Options are "regression", "quantile", or "density".
+               (ii) alpha (float): Significance level for quantile base model. Default is None.
+        """
+        self.base_model_type = base_model_type
+        if base_model_type == "quantile":
+            self.alpha = alpha
+        return self
+    
+
 
 
 
