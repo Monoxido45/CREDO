@@ -32,6 +32,7 @@ import matplotlib.pyplot as plt
 
 from tqdm import tqdm
 import gpytorch
+from scipy.stats import norm, gamma
 
 
 #### Mixture density network models
@@ -2160,6 +2161,76 @@ class BART_model(BaseEstimator):
         
         return quantile_samples
 
+    def predict(self, X_test, quantiles, random_seed=0):
+        """
+        Return predictive quantiles for each test sample.
+
+        Output is a matrix of shape (n_test_samples, n_quantiles) where each row
+        corresponds to a test sample and each column to a requested quantile.
+
+        This method uses the posterior predictive samples of the PyMC BART model
+        for the observed variable `y_pred` and computes empirical quantiles across
+        posterior predictive draws.
+        """
+        if self.type_X:
+            X_test = X_test.astype(float)
+
+        if self.type == "normal":
+            var_names = ["w"] if self.var == "heteroscedastic" else ["mu", "sigma"]
+        elif self.type == "gamma":
+            var_names = ["w"] 
+        else:
+            raise NotImplementedError(f"Quantile estimation not ready for {self.type}")
+
+        # Get Posterior Samples of the parameters
+        with self.model_bart:
+            self.X_data.set_value(X_test)
+            post_samples = pm.sample_posterior_predictive(
+                trace=self.mc_sample,
+                var_names=var_names,
+                predictions=True,
+                random_seed=random_seed,
+                progressbar=self.progressbar,
+            )
+
+        # Calculate Gaussian Quantiles
+        z_scores = norm.ppf(quantiles)
+        
+        extracted = az.extract(post_samples, group="predictions", var_names=var_names)
+        n_test = X_test.shape[0]
+        quantile_results = np.zeros((n_test, len(quantiles)))
+
+        if self.type == "normal":
+            if self.var == "heteroscedastic":
+                w_vals = extracted.to_numpy()
+                mu_draws = w_vals[0]
+                sigma_draws = np.exp(w_vals[1]) 
+            else:
+                mu_draws = extracted["mu"].to_numpy()
+                sigma_draws = extracted["sigma"].to_numpy()
+
+            for i, tau in enumerate(quantiles):
+                q_draws = mu_draws + (z_scores[i] * sigma_draws)
+                quantile_results[:, i] = q_draws.mean(axis=1)
+
+        elif self.type == "gamma":
+            w_vals = extracted.to_numpy()
+            mu_draws = np.exp(w_vals[0])
+            sigma_draws = np.exp(w_vals[1])
+            
+            # For Gamma, we need to convert (mu, sigma) to (alpha, beta) or (shape, scale)
+            shape_draws = (mu_draws / sigma_draws)**2
+            scale_draws = (sigma_draws**2) / mu_draws
+
+            for i, tau in enumerate(quantiles):
+                q_draws = gamma.ppf(tau, a=shape_draws, scale=scale_draws)
+                quantile_results[:, i] = q_draws.mean(axis=1)
+
+        if self.normalize_y:
+            quantile_results = self.scaler_y.inverse_transform(quantile_results)
+
+        return quantile_results
+
 # Deep Ensembles Mixture Density Network base
 class DE_MDN_model(BaseEstimator):
     """
@@ -2615,8 +2686,8 @@ class DE_MDN_model(BaseEstimator):
                 up_quant_mod[:, i] = quantiles_mod[:, 1]
                 
             # averaging over models
-            low_quantiles_test = np.mean(low_quant_mod, axis=0)
-            up_quantiles_test = np.mean(up_quant_mod, axis=0)
+            low_quantiles_test = np.mean(low_quant_mod, axis=1)
+            up_quantiles_test = np.mean(up_quant_mod, axis=1)
             quantiles_test = np.column_stack((low_quantiles_test, up_quantiles_test))
             return quantiles_test
         else:
