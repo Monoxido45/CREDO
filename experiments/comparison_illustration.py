@@ -283,7 +283,7 @@ def plot_results(
 
     # Row 0: Ensemble-based methods
     ax = axes[0, 0]
-    ax.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha = 0.4, label="Test data", zorder=3)
+    ax.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha = 0.4, zorder=3)
     ax.fill_between(xx, lower_ens, upper_ens, color="C0", alpha=0.25)
     ax.plot(xx, center_ens, color="C0", lw=1)
     cov, avg_len = stats["Credal CP (Deep Ensemble)"]
@@ -352,7 +352,6 @@ def plot_results(
         Patch(facecolor="C3", alpha=0.25, label="Credal Vanilla"),
         Patch(facecolor="C1", alpha=0.25, label="CQR"),
         Patch(facecolor="C2", alpha=0.25, label="CQR-r"),
-        Patch(facecolor="k", label="Test data"),
     ]
     fig.legend(handles=legend_patches, loc="upper center", ncol=4, bbox_to_anchor=(0.5, 0.99))
     plt.tight_layout(rect=[0, 0, 1, 0.97])
