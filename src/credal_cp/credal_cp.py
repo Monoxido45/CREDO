@@ -306,6 +306,18 @@ class CredalCPRegressor(BaseEstimator):
                 n = len(self.nc_scores)
                 self.cutoff = np.quantile(self.nc_scores, 
                                           q=np.ceil((n + 1) * (1 - self.alpha)) / n)
+            
+            q_low_array = np.array(q_low_raw)
+            q_upp_array = np.array(q_upp_raw)
+            
+            # with lower and upper quantiles, we can compute the modified nonconformity scores
+            self.nc_scores = np.maximum(q_low_array - y_calib, 
+                                        y_calib - q_upp_array)
+            n = len(self.nc_scores)
+            self.cutoff = np.quantile(
+                self.nc_scores,
+                q=np.ceil((n + 1) * (1 - self.alpha)) / n
+                )
         
         elif self.base_model_type == "MDN" and self.nn_type == "Ensemble":
             # obtaining samples from posterior for each x_calib
@@ -340,6 +352,7 @@ class CredalCPRegressor(BaseEstimator):
                 
                 q_low_array = np.array(q_low_raw)
                 q_upp_array = np.array(q_upp_raw)
+
                 # with lower and upper quantiles, we can compute the modified nonconformity scores
                 self.nc_scores = np.maximum(q_low_array - y_calib, 
                                             y_calib - q_upp_array)
@@ -408,6 +421,7 @@ class CredalCPRegressor(BaseEstimator):
             self,
             X_test,
             n_samples=300,
+            conformalize = True,
             ):
         """
         Interval prediction using the fitted base model.
@@ -455,9 +469,12 @@ class CredalCPRegressor(BaseEstimator):
 
                 q_low_array = np.array(q_low_pred)
                 q_upp_array = np.array(q_upp_pred)
-
-                lower_cp = q_low_array - self.cutoff
-                upper_cp = q_upp_array + self.cutoff
+                if conformalize:
+                    lower_cp = q_low_array - self.cutoff
+                    upper_cp = q_upp_array + self.cutoff
+                else:
+                    lower_cp = q_low_array
+                    upper_cp = q_upp_array
                 
                 y_pred = np.column_stack((lower_cp, upper_cp))
                 return y_pred
@@ -495,8 +512,13 @@ class CredalCPRegressor(BaseEstimator):
                 q_low_array = np.array(q_low_pred)
                 q_upp_array = np.array(q_upp_pred)
 
-                lower_cp = q_low_array - self.cutoff
-                upper_cp = q_upp_array + self.cutoff
+                if conformalize:
+                    lower_cp = q_low_array - self.cutoff
+                    upper_cp = q_upp_array + self.cutoff
+                else:
+                    lower_cp = q_low_array
+                    upper_cp = q_upp_array
+                
                 y_pred = np.column_stack((lower_cp, upper_cp))
                 return y_pred
         

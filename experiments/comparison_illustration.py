@@ -1,5 +1,5 @@
 # ============================================
-# 0. Imports & data generation
+# Imports & data generation
 # ============================================
 import numpy as np
 import pandas as pd
@@ -63,7 +63,6 @@ def make_gap_epistemic_few_middle(n, noise_std=0.1, p_middle=0.01):
     df = df.sample(frac=1.0, random_state=0).reset_index(drop=True)
     return df
 
-
 # second type
 def make_variable_data(n, std_dev=1/5):
     # proportion of points in the scarce region
@@ -119,9 +118,8 @@ def make_variable_data(n, std_dev=1/5):
 
     return pd.DataFrame({'x': x, 'y': y})
 
-
 # Generate data
-data = make_gap_epistemic_few_middle(n=2000, noise_std=0.1)
+data = make_gap_epistemic_few_middle(n=2500, noise_std=0.1)
 
 # Train / cal / test split
 train, rest = train_test_split(data, test_size=0.5, random_state=125)
@@ -167,9 +165,9 @@ def fit_all_methods(train, cal, test):
         n_models = 10,
         epochs = 300,
         num_components = 3,
-        hidden_layers=[64, 64],
+        hidden_layers=[128, 64],
         batch_size = 32,
-        lr = 0.001,
+        lr = 0.005,
         weight_decay=1e-4,
         scale=True,
         patience = 15,
@@ -180,37 +178,27 @@ def fit_all_methods(train, cal, test):
         Y_train,
         nn_type = "MC_Dropout",
         num_components = 3,
-        hidden_layers=[64, 64],
-        dropout_rate = 0.4,
-        epochs = 500,
+        hidden_layers=[128, 64],
+        dropout_rate = 0.5,
+        epochs = 1000,
         batch_size = 32,
         weight_decay=1e-4,
-        lr = 0.001,
+        lr = 0.005,
         scale=True,
         patience = 30,
     )
 
     # Using their base models to fit standard CQR and CQR-r
-    ensemble_base_model = credal_CP_ensemble.base_model
     dropout_base_model = credal_CP_dropout.base_model
 
     # fitting CQR and CQR-r
-    cqr_ensemble = CQR(base_model=ensemble_base_model, alpha=0.1, variation="standard", is_fitted=True)
-    cqr_r_ensemble = CQR(base_model=ensemble_base_model, alpha=0.1, variation="cqr-r", is_fitted=True)
-
     cqr_dropout = CQR(base_model=dropout_base_model, alpha=0.1, variation="standard", is_fitted=True)
     cqr_r_dropout = CQR(base_model=dropout_base_model, alpha=0.1, variation="cqr-r", is_fitted=True)
-
-    cqr_ensemble.fit(X_train, Y_train)
-    cqr_r_ensemble.fit(X_train, Y_train)
 
     cqr_dropout.fit(X_train, Y_train)
     cqr_r_dropout.fit(X_train, Y_train)
 
     # calibration of CQR and CQR-r
-    cqr_ensemble.calibrate(X_cal, Y_cal)
-    cqr_r_ensemble.calibrate(X_cal, Y_cal)
-
     cqr_dropout.calibrate(X_cal, Y_cal)
     cqr_r_dropout.calibrate(X_cal, Y_cal)
 
@@ -223,7 +211,6 @@ def fit_all_methods(train, cal, test):
                                                 N_samples_MC=1000)
 
     return credal_CP_ensemble, credal_CP_dropout, \
-              cqr_ensemble, cqr_r_ensemble, \
                 cqr_dropout, cqr_r_dropout, \
                     X_test, Y_test
 
@@ -231,8 +218,6 @@ def fit_all_methods(train, cal, test):
 def plot_results(
         credal_CP_ensemble, 
         credal_CP_dropout,
-        cqr_ensemble, 
-        cqr_r_ensemble,
         cqr_dropout, 
         cqr_r_dropout,
         X_test, 
@@ -243,30 +228,33 @@ def plot_results(
     X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
     pred_ens = np.asarray(credal_CP_ensemble.predict(X_test_grid))
     pred_do  = np.asarray(credal_CP_dropout.predict(X_test_grid))
-    pred_cqr_ens   = np.asarray(cqr_ensemble.predict(X_test_grid))
-    pred_cqr_r_ens = np.asarray(cqr_r_ensemble.predict(X_test_grid))
+    pred_ens_vanilla = np.asarray(credal_CP_ensemble.predict(X_test_grid, conformalize=False))
+    pred_do_vanilla  = np.asarray(credal_CP_dropout.predict(X_test_grid, conformalize=False))
     pred_cqr_do    = np.asarray(cqr_dropout.predict(X_test_grid))
     pred_cqr_r_do  = np.asarray(cqr_r_dropout.predict(X_test_grid))
 
     lower_ens, upper_ens = pred_ens[:, 0], pred_ens[:, 1]
     lower_do,  upper_do  = pred_do[:, 0],  pred_do[:, 1]
-    lower_cqr_ens, upper_cqr_ens = pred_cqr_ens[:, 0], pred_cqr_ens[:, 1]
-    lower_cqr_r_ens, upper_cqr_r_ens = pred_cqr_r_ens[:, 0], pred_cqr_r_ens[:, 1]
+    lower_ens_vanilla, upper_ens_vanilla = pred_ens_vanilla[:, 0], pred_ens_vanilla[:, 1]
+    lower_do_vanilla,  upper_do_vanilla  = pred_do_vanilla[:, 0],  pred_do_vanilla[:, 1]
     lower_cqr_do, upper_cqr_do = pred_cqr_do[:, 0], pred_cqr_do[:, 1]
     lower_cqr_r_do, upper_cqr_r_do = pred_cqr_r_do[:, 0], pred_cqr_r_do[:, 1]
 
     center_ens = 0.5 * (lower_ens + upper_ens)
     center_do  = 0.5 * (lower_do  + upper_do)
-    center_cqr_ens = 0.5 * (lower_cqr_ens + upper_cqr_ens)
-    center_cqr_r_ens = 0.5 * (lower_cqr_r_ens + upper_cqr_r_ens)
+    center_ens_vanilla = 0.5 * (lower_ens_vanilla + upper_ens_vanilla)
+    center_do_vanilla  = 0.5 * (lower_do_vanilla  + upper_do_vanilla)
     center_cqr_do = 0.5 * (lower_cqr_do + upper_cqr_do)
     center_cqr_r_do = 0.5 * (lower_cqr_r_do + upper_cqr_r_do)
 
     xx = X_test_grid.ravel()
 
     # Helper to compute empirical coverage & avg length on the actual test set
-    def stats_on_test(predict_fn, X_test_pts, Y_test_pts):
-        pred = np.asarray(predict_fn(X_test_pts))
+    def stats_on_test(predict_fn, X_test_pts, Y_test_pts, vanilla_credal = False):
+        if vanilla_credal:
+            pred = np.asarray(predict_fn(X_test_pts, conformalize=False))
+        else:
+            pred = np.asarray(predict_fn(X_test_pts))
         l, u = pred[:, 0], pred[:, 1]
         inside = (Y_test_pts.ravel() >= l) & (Y_test_pts.ravel() <= u)
         cov = float(np.mean(inside))
@@ -275,18 +263,17 @@ def plot_results(
 
     # Compute stats for each candidate (using the fitted predict methods)
     stats = {}
-    stats["Credal (Ensemble)"] = stats_on_test(credal_CP_ensemble.predict, X_test, Y_test)
-    stats["CQR (Ensemble)"]   = stats_on_test(cqr_ensemble.predict, X_test, Y_test)
-    stats["CQR-r (Ensemble)"] = stats_on_test(cqr_r_ensemble.predict, X_test, Y_test)
-
-    stats["Credal (Dropout)"] = stats_on_test(credal_CP_dropout.predict, X_test, Y_test)
-    stats["CQR (Dropout)"]    = stats_on_test(cqr_dropout.predict, X_test, Y_test)
-    stats["CQR-r (Dropout)"]  = stats_on_test(cqr_r_dropout.predict, X_test, Y_test)
+    stats["Credal CP (Deep Ensemble)"] = stats_on_test(credal_CP_ensemble.predict, X_test, Y_test)
+    stats["Credal CP (Dropout)"] = stats_on_test(credal_CP_dropout.predict, X_test, Y_test)
+    stats["Credal Vanilla (Deep Ensemble)"] = stats_on_test(credal_CP_ensemble.predict, X_test, Y_test, vanilla_credal=True)
+    stats["Credal Vanilla (Dropout)"] = stats_on_test(credal_CP_dropout.predict, X_test, Y_test, vanilla_credal=True)
+    stats["CQR"]    = stats_on_test(cqr_dropout.predict, X_test, Y_test)
+    stats["CQR-r"]  = stats_on_test(cqr_r_dropout.predict, X_test, Y_test)
 
     # Determine common y-limits using predictions + actual Y_test
-    all_lowers = np.hstack([lower_ens, lower_cqr_ens, lower_cqr_r_ens,
+    all_lowers = np.hstack([lower_ens,
                             lower_do, lower_cqr_do, lower_cqr_r_do, Y_test.ravel()])
-    all_uppers = np.hstack([upper_ens, upper_cqr_ens, upper_cqr_r_ens,
+    all_uppers = np.hstack([upper_ens,
                             upper_do, upper_cqr_do, upper_cqr_r_do, Y_test.ravel()])
     ymin = float(np.min(all_lowers)) - 0.1
     ymax = float(np.max(all_uppers)) + 0.1
@@ -299,28 +286,28 @@ def plot_results(
     ax.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha = 0.4, label="Test data", zorder=3)
     ax.fill_between(xx, lower_ens, upper_ens, color="C0", alpha=0.25)
     ax.plot(xx, center_ens, color="C0", lw=1)
-    cov, avg_len = stats["Credal (Ensemble)"]
-    ax.set_title(f"Credal (Ensemble)\ncoverage={cov:.3f}, len={avg_len:.3f}")
+    cov, avg_len = stats["Credal CP (Deep Ensemble)"]
+    ax.set_title(f"Credal CP (Deep Ensemble)\ncoverage={cov:.3f}, len={avg_len:.3f}")
     ax.set_xlim(xx.min(), xx.max())
     ax.set_ylim(ymin, ymax)
     ax.grid(True)
 
     ax = axes[0, 1]
     ax.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha = 0.4, zorder=3)
-    ax.fill_between(xx, lower_cqr_ens, upper_cqr_ens, color="C1", alpha=0.25)
-    ax.plot(xx, center_cqr_ens, color="C1", lw=1)
-    cov, avg_len = stats["CQR (Ensemble)"]
-    ax.set_title(f"CQR (Ensemble)\ncoverage={cov:.3f}, len={avg_len:.3f}")
+    ax.fill_between(xx, lower_ens_vanilla, upper_ens_vanilla, color="C3", alpha=0.25)
+    ax.plot(xx, center_ens_vanilla, color="C3", lw=1)
+    cov, avg_len = stats["Credal Vanilla (Deep Ensemble)"]
+    ax.set_title(f"Credal Vanilla (Deep Ensemble)\ncoverage={cov:.3f}, len={avg_len:.3f}")
     ax.set_xlim(xx.min(), xx.max())
     ax.set_ylim(ymin, ymax)
     ax.grid(True)
 
     ax = axes[0, 2]
     ax.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha = 0.4, zorder=3)
-    ax.fill_between(xx, lower_cqr_r_ens, upper_cqr_r_ens, color="C2", alpha=0.25)
-    ax.plot(xx, center_cqr_r_ens, color="C2", lw=1)
-    cov, avg_len = stats["CQR-r (Ensemble)"]
-    ax.set_title(f"CQR-r (Ensemble)\ncoverage={cov:.3f}, len={avg_len:.3f}")
+    ax.fill_between(xx, lower_do_vanilla, upper_do_vanilla, color="C3", alpha=0.25)
+    ax.plot(xx, center_do_vanilla, color="C3", lw=1)
+    cov, avg_len = stats["Credal Vanilla (Dropout)"]
+    ax.set_title(f"Credal Vanilla (Dropout)\ncoverage={cov:.3f}, len={avg_len:.3f}")
     ax.set_xlim(xx.min(), xx.max())
     ax.set_ylim(ymin, ymax)
     ax.grid(True)
@@ -330,8 +317,8 @@ def plot_results(
     ax.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha = 0.4, zorder=3)
     ax.fill_between(xx, lower_do, upper_do, color="C0", alpha=0.25)
     ax.plot(xx, center_do, color="C0", lw=1)
-    cov, avg_len = stats["Credal (Dropout)"]
-    ax.set_title(f"Credal (Dropout)\ncoverage={cov:.3f}, len={avg_len:.3f}")
+    cov, avg_len = stats["Credal CP (Dropout)"]
+    ax.set_title(f"Credal CP (Dropout)\ncoverage={cov:.3f}, len={avg_len:.3f}")
     ax.set_xlim(xx.min(), xx.max())
     ax.set_ylim(ymin, ymax)
     ax.set_xlabel("x")
@@ -341,8 +328,8 @@ def plot_results(
     ax.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha=0.4, zorder=3)
     ax.fill_between(xx, lower_cqr_do, upper_cqr_do, color="C1", alpha=0.25)
     ax.plot(xx, center_cqr_do, color="C1", lw=1)
-    cov, avg_len = stats["CQR (Dropout)"]
-    ax.set_title(f"CQR (Dropout)\ncoverage={cov:.3f}, len={avg_len:.3f}")
+    cov, avg_len = stats["CQR"]
+    ax.set_title(f"CQR\ncoverage={cov:.3f}, len={avg_len:.3f}")
     ax.set_xlim(xx.min(), xx.max())
     ax.set_ylim(ymin, ymax)
     ax.set_xlabel("x")
@@ -352,8 +339,8 @@ def plot_results(
     ax.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha = 0.4, zorder=3)
     ax.fill_between(xx, lower_cqr_r_do, upper_cqr_r_do, color="C2", alpha=0.25)
     ax.plot(xx, center_cqr_r_do, color="C2", lw=1)
-    cov, avg_len = stats["CQR-r (Dropout)"]
-    ax.set_title(f"CQR-r (Dropout)\ncoverage={cov:.3f}, len={avg_len:.3f}")
+    cov, avg_len = stats["CQR-r"]
+    ax.set_title(f"CQR-r\ncoverage={cov:.3f}, len={avg_len:.3f}")
     ax.set_xlim(xx.min(), xx.max())
     ax.set_ylim(ymin, ymax)
     ax.set_xlabel("x")
@@ -361,9 +348,10 @@ def plot_results(
 
     # Shared legend (create one representative patch per method)
     legend_patches = [
-        Patch(facecolor="C0", alpha=0.25, label="Credal / Ensemble color"),
-        Patch(facecolor="C1", alpha=0.25, label="CQR color"),
-        Patch(facecolor="C2", alpha=0.25, label="CQR-r color"),
+        Patch(facecolor="C0", alpha=0.25, label="Credal CP"),
+        Patch(facecolor="C3", alpha=0.25, label="Credal Vanilla"),
+        Patch(facecolor="C1", alpha=0.25, label="CQR"),
+        Patch(facecolor="C2", alpha=0.25, label="CQR-r"),
         Patch(facecolor="k", label="Test data"),
     ]
     fig.legend(handles=legend_patches, loc="upper center", ncol=4, bbox_to_anchor=(0.5, 0.99))
@@ -372,15 +360,12 @@ def plot_results(
 
 # Plot results
 credal_CP_ensemble, credal_CP_dropout, \
-    cqr_ensemble, cqr_r_ensemble, \
         cqr_dropout, cqr_r_dropout, \
             X_test, Y_test = fit_all_methods(train, cal, test)
 
 plot_results(
     credal_CP_ensemble, 
     credal_CP_dropout,
-    cqr_ensemble, 
-    cqr_r_ensemble,
     cqr_dropout, 
     cqr_r_dropout,
     X_test, 
@@ -389,21 +374,18 @@ plot_results(
 
 # Testing the other example
 np.random.seed(42)
-n= 1500
+n= 2500
 data = make_variable_data(n)
 train, rest = train_test_split(data, test_size=0.5, random_state=42)
 cal, test = train_test_split(rest, test_size=0.5, random_state=42)
 
 credal_CP_ensemble, credal_CP_dropout, \
-    cqr_ensemble, cqr_r_ensemble, \
         cqr_dropout, cqr_r_dropout, \
             X_test, Y_test = fit_all_methods(train, cal, test)
 
 plot_results(
     credal_CP_ensemble,
     credal_CP_dropout,
-    cqr_ensemble,
-    cqr_r_ensemble,
     cqr_dropout,
     cqr_r_dropout,
     X_test,
