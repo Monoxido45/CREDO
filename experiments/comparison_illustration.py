@@ -134,6 +134,84 @@ plt.legend()
 plt.title("Data with gap in the middle")
 plt.show()
 
+# plotting aleatoric vs epistemic uncertainty for MC-dropout and Deep Ensembles
+def plot_uncertainty_decomposition(
+    credal_CP_ensemble,
+    credal_CP_dropout,
+    X_test_grid,
+    X_test,
+    Y_test,
+    normalize=True,
+):
+    # Getting uncertainties from Credal CP (Deep Ensemble)
+    y_pred_ens, aleatoric_ens, epistemic_ens = credal_CP_ensemble.predict(X_test_grid, disentangle=True)
+
+    # Getting uncertainties from Credal CP (Dropout)
+    y_pred_do, aleatoric_do, epistemic_do = credal_CP_dropout.predict(X_test_grid, disentangle=True)
+
+    # normalizing the uncertainties for better visualization
+    if normalize:
+        aleatoric_ens /= aleatoric_ens + epistemic_ens
+        epistemic_ens /= aleatoric_ens + epistemic_ens
+        aleatoric_do /= aleatoric_do + epistemic_do
+        epistemic_do /= aleatoric_do + epistemic_do
+
+    # Also get full prediction intervals (conformalized) for both methods to plot below
+    pred_ens_intervals = np.asarray(y_pred_do)
+    pred_do_intervals  = np.asarray(y_pred_ens)
+
+    lower_ens, upper_ens = pred_ens_intervals[:, 0], pred_ens_intervals[:, 1]
+    lower_do,  upper_do  = pred_do_intervals[:, 0],  pred_do_intervals[:, 1]
+
+    center_ens = 0.5 * (lower_ens + upper_ens)
+    center_do  = 0.5 * (lower_do  + upper_do)
+
+    xx = X_test_grid.ravel()
+
+    # Create a 2x2 grid: top row = uncertainty decomposition, bottom row = prediction intervals
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
+
+    # Top-left: Deep Ensemble uncertainty decomposition
+    ax = axes[0, 0]
+    ax.plot(xx, aleatoric_ens, label="Aleatoric", color="C2")
+    ax.plot(xx, epistemic_ens, label="Epistemic", color="C1")
+    ax.set_title("Normalized Uncertainty Decomposition (Deep Ensemble)")
+    ax.set_ylabel("Uncertainty")
+    ax.legend()
+    ax.grid(True)
+
+    # Top-right: Dropout uncertainty decomposition
+    ax = axes[0, 1]
+    ax.plot(xx, aleatoric_do, label="Aleatoric", color="C2")
+    ax.plot(xx, epistemic_do, label="Epistemic", color="C1")
+    ax.set_title("Normalized Uncertainty Decomposition (Dropout)")
+    ax.legend()
+    ax.grid(True)
+
+    # Bottom-left: Deep Ensemble prediction intervals
+    ax = axes[1, 0]
+    ax.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha=0.4, zorder=3)
+    ax.fill_between(xx, lower_ens, upper_ens, color="C0", alpha=0.25, label="Prediction Interval")
+    ax.plot(xx, center_ens, color="C0", lw=1, label="Interval Center")
+    ax.set_title("Prediction Intervals (Deep Ensemble)")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.legend()
+    ax.grid(True)
+
+    # Bottom-right: Dropout prediction intervals
+    ax = axes[1, 1]
+    ax.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha=0.4, zorder=3)
+    ax.fill_between(xx, lower_do, upper_do, color="C0", alpha=0.25, label="Prediction Interval")
+    ax.plot(xx, center_do, color="C0", lw=1, label="Interval Center")
+    ax.set_title("Prediction Intervals (Dropout)")
+    ax.set_xlabel("x")
+    ax.legend()
+    ax.grid(True)
+
+    plt.tight_layout()
+    plt.show()
+
 # Function to fit all methods to the data
 def fit_all_methods(train, cal, test):
     X_train = train["x"].values.astype(np.float32).reshape(-1, 1)
@@ -164,10 +242,10 @@ def fit_all_methods(train, cal, test):
         nn_type = "Ensemble",
         n_models = 10,
         epochs = 300,
-        num_components = 3,
-        hidden_layers=[128, 64],
+        num_components = 1,
+        hidden_layers=[64],
         batch_size = 32,
-        lr = 0.005,
+        lr = 0.001,
         weight_decay=1e-4,
         scale=True,
         patience = 15,
@@ -177,13 +255,13 @@ def fit_all_methods(train, cal, test):
         X_train,
         Y_train,
         nn_type = "MC_Dropout",
-        num_components = 3,
-        hidden_layers=[128, 64],
+        num_components = 1,
+        hidden_layers=[64],
         dropout_rate = 0.5,
         epochs = 1000,
         batch_size = 32,
         weight_decay=1e-4,
-        lr = 0.005,
+        lr = 0.001,
         scale=True,
         patience = 30,
     )
@@ -362,6 +440,17 @@ credal_CP_ensemble, credal_CP_dropout, \
         cqr_dropout, cqr_r_dropout, \
             X_test, Y_test = fit_all_methods(train, cal, test)
 
+# plotting uncertainty decomposition
+X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
+
+plot_uncertainty_decomposition(
+    credal_CP_ensemble,
+    credal_CP_dropout,
+    X_test_grid,
+    X_test,
+    Y_test,
+)
+
 plot_results(
     credal_CP_ensemble, 
     credal_CP_dropout,
@@ -381,6 +470,17 @@ cal, test = train_test_split(rest, test_size=0.5, random_state=42)
 credal_CP_ensemble, credal_CP_dropout, \
         cqr_dropout, cqr_r_dropout, \
             X_test, Y_test = fit_all_methods(train, cal, test)
+
+X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
+
+plot_uncertainty_decomposition(
+    credal_CP_ensemble,
+    credal_CP_dropout,
+    X_test_grid,
+    X_test,
+    Y_test,
+    normalize=False,
+)
 
 plot_results(
     credal_CP_ensemble,

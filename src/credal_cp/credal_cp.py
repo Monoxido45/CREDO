@@ -422,6 +422,7 @@ class CredalCPRegressor(BaseEstimator):
             X_test,
             n_samples=300,
             conformalize = True,
+            disentangle=False,
             ):
         """
         Interval prediction using the fitted base model.
@@ -448,11 +449,15 @@ class CredalCPRegressor(BaseEstimator):
                 upper_q = 1 - self.alpha / 2
                 i = 0
                 q_low_pred, q_upp_pred = [], []
+                if disentangle:
+                    aleatoric_unc = []
+                self.sigma_list = []
 
                 for x in X_test:
                     pi_chosen = pi_test[:, i, :]
                     mu_chosen = mu_test[:, i, :]
                     sigma_chosen = sigma_test[:, i, :]
+                    self.sigma_list.append(sigma_chosen)
 
                     q_grid = self.base_model.mixture_quantile(
                     [lower_q, upper_q], 
@@ -465,8 +470,10 @@ class CredalCPRegressor(BaseEstimator):
                     # obtaining lower and upper quantiles for the current x
                     q_low_pred.append(np.quantile(q_grid[:, 0], self.beta/2))
                     q_upp_pred.append(np.quantile(q_grid[:, 1], 1 - self.beta/2))
+                    if disentangle:
+                        aleatoric_unc.append(np.mean(q_grid[:, 1] - q_grid[:, 0]))
                     i += 1
-
+                
                 q_low_array = np.array(q_low_pred)
                 q_upp_array = np.array(q_upp_pred)
                 if conformalize:
@@ -475,8 +482,14 @@ class CredalCPRegressor(BaseEstimator):
                 else:
                     lower_cp = q_low_array
                     upper_cp = q_upp_array
-                
+
                 y_pred = np.column_stack((lower_cp, upper_cp))
+                if disentangle:
+                    total_unc = q_upp_array - q_low_array
+                    aleatoric_unc = np.array(aleatoric_unc)
+                    epistemic_unc = total_unc - aleatoric_unc
+                    return y_pred, aleatoric_unc, epistemic_unc
+
                 return y_pred
         
         elif self.base_model_type == "MDN" and self.nn_type == "Ensemble":
@@ -484,16 +497,21 @@ class CredalCPRegressor(BaseEstimator):
                 X_test,
                 )
             if self.nc_type == "Quantile":
+                self.sigma_list = []
                 # formulating lower and upper quantiles for each x_test
                 lower_q = self.alpha / 2
                 upper_q = 1 - self.alpha / 2
                 i = 0
                 q_low_pred, q_upp_pred = [], []
 
+                if disentangle:
+                    aleatoric_unc = []
+
                 for x in X_test:
                     pi_chosen = pi_test[:, i, :]
                     mu_chosen = mu_test[:, i, :]
                     sigma_chosen = sigma_test[:, i, :]
+                    self.sigma_list.append(sigma_chosen)
 
                     # generating quantiles
                     q_grid = self.base_model.mixture_quantile(
@@ -507,6 +525,9 @@ class CredalCPRegressor(BaseEstimator):
                     # obtaining lower and upper quantiles for the current x
                     q_low_pred.append(np.quantile(q_grid[:, 0], self.beta/2))
                     q_upp_pred.append(np.quantile(q_grid[:, 1], 1 - self.beta/2))
+                    if disentangle:
+                        aleatoric_unc.append(np.mean(q_grid[:, 1] - q_grid[:, 0]))
+
                     i += 1
 
                 q_low_array = np.array(q_low_pred)
@@ -520,6 +541,11 @@ class CredalCPRegressor(BaseEstimator):
                     upper_cp = q_upp_array
                 
                 y_pred = np.column_stack((lower_cp, upper_cp))
+                if disentangle:
+                    total_unc = q_upp_array - q_low_array
+                    aleatoric_unc = np.array(aleatoric_unc)
+                    epistemic_unc = total_unc - aleatoric_unc
+                    return y_pred, aleatoric_unc, epistemic_unc
                 return y_pred
         
         elif self.base_model_type == "GP" or self.base_model_type == "GP_Approx":
@@ -534,6 +560,9 @@ class CredalCPRegressor(BaseEstimator):
                 q_low_grid = q_samples[:, :, 0]
                 q_upp_grid = q_samples[:, :, 1]
 
+                if disentangle:
+                    aleatoric_unc = np.mean(q_upp_grid - q_low_grid, axis=1)
+
                 # obtaining lower and upper quantiles for each x_test
                 q_low_pred = np.quantile(q_low_grid, self.beta/2, axis=1)
                 q_upp_pred = np.quantile(q_upp_grid, 1 - self.beta/2, axis=1)
@@ -542,6 +571,10 @@ class CredalCPRegressor(BaseEstimator):
                 upper_cp = q_upp_pred + self.cutoff
 
                 y_pred = np.column_stack((lower_cp, upper_cp))
+                if disentangle:
+                    total_unc = q_upp_pred - q_low_pred
+                    epistemic_unc = total_unc - aleatoric_unc
+                    return y_pred, aleatoric_unc, epistemic_unc
                 return y_pred
         
         elif self.base_model_type == "BART":
@@ -555,6 +588,9 @@ class CredalCPRegressor(BaseEstimator):
                 q_low_grid = q_samples[:, :, 0]
                 q_upp_grid = q_samples[:, :, 1]
 
+                if disentangle:
+                    aleatoric_unc = np.mean(q_upp_grid - q_low_grid, axis=0)
+
                 # obtaining lower and upper quantiles for each x_test
                 q_low_pred = np.quantile(q_low_grid, self.beta/2, axis=0)
                 q_upp_pred = np.quantile(q_upp_grid, 1 - self.beta/2, axis=0)
@@ -563,6 +599,8 @@ class CredalCPRegressor(BaseEstimator):
                 upper_cp = q_upp_pred + self.cutoff
 
                 y_pred = np.column_stack((lower_cp, upper_cp))
+                if disentangle:
+                    total_unc = q_upp_pred - q_low_pred
+                    epistemic_unc = total_unc - aleatoric_unc
+                    return y_pred, aleatoric_unc, epistemic_unc
                 return y_pred
-        
-            

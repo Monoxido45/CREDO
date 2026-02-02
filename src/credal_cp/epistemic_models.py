@@ -56,8 +56,8 @@ class MDN_base(nn.Module):
         prev_units = input_shape
         for units in hidden_layers:
             self.layers.append(nn.Linear(prev_units, units))
-            self.batch_norms.append(nn.BatchNorm1d(units))
             self.dropouts.append(nn.Dropout(dropout_rate))
+            self.batch_norms.append(nn.BatchNorm1d(units))
             prev_units = units
 
         self.fc_out = nn.Linear(prev_units, num_components * 3)
@@ -130,13 +130,16 @@ class MDN_model(BaseEstimator):
     # MDN loss
     @staticmethod
     def mdn_loss(pi, mu, sigma, y_true, type="gaussian"):
-        y_true = y_true.view(-1, 1)
+        y_true = y_true.view(-1,1).expand_as(mu)
+
         if type == "gaussian":
-            result = torch.sum(pi * gaussian_pdf(y_true, mu, sigma), dim=1)
+            result = -0.5 * ((y_true - mu) / sigma) ** 2 - torch.log(sigma * np.sqrt(2.0 * np.pi))
+            log_pi = torch.log(pi + 1e-8)  # numerical stability
         elif type == "gamma":
             result = torch.sum(pi * gamma_pdf(y_true, mu, sigma), dim=1)
-        loss = -torch.log(result + 1e-8)  # numerical stability
-        return torch.mean(loss)
+
+        log_prob = torch.logsumexp(log_pi + result, dim=1)
+        return -torch.mean(log_prob)
 
     # Mixture coeficient obtention
     def get_mixture_coef(self, y_pred):
@@ -368,9 +371,11 @@ class MDN_model(BaseEstimator):
                 x = self.scaler.transform(x)
             x = torch.tensor(x, dtype=torch.float32)
 
-        # original_mode = self.model.training
+        # force only dropout layers to be in train mode
         self.model.eval()
-        self.model.train()
+        for m in self.model.modules():
+            if isinstance(m, nn.Dropout):
+                m.train()
 
         pi_predictions = []
         mu_predictions = []
@@ -428,13 +433,16 @@ class MDN_model(BaseEstimator):
         with torch.no_grad():
             pred_test = self.model(X_test)
             pi, mu, sigma = self.get_mixture_coef(pred_test)
+
         if self.base_model_type == "regression":
             mean_test = self.mixture_mean(pi, mu).numpy()
             return mean_test
+        
         elif self.base_model_type == "quantile":
             alphas = [self.alpha / 2, 1 - (self.alpha / 2)]
             quantiles_test = self.mixture_quantile(alphas, pi, mu, sigma)
             return quantiles_test
+        
         # density part
         elif self.base_model_type == "density" and (y_test is not None):
             # normalizing y_test if needed
@@ -2280,13 +2288,16 @@ class DE_MDN_model(BaseEstimator):
     
     @staticmethod
     def mdn_loss(pi, mu, sigma, y_true, type="gaussian"):
-        y_true = y_true.view(-1, 1)
+        y_true = y_true.view(-1,1).expand_as(mu)
+
         if type == "gaussian":
-            result = torch.sum(pi * gaussian_pdf(y_true, mu, sigma), dim=1)
+            result = -0.5 * ((y_true - mu) / sigma) ** 2 - torch.log(sigma * np.sqrt(2.0 * np.pi))
+            log_pi = torch.log(pi + 1e-8)  # numerical stability
         elif type == "gamma":
             result = torch.sum(pi * gamma_pdf(y_true, mu, sigma), dim=1)
-        loss = -torch.log(result + 1e-8)  # numerical stability
-        return torch.mean(loss)
+
+        log_prob = torch.logsumexp(log_pi + result, dim=1)
+        return -torch.mean(log_prob)
     
     # Mixture coeficient obtention
     def get_mixture_coef(self, y_pred):
