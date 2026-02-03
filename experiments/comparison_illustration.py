@@ -151,10 +151,13 @@ def plot_uncertainty_decomposition(
 
     # normalizing the uncertainties for better visualization
     if normalize:
-        aleatoric_ens /= aleatoric_ens + epistemic_ens
-        epistemic_ens /= aleatoric_ens + epistemic_ens
-        aleatoric_do /= aleatoric_do + epistemic_do
-        epistemic_do /= aleatoric_do + epistemic_do
+        total_ens = aleatoric_ens + epistemic_ens
+        aleatoric_ens /= total_ens
+        epistemic_ens /= total_ens
+
+        total_do = aleatoric_do + epistemic_do
+        aleatoric_do /= total_do
+        epistemic_do /= total_do
 
     # Also get full prediction intervals (conformalized) for both methods to plot below
     pred_ens_intervals = np.asarray(y_pred_do)
@@ -244,9 +247,9 @@ def fit_all_methods(train, cal, test):
         epochs = 300,
         num_components = 1,
         hidden_layers=[64],
-        batch_size = 32,
+        batch_size = 16,
         lr = 0.001,
-        weight_decay=1e-4,
+        weight_decay=1e-6,
         scale=True,
         patience = 15,
     )
@@ -259,8 +262,8 @@ def fit_all_methods(train, cal, test):
         hidden_layers=[64],
         dropout_rate = 0.5,
         epochs = 1000,
-        batch_size = 32,
-        weight_decay=1e-4,
+        batch_size = 16,
+        weight_decay=1e-6,
         lr = 0.001,
         scale=True,
         patience = 30,
@@ -291,6 +294,92 @@ def fit_all_methods(train, cal, test):
     return credal_CP_ensemble, credal_CP_dropout, \
                 cqr_dropout, cqr_r_dropout, \
                     X_test, Y_test
+
+def fit_bart(train, cal, test):
+    X_train = train["x"].values.astype(np.float32).reshape(-1, 1)
+    Y_train = train["y"].values.astype(np.float32)
+
+    X_cal = cal["x"].values.astype(np.float32).reshape(-1, 1)
+    Y_cal = cal["y"].values.astype(np.float32)
+
+    X_test = test["x"].values.astype(np.float32).reshape(-1, 1)
+    Y_test = test["y"].values.astype(np.float32)
+
+    credal_CP_bart = CredalCPRegressor(
+        nc_type = 'Quantile',
+        base_model = "BART",
+        alpha = 0.1,
+    )
+
+    # starting fitting
+    credal_CP_bart.fit(
+        X_train, 
+        Y_train,
+        progressbar = True,
+        n_cores = 4,
+        n_MCMC = 1000,
+        alpha_bart = 0.98,
+    )
+
+    bart_cutoff = credal_CP_bart.calibrate(
+        X_cal, 
+        Y_cal, 
+        beta = 0.1,
+        N_samples_MC=1000
+        )
+    
+    return credal_CP_bart, X_test, Y_test
+
+def plot_uncertainty_decomposition_bart(
+    credal_CP_bart,
+    X_test_grid,
+    X_test,
+    Y_test,
+    normalize=True,
+):
+    y_pred, aleatoric, epistemic = credal_CP_bart.predict(X_test_grid, disentangle=True)
+
+    # normalizing the uncertainties for better visualization
+    if normalize:
+        total = aleatoric + epistemic
+        new_aleatoric = aleatoric/total
+        new_epistemic = epistemic/total
+    else:
+        new_aleatoric = aleatoric
+        new_epistemic = epistemic
+    
+     # Also get full prediction intervals (conformalized) for both methods to plot below
+    pred_intervals = np.asarray(y_pred)
+
+    lower, upper = pred_intervals[:, 0], pred_intervals[:, 1]
+    center_ens = 0.5 * (lower + upper)
+
+    xx = X_test_grid.ravel()
+
+    # Create a 2x2 grid: top row = uncertainty decomposition, bottom row = prediction intervals
+    fig, axes = plt.subplots(1, 2, figsize=(12, 8), sharex=True)
+
+    # Top-left: BART uncertainty decomposition
+    ax = axes[0]
+    ax.plot(xx, new_aleatoric, label="Aleatoric", color="C2")
+    ax.plot(xx, new_epistemic, label="Epistemic", color="C1")
+    ax.set_title("Normalized Uncertainty Decomposition (BART)")
+    ax.set_ylabel("Uncertainty percentage")
+    ax.legend()
+    ax.grid(True)
+
+    # Bottom-right: BART prediction intervals
+    ax = axes[1]
+    ax.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha=0.4, zorder=3)
+    ax.fill_between(xx, lower, upper, color="C0", alpha=0.25, label="Prediction Interval")
+    ax.plot(xx, center_ens, color="C0", lw=1, label="Interval Center")
+    ax.set_title("Prediction Intervals (BART)")
+    ax.set_xlabel("x")
+    ax.legend()
+    ax.grid(True)
+
+    plt.tight_layout()
+    plt.show()
 
 # function to plot all results along with empirical coverage & avg length
 def plot_results(
@@ -435,14 +524,13 @@ def plot_results(
     plt.tight_layout(rect=[0, 0, 1, 0.97])
     plt.show()
 
-# Plot results
+####### Fitting neural network based methods #######
 credal_CP_ensemble, credal_CP_dropout, \
         cqr_dropout, cqr_r_dropout, \
             X_test, Y_test = fit_all_methods(train, cal, test)
 
 # plotting uncertainty decomposition
 X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
-
 plot_uncertainty_decomposition(
     credal_CP_ensemble,
     credal_CP_dropout,
@@ -451,6 +539,31 @@ plot_uncertainty_decomposition(
     Y_test,
 )
 
+# looking at SD
+sd_dropout = credal_CP_dropout.sigma_list
+# stack sigma tensors as rows (assumes all entries have same number of elements)
+sigma_rows = torch.stack([s.flatten().detach().cpu() for s in sd_dropout], dim=0)
+
+# mean across columns (per-row mean)
+sigma_row_means = sigma_rows.mean(dim=1)
+
+# optional: convert to numpy for printing/plotting
+sigma_row_means_np = sigma_row_means.numpy()
+
+# Plot sigma (MC samples) as a function of X_test_grid
+xx = X_test_grid.ravel()
+
+plt.figure(figsize=(8, 4))
+
+plt.plot(xx, sigma_row_means_np, color="C1", lw=2)
+plt.xlabel("x")
+plt.ylabel("sigma")
+plt.title("Predicted sigma vs x")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# plotting all results
 plot_results(
     credal_CP_ensemble, 
     credal_CP_dropout,
@@ -460,7 +573,20 @@ plot_results(
     Y_test,
 )
 
-# Testing the other example
+####### Fitting bart-based method #######
+credal_CP_bart, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
+
+X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
+# plotting uncertainty decomposition for BART
+plot_uncertainty_decomposition_bart(
+    credal_CP_bart,
+    X_test_grid,
+    X_test_bart,
+    Y_test_bart,
+)
+
+
+############ Testing the other example with variable noise ############
 np.random.seed(42)
 n= 2500
 data = make_variable_data(n)
@@ -489,5 +615,18 @@ plot_results(
     cqr_r_dropout,
     X_test,
     Y_test,
+)
+
+####### Fitting bart-based method #######
+credal_CP_bart, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
+
+X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
+# plotting uncertainty decomposition for BART
+plot_uncertainty_decomposition_bart(
+    credal_CP_bart,
+    X_test_grid,
+    X_test_bart,
+    Y_test_bart,
+    normalize=False,
 )
 

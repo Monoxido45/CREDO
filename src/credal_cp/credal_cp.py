@@ -158,6 +158,7 @@ class CredalCPRegressor(BaseEstimator):
                     random_seed_fit=random_seed_fit,
                 )
                 self.base_is_fitted = True
+
             elif self.base_model == "MDN" and self.nn_type == "Ensemble":
                 print("Fitting Deep Ensemble MDN model")
                 self.base_model_type = "MDN"
@@ -182,7 +183,6 @@ class CredalCPRegressor(BaseEstimator):
                     random_seed_split=random_seed_split,
                     random_seed_fit=random_seed_fit,
                 )
-
 
             # Analytic GP (slow for large datasets)
             elif self.base_model == "GP":
@@ -415,6 +415,7 @@ class CredalCPRegressor(BaseEstimator):
                 n = len(self.nc_scores)
                 self.cutoff = np.quantile(self.nc_scores, 
                                           q=np.ceil((n + 1) * (1 - self.alpha)) / n)
+                
         return self.cutoff
     
     def predict(

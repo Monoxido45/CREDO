@@ -2441,7 +2441,10 @@ class DE_MDN_model(BaseEstimator):
         """
         # Splitting data into train and validation
         x_train, x_val, y_train, y_val = train_test_split(
-            X, y, test_size=1 - proportion_train, random_state=random_seed_split
+            X, 
+            y, 
+            test_size=1 - proportion_train, 
+            random_state=random_seed_split,
         )
 
         # checking if scaling is needed
@@ -2504,18 +2507,19 @@ class DE_MDN_model(BaseEstimator):
         # Setting batch size
         batch_size_train = int(proportion_train * batch_size)
         batch_size_val = int((1 - proportion_train) * batch_size)
-        train_loader = DataLoader(
-            train_dataset, batch_size=batch_size_train, shuffle=True
-        )
         val_loader = DataLoader(
             val_dataset, 
             batch_size=batch_size_val, 
             shuffle=False,
             )
-
+        
+        # bootstraping the dataloader for the current model
+        train_loader = DataLoader(
+        train_dataset, batch_size=batch_size_train, shuffle=True
+        )
+        
         torch.manual_seed(random_seed_fit)
         torch.cuda.manual_seed(random_seed_fit)
-
         # Fitting each model in the ensemble
         self.models = []
         for i in tqdm(range(self.n_models), desc = "Fitting Deep Ensemble MDN models"):
@@ -2530,8 +2534,6 @@ class DE_MDN_model(BaseEstimator):
                 gamma,
             )
             self.models.append(model_i)
-        
-
 
         return self
 
@@ -2557,6 +2559,7 @@ class DE_MDN_model(BaseEstimator):
         Output:
             (i) Trained MDN model.
         """
+
         model = MDN_base(
             self.input_shape, 
             self.num_components, 
