@@ -1,0 +1,557 @@
+# ============================================
+# 0. Imports & data generation
+# ============================================
+import gpytorch
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Qt5Agg')  
+from sklearn.model_selection import train_test_split
+import torch
+
+# importing our package
+from credal_cp.credal_cp import CredalCPRegressor
+from credal_cp.epistemic_models import MDN_model, DE_MDN_model
+import numpy as np
+
+import pymc as pm
+import pymc_bart as pmb
+from pymc_bart.split_rules import ContinuousSplitRule, OneHotSplitRule
+import arviz as az
+
+from scipy.stats import norm
+
+
+# For reproducibility
+np.random.seed(42)
+torch.manual_seed(42)
+
+device = torch.device("cpu")  # change to "cuda" if desired
+
+def make_gap_epistemic_few_middle(n, noise_std=0.1, p_middle=0.01):
+    """
+    Example where:
+      - left and right regions are well sampled
+      - middle region has very few points (high epistemic uncertainty)
+      - noise is small and constant (mostly aleatoric)
+      - mean is different on each side, forcing extrapolation
+    """
+    n_mid = max(1, int(n * p_middle))
+    n_side = (n - n_mid) // 2
+
+    # Regions in x
+    x_left  = np.random.uniform(-1.0, -0.2, size=n_side)
+    x_mid   = np.random.uniform(-0.2,  0.2, size=n_mid)
+    x_right = np.random.uniform( 0.2,  1.0, size=n_side)
+    x = np.concatenate([x_left, x_mid, x_right])
+
+    # True mean function (piecewise, with gap)
+    mu = np.zeros_like(x)
+
+    # left: smooth non-linear
+    mask_left = x < -0.2
+    mu[mask_left] = -0.5 + 1.5*(x[mask_left] + 0.8) - 1.0*(x[mask_left] + 0.8)**2
+
+    # middle: wiggly but under-sampled
+    mask_mid = (x >= -0.2) & (x <= 0.2)
+    mu[mask_mid] = 0.2 * np.sin(8 * x[mask_mid])
+
+    # right: different non-linear behavior
+    mask_right = x > 0.2
+    mu[mask_right] = 0.7 + 0.8*(x[mask_right] - 0.5)**2 - 0.3*(x[mask_right] - 0.5)**3
+
+    # Small, constant noise
+    eps = np.random.normal(scale=noise_std, size=len(x))
+    y = mu + eps
+
+    df = pd.DataFrame({"x": x, "y": y})
+    df = df.sample(frac=1.0, random_state=0).reset_index(drop=True)
+    return df
+
+# generating heteroscedastic but more regular data for testing
+def make_heteroscedastic_sin(n=3000, noise_base=0.05):
+    """
+    X ~ Uniform(-1, 1)
+    Y ~ Normal(mean = sin-like function, sd = heteroscedastic function of x)
+    """
+    x = np.random.uniform(-1.0, 1.0, size=n)
+    mu = np.sin(2.5 * x)            # sin-like mean
+    sigma = noise_base + 0.4 * (x ** 2)  # small near 0, larger towards edges
+    y = mu + np.random.normal(scale=sigma, size=n)
+
+    df = pd.DataFrame({"x": x, "y": y})
+    return df.sample(frac=1.0, random_state=0).reset_index(drop=True)
+
+def make_homoscedastic_sin(n=3000, noise_std=0.1):
+    """
+    X ~ Uniform(-1, 1)
+    Y ~ Normal(mean = sin-like function, sd = constant noise_std)
+    """
+    x = np.random.uniform(-1.0, 1.0, size=n)
+    mu = np.sin(2.5 * x)
+    y = mu + np.random.normal(scale=noise_std, size=n)
+
+    df = pd.DataFrame({"x": x, "y": y})
+    return df.sample(frac=1.0, random_state=0).reset_index(drop=True)
+
+
+# Generate data
+data = make_gap_epistemic_few_middle(n=3000, noise_std=0.1, p_middle=0.01)
+# other more regular datasets for testing
+hetero_data = make_heteroscedastic_sin(n=3000, noise_base=0.05)
+homosc_data = make_homoscedastic_sin(n=3000, noise_std=0.1)
+
+
+############# Regular data MDN proof of concept #############
+# starting with homoscedastic data
+# Train / cal / test split
+train, rest = train_test_split(homosc_data, test_size=0.5, random_state=42)
+cal, test   = train_test_split(rest,  test_size=0.5, random_state=42)
+
+plt.figure(figsize=(6, 4))
+plt.scatter(train["x"], train["y"], s=10, alpha=0.5, label="Train")
+plt.scatter(cal["x"],   cal["y"],   s=10, alpha=0.5, label="Cal")
+plt.scatter(test["x"],  test["y"],  s=10, alpha=0.5, label="Test")
+plt.legend()
+plt.title("Homoscedastic data")
+plt.show()
+
+# Training simple MDN for latter dropout-based interval construction
+X_train = train["x"].values.astype(np.float32).reshape(-1, 1)
+Y_train = train["y"].values.astype(np.float32)
+X_cal = cal["x"].values.astype(np.float32).reshape(-1, 1)
+Y_cal = cal["y"].values.astype(np.float32)
+X_test = test["x"].values.astype(np.float32).reshape(-1, 1)
+Y_test = test["y"].values.astype(np.float32)
+
+# verifying if simple MDN can fit the data well
+
+# without normalizing the output y
+mdn_model_simple = MDN_model(
+    input_dim = 1,
+    output_dim = 1,
+    num_components = 1,
+    hidden_layers = [64],
+    dropout_rate = 0.3,
+    device = device,
+)
+
+mdn_model_simple.fit(
+    X_train,
+    Y_train,
+    scale = True,
+    patience = 30,
+    epochs = 500,
+    batch_size = 32,
+    lr = 0.001,
+)
+
+ 
+
+
+
+############# Epistemic MDN proof of concept #############
+# Train / cal / test split
+train, rest = train_test_split(data, test_size=0.5, random_state=42)
+cal, test   = train_test_split(rest,  test_size=0.5, random_state=42)
+
+# Quick sanity plot of the data
+plt.figure(figsize=(6, 4))
+plt.scatter(train["x"], train["y"], s=10, alpha=0.5, label="Train")
+plt.scatter(cal["x"],   cal["y"],   s=10, alpha=0.5, label="Cal")
+plt.scatter(test["x"],  test["y"],  s=10, alpha=0.5, label="Test")
+plt.legend()
+plt.title("Data with gap in the middle")
+plt.show()
+
+# Training, calibration, and prediction
+X_train = train["x"].values.astype(np.float32).reshape(-1, 1)
+Y_train = train["y"].values.astype(np.float32)
+
+X_cal = cal["x"].values.astype(np.float32).reshape(-1, 1)
+Y_cal = cal["y"].values.astype(np.float32)
+
+X_test = test["x"].values.astype(np.float32).reshape(-1, 1)
+Y_test = test["y"].values.astype(np.float32)
+
+credal_CP_dropout = CredalCPRegressor(
+    nc_type = 'Quantile',
+    base_model = "MDN",
+    alpha = 0.1,
+)
+
+credal_CP_dropout.fit(
+    X_train,
+    Y_train,
+    nn_type = "MC_Dropout",
+    num_components = 1,
+    hidden_layers=[64, 64],
+    epochs = 500,
+    batch_size = 32,
+    lr = 0.001,
+    scale=True,
+)
+
+alpha = 0.1
+beta = 0.1
+rng = np.random.default_rng(seed=42)
+
+# checking the sampling code from credal_CP_dropout and its outputs
+pi_calib, mu_calib, sigma_calib = credal_CP_dropout.base_model.predict_mcdropout(
+                X_cal, 
+                num_samples = 1000,
+                )
+
+lower_q = alpha / 2
+upper_q = 1 - alpha / 2
+i = 0
+q_low_raw, q_upp_raw = [], []
+
+for x in X_cal:
+    pi_chosen = pi_calib[:, i, :]
+    mu_chosen = mu_calib[:, i, :]
+    sigma_chosen = sigma_calib[:, i, :]
+
+    q_grid = credal_CP_dropout.base_model.mixture_quantile(
+    [lower_q, upper_q], 
+    pi_chosen, 
+    mu_chosen, 
+    sigma_chosen,
+    rng= rng,
+    )
+
+    # obtaining lower and upper quantiles for the current x
+    q_low_raw.append(np.quantile(q_grid[:, 0], beta/2))
+    q_upp_raw.append(np.quantile(q_grid[:, 1], 1 - beta/2))
+    i += 1
+
+q_low_array = np.array(q_low_raw)
+q_upp_array = np.array(q_upp_raw)
+# with lower and upper quantiles, we can compute the modified nonconformity scores
+nc_scores = np.maximum(q_low_array - Y_cal, 
+                        Y_cal - q_upp_array)
+n = len(nc_scores)
+cutoff = np.quantile(
+    nc_scores,
+    q=np.ceil((n + 1) * (1 - alpha)) / n
+    )
+
+
+# Testing prediction on test set
+pi_test, mu_test, sigma_test = credal_CP_dropout.base_model.predict_mcdropout(
+                X_test, 
+                num_samples = 1000,
+                )
+
+lower_q = alpha / 2
+upper_q = 1 - alpha / 2
+i = 0
+q_low_raw, q_upp_raw = [], []
+
+for x in X_test:
+    pi_chosen = pi_test[:, i, :]
+    mu_chosen = mu_test[:, i, :]
+    sigma_chosen = sigma_test[:, i, :]
+
+    q_grid = credal_CP_dropout.base_model.mixture_quantile(
+    [lower_q, upper_q], 
+    pi_chosen, 
+    mu_chosen, 
+    sigma_chosen,
+    rng= rng,
+    )
+
+    # obtaining lower and upper quantiles for the current x
+    q_low_raw.append(np.quantile(q_grid[:, 0], beta/2))
+    q_upp_raw.append(np.quantile(q_grid[:, 1], 1 - beta/2))
+    i += 1
+
+q_low_array = np.array(q_low_raw)
+q_upp_array = np.array(q_upp_raw)
+
+lower_cp = q_low_array - cutoff
+upper_cp = q_upp_array + cutoff
+y_pred = np.column_stack((lower_cp, upper_cp))
+
+
+# Evaluate marginal coverage on test set
+inside = (Y_test >= lower_cp) & (Y_test <= upper_cp)
+coverage = inside.mean()
+n_test = len(Y_test)
+print(f"Test set marginal coverage: {coverage:.3f} ({inside.sum()}/{n_test})")
+print(f"Target nominal coverage: {1 - alpha:.3f}")
+print(f"Average interval width: {np.mean(upper_cp - lower_cp):.4f}")
+# Uncomment to see indices of miscoverage
+# print("Indices of miscoverage:", np.where(~inside)[0])
+
+# testing CQR to evaluate if this is because of the model
+credal_CP_dropout.base_model.alpha = 0.1
+credal_CP_dropout.base_model.base_model_type = "quantile"
+
+# calibration
+q_calib = credal_CP_dropout.base_model.predict(X_cal)
+
+# score and cutoff
+nc_scores_cqr = np.maximum(q_calib[:, 0] - Y_cal,
+                        Y_cal - q_calib[:, 1])
+n = len(nc_scores_cqr)
+cutoff = np.quantile(
+    nc_scores_cqr,
+    q=np.ceil((n + 1) * (1 - alpha)) / n
+    )
+
+# prediction
+q_test = credal_CP_dropout.base_model.predict(X_test)
+lower_cqr = q_test[:, 0] - cutoff
+upper_cqr = q_test[:, 1] + cutoff
+
+# Evaluate marginal coverage on test set
+inside_cqr = (Y_test >= lower_cqr) & (Y_test <= upper_cqr)
+coverage_cqr = inside_cqr.mean()
+
+
+alphas = [0.05, 0.95]
+pi_chosen = pi_calib[:, -1, :]  # shape (n_samples, n_components)
+mu_chosen = mu_calib[:, -1, :]  # shape (n_samples,
+sigma_chosen = sigma_calib[:, -1, :]  # shape (n_samples, n_components)
+
+rng = np.random.default_rng(seed=42)
+pi_chosen = np.asarray(pi_chosen)
+mu_chosen = np.asarray(mu_chosen)
+sigma_chosen = np.asarray(sigma_chosen)
+
+n_sample, _ = pi_chosen.shape
+n_alphas = len(alphas)
+
+# N samples from each mixture
+samples = credal_CP_dropout.base_model.sample_from_mixture(
+    pi_chosen, 
+    mu_chosen, 
+    sigma_chosen, 
+    N=1000)
+
+# Quantile computation
+quantile_matrix = np.zeros((n_sample, n_alphas))
+for j, alpha in enumerate(alphas):
+    quantile_matrix[:, j] = np.quantile(samples, alpha, axis=1)
+
+np.quantile(quantile_matrix[:, 0], 0.05)
+np.quantile(quantile_matrix[:, 1], 0.95)
+
+# Debugging also the BART and GP
+credal_CP_bart = CredalCPRegressor(
+    nc_type = 'Quantile',
+    base_model = "BART",
+    alpha = 0.1,
+)
+
+credal_CP_gp = CredalCPRegressor(
+    nc_type = 'Quantile',
+    base_model = "GP_Approx",
+    alpha = 0.1,
+)
+
+# starting fitting
+credal_CP_bart.fit(
+    X_train, 
+    Y_train,
+    progressbar = True,
+    n_cores = 4,
+    n_MCMC = 1000,
+    alpha_bart = 0.99,
+)
+
+credal_CP_gp.fit(
+    X_train,
+    Y_train,
+    num_inducing_points = 100,
+    lr_variational = 0.01,
+    lr_hyperparams = 0.01,
+    n_epochs = 300,
+)
+
+# ============================================
+# GP calibration debugging
+quantile_levels = [credal_CP_gp.alpha / 2, 1 - credal_CP_gp.alpha / 2]
+quantile_levels = np.asarray(quantile_levels)
+
+quantiles = np.asarray(quantile_levels)
+
+credal_CP_gp.base_model.model.eval()
+credal_CP_gp.base_model.likelihood.eval()
+
+X_cal_standardized = torch.tensor(# 7. Inverse log transform if necessary
+    credal_CP_gp.base_model.scaler_X.transform(X_cal), dtype=torch.float32
+)
+
+n_samples = 1000
+with torch.no_grad(), gpytorch.settings.fast_pred_var():
+    # Get the latent function distribution f(X*) from the model
+    latent_distribution = credal_CP_gp.base_model.model(X_cal_standardized)
+    
+    # Sample directly from the latent function distribution. 
+    f_samples_tensor = latent_distribution.rsample(sample_shape=torch.Size([n_samples])) # (n_samples, n_test_samples)
+
+# Calculate the quantile correction factor (Z_alpha * sigma_n)
+# Observation noise variance (sigma_n^2) from the likelihood
+sigma_n2 = credal_CP_gp.base_model.likelihood.noise.item() 
+sigma_n = np.sqrt(sigma_n2)
+Z_alphas = norm.ppf(quantiles)
+quantile_correction = Z_alphas * sigma_n
+correction_tensor = torch.tensor(quantile_correction, dtype=torch.float32)
+
+# Calculate the quantile for each function sample
+quantile_samples_tensor = f_samples_tensor[:, :, None] + correction_tensor[None, None, :] # (n_samples, n_test_samples, n_quantiles)
+# Reshape to (n_test_samples, n_samples, n_quantiles)
+quantile_samples = quantile_samples_tensor.permute(1, 0, 2).numpy()
+
+# Flatten the first two axes for inverse scaling, keeping n_quantiles separate
+original_shape = quantile_samples.shape
+samples_2d = quantile_samples.reshape(-1, original_shape[2])
+
+samples_inverse_scaled = credal_CP_gp.base_model.scaler_y.inverse_transform(samples_2d)
+quantile_samples = samples_inverse_scaled.reshape(original_shape)
+
+q_low_grid = quantile_samples[:, :, 0]
+q_upp_grid = quantile_samples[:, :, 1]
+
+# obtaining lower and upper quantiles for each x_calib
+beta = 0.1
+q_low_raw = np.quantile(q_low_grid, beta/2, axis=1)
+q_upp_raw = np.quantile(q_upp_grid, 1 - beta/2, axis=1)
+
+# with lower and upper quantiles, we can compute the modified nonconformity scores
+nc_scores = np.maximum(q_low_raw - Y_cal, Y_cal - q_upp_raw)
+n = len(nc_scores)
+cutoff = np.quantile(nc_scores, 
+                            q=np.ceil((n + 1) * (1 - 0.1)) / n)
+
+
+# prediction
+credal_CP_gp.base_model.model.eval()
+credal_CP_gp.base_model.likelihood.eval()
+
+X_test_standardized = torch.tensor(# 7. Inverse log transform if necessary
+    credal_CP_gp.base_model.scaler_X.transform(X_test), dtype=torch.float32
+)
+
+with torch.no_grad(), gpytorch.settings.fast_pred_var():
+    # Get the latent function distribution f(X*) from the model
+    latent_distribution = credal_CP_gp.base_model.model(X_test_standardized)
+    
+    # Sample directly from the latent function distribution. 
+    f_samples_tensor = latent_distribution.rsample(sample_shape=torch.Size([n_samples])) # (n_samples, n_test_samples)
+
+# Calculate the quantile correction factor (Z_alpha * sigma_n)
+# Observation noise variance (sigma_n^2) from the likelihood
+sigma_n2 = credal_CP_gp.base_model.likelihood.noise.item() 
+sigma_n = np.sqrt(sigma_n2)
+Z_alphas = norm.ppf(quantiles)
+quantile_correction = Z_alphas * sigma_n
+correction_tensor = torch.tensor(quantile_correction, dtype=torch.float32)
+
+# Calculate the quantile for each function sample
+quantile_samples_tensor = f_samples_tensor[:, :, None] + correction_tensor[None, None, :] # (n_samples, n_test_samples, n_quantiles)
+# Reshape to (n_test_samples, n_samples, n_quantiles)
+quantile_samples = quantile_samples_tensor.permute(1, 0, 2).numpy()
+
+# Flatten the first two axes for inverse scaling, keeping n_quantiles separate
+original_shape = quantile_samples.shape
+samples_2d = quantile_samples.reshape(-1, original_shape[2])
+
+samples_inverse_scaled = credal_CP_gp.base_model.scaler_y.inverse_transform(samples_2d)
+quantile_samples = samples_inverse_scaled.reshape(original_shape)
+
+q_low_grid = quantile_samples[:, :, 0]
+q_upp_grid = quantile_samples[:, :, 1]
+
+q_low_raw = np.quantile(q_low_grid, beta/2, axis=1)
+q_upp_raw = np.quantile(q_upp_grid, 1 - beta/2, axis=1)
+
+lower_cp = q_low_raw - cutoff
+upper_cp = q_upp_raw + cutoff
+
+inside_gp = (Y_test >= lower_cp) & (Y_test <= upper_cp)
+coverage_gp = inside_gp.mean()
+n_test = len(Y_test)
+print(f"GP test marginal coverage: {coverage_gp:.3f} ({inside_gp.sum()}/{n_test})")
+print(f"Average GP interval width: {np.mean(upper_cp - lower_cp):.4f}")
+
+# ============================================
+# BART calibration debugging
+quantile_levels = [credal_CP_bart.alpha / 2, 1 - credal_CP_bart.alpha / 2]
+quantile_levels = np.asarray(quantile_levels)
+
+# 1. Set new test data in the PyMC model
+with credal_CP_bart.base_model.model_bart:
+    credal_CP_bart.base_model.X_data.set_value(X_cal)
+    
+    if credal_CP_bart.base_model.type == "normal":
+        if credal_CP_bart.base_model.var == "heteroscedastic":
+            # Sample 'w' which contains both mu (w[0]) and log(sigma) (w[1])
+            var_names = ["w"]
+        elif credal_CP_bart.base_model.var == "homoscedastic":
+            # Sample the mean function 'mu' and the scalar noise 'sigma'
+            var_names = ["mu", "sigma"]
+        else:
+            raise ValueError(f"Unknown variance type: {credal_CP_bart.base_model.var}")
+
+    # Sample the model parameters from the posterior (theta ~ P(theta|D))
+    posterior_samples = pm.sample_posterior_predictive(
+        trace=credal_CP_bart.base_model.mc_sample,
+        var_names=var_names,
+        predictions=True,
+        random_seed=45,
+        progressbar=credal_CP_bart.base_model.progressbar,
+    )
+
+# Calculate Z-scores for the required quantile levels
+Z_alphas = norm.ppf(quantile_levels) # shape: (n_quantiles,)
+n_quantiles = Z_alphas.shape[0]
+n_test_samples = X_cal.shape[0]
+
+w_samples = az.extract(
+            posterior_samples,
+            group="predictions",
+            var_names=["w"],
+        ).to_numpy()
+
+# mu_samples shape: (n_samples, n_test_samples)
+mu_samples = w_samples[0, :, :]
+# sigma_samples shape: (n_samples, n_test_samples). Note: PyMC uses exp(w[1]) for sigma.
+sigma_samples = np.exp(w_samples[1, :, :])
+
+# Calculate quantiles: Q_alpha = mu + Z_alpha * sigma
+quantile_samples_temp = (
+    mu_samples[:, :, None] + sigma_samples[:, :, None] * Z_alphas[None, None, :]
+)
+
+quantile_samples = np.transpose(quantile_samples_temp, (1, 0, 2))
+
+q_low_grid = quantile_samples[:, :, 0]
+q_upp_grid = quantile_samples[:, :, 1]
+
+beta = 0.1
+q_low_raw = np.quantile(q_low_grid, beta/2, axis=0)
+q_upp_raw = np.quantile(q_upp_grid, 1 - beta/2, axis=0)
+
+
+nc_scores = np.maximum(q_low_raw - Y_cal, Y_cal - q_upp_raw)
+n = len(nc_scores)
+cutoff = np.quantile(nc_scores, 
+                            q=np.ceil((n + 1) * (1 - 0.1)) / n)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
