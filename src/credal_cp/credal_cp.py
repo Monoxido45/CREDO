@@ -306,18 +306,6 @@ class CredalCPRegressor(BaseEstimator):
                 n = len(self.nc_scores)
                 self.cutoff = np.quantile(self.nc_scores, 
                                           q=np.ceil((n + 1) * (1 - self.alpha)) / n)
-            
-            q_low_array = np.array(q_low_raw)
-            q_upp_array = np.array(q_upp_raw)
-            
-            # with lower and upper quantiles, we can compute the modified nonconformity scores
-            self.nc_scores = np.maximum(q_low_array - y_calib, 
-                                        y_calib - q_upp_array)
-            n = len(self.nc_scores)
-            self.cutoff = np.quantile(
-                self.nc_scores,
-                q=np.ceil((n + 1) * (1 - self.alpha)) / n
-                )
         
         elif self.base_model_type == "MDN" and self.nn_type == "Ensemble":
             # obtaining samples from posterior for each x_calib

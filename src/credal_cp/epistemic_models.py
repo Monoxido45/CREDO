@@ -49,25 +49,25 @@ class MDN_base(nn.Module):
         """
         super(MDN_base, self).__init__()
         self.layers = nn.ModuleList()
-        self.batch_norms = nn.ModuleList()
         self.dropouts = nn.ModuleList()
+#        self.batch_norms = nn.ModuleList()
 
         # Creating hidden layers dinamically
         prev_units = input_shape
         for units in hidden_layers:
             self.layers.append(nn.Linear(prev_units, units))
             self.dropouts.append(nn.Dropout(dropout_rate))
-            self.batch_norms.append(nn.BatchNorm1d(units))
+#            self.batch_norms.append(nn.BatchNorm1d(units))
             prev_units = units
 
         self.fc_out = nn.Linear(prev_units, num_components * 3)
-
+# self.batch_norms
     def forward(self, x):
-        for layer, bn, dropout in zip(self.layers, self.batch_norms, self.dropouts):
+        for layer, dropout in zip(self.layers, self.dropouts):
             x = F.relu(layer(x))
-            # x = torch.tanh(layer(x))
-            x = bn(x)
             x = dropout(x)
+            # x = torch.tanh(layer(x))
+ #           x = bn(x)
         x = self.fc_out(x)
         return x
 
@@ -130,16 +130,17 @@ class MDN_model(BaseEstimator):
     # MDN loss
     @staticmethod
     def mdn_loss(pi, mu, sigma, y_true, type="gaussian"):
-        y_true = y_true.view(-1,1).expand_as(mu)
+        y_true = y_true.view(-1, 1)
+        y_true = y_true.expand_as(mu)
 
         if type == "gaussian":
-            result = -0.5 * ((y_true - mu) / sigma) ** 2 - torch.log(sigma * np.sqrt(2.0 * np.pi))
-            log_pi = torch.log(pi + 1e-8)  # numerical stability
-        elif type == "gamma":
-            result = torch.sum(pi * gamma_pdf(y_true, mu, sigma), dim=1)
-
-        log_prob = torch.logsumexp(log_pi + result, dim=1)
-        return -torch.mean(log_prob)
+            log_pdf = -torch.log(sigma * np.sqrt(2.0 * np.pi)) - 0.5 * ((y_true - mu) / sigma)**2
+            
+            log_pi = torch.log(pi + 1e-8)
+            
+            loss = -torch.logsumexp(log_pi + log_pdf, dim=1)
+            
+        return torch.mean(loss)
 
     # Mixture coeficient obtention
     def get_mixture_coef(self, y_pred):
@@ -147,7 +148,7 @@ class MDN_model(BaseEstimator):
         # pi = pi / pi.sum(dim=1, keepdim=True)
         if self.type == "gaussian":
             mu = y_pred[:, self.num_components : 2 * self.num_components]
-            sigma = F.softplus(y_pred[:, 2 * self.num_components :])
+            sigma = F.softplus(y_pred[:, 2 * self.num_components :]) + 1e-6
 
         elif self.type == "gamma":
             mu = F.softplus(y_pred[:, self.num_components : 2 * self.num_components])
@@ -417,7 +418,7 @@ class MDN_model(BaseEstimator):
             self.alpha = alpha
         return self
     
-    def predict(self, X_test, y_test=None, return_params=False):
+    def predict(self, X_test, y_test=None, return_params=False, N = 1000):
         """
         Make predictions with MDN base model.
 
@@ -440,7 +441,7 @@ class MDN_model(BaseEstimator):
         
         elif self.base_model_type == "quantile":
             alphas = [self.alpha / 2, 1 - (self.alpha / 2)]
-            quantiles_test = self.mixture_quantile(alphas, pi, mu, sigma)
+            quantiles_test = self.mixture_quantile(alphas, pi, mu, sigma, N=N)
             return quantiles_test
         
         # density part
@@ -488,16 +489,19 @@ class MDN_model(BaseEstimator):
         mu = np.asarray(mu)
         sigma = np.asarray(sigma)
 
-        n_sample, _ = pi.shape
+        n_sample, n_comp = pi.shape
         n_alphas = len(alphas)
-
-        # N samples from each mixture
-        samples = self.sample_from_mixture(pi, mu, sigma, N=N)
-
-        # Quantile computation
         quantile_matrix = np.zeros((n_sample, n_alphas))
-        for j, alpha in enumerate(alphas):
-            quantile_matrix[:, j] = np.quantile(samples, alpha, axis=1)
+        if n_comp == 1:
+            for j, alpha in enumerate(alphas):
+                quantile_matrix[:, j] = mu.flatten() + sigma.flatten() * norm.ppf(alpha)
+        else:
+            # N samples from each mixture
+            samples = self.sample_from_mixture(pi, mu, sigma, N=N)
+
+            # Quantile computation
+            for j, alpha in enumerate(alphas):
+                quantile_matrix[:, j] = np.quantile(samples, alpha, axis=1)
 
         return quantile_matrix
 

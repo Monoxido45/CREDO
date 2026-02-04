@@ -597,7 +597,7 @@ credal_CP_ensemble, credal_CP_dropout, \
         cqr_dropout, cqr_r_dropout, \
             X_test, Y_test = fit_all_methods(train, cal, test)
 
-X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
+X_test_grid = np.linspace(-1, 1, 500).astype(np.float32).reshape(-1, 1)
 
 plot_uncertainty_decomposition(
     credal_CP_ensemble,
@@ -620,7 +620,7 @@ plot_results(
 ####### Fitting bart-based method #######
 credal_CP_bart, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
 
-X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
+X_test_grid = np.linspace(-1.15, 1.15, 500).astype(np.float32).reshape(-1, 1)
 # plotting uncertainty decomposition for BART
 plot_uncertainty_decomposition_bart(
     credal_CP_bart,
@@ -629,4 +629,79 @@ plot_uncertainty_decomposition_bart(
     Y_test_bart,
     normalize=False,
 )
+
+# changing second type of data
+def make_variable_data_v2(n, std_dev=1/5):
+    # proportion of points in the scarce region
+    p_scarce = 0.02      # few points in [0, 0.4]
+    n_scarce = int(n * p_scarce)
+    n_dense = n - n_scarce
+
+    # dense region: outside [0, 0.4]
+    x_dense = np.random.uniform(low=-1, high=1, size=n_dense)
+    x_dense = x_dense[(x_dense < 0) | (x_dense > 0.4)]
+    while len(x_dense) < n_dense:
+        new_samples = np.random.uniform(low=-1, high=1, size=n_dense)
+        new_samples = new_samples[(new_samples < 0) | (new_samples > 0.4)]
+        x_dense = np.concatenate([x_dense, new_samples])
+    x_dense = x_dense[:n_dense]
+
+    # scarce region: [0, 0.4]
+    x_scarce = np.random.uniform(low=0, high=0.4, size=n_scarce)
+
+    # join everything
+    x = np.concatenate([x_dense, x_scarce])
+    np.random.shuffle(x)
+
+    # true mean
+    mu = (x**3) + 2 * np.exp(-6 * (x - 0.3)**2)
+
+    # --------------------------
+    # variance is quite complex
+    # --------------------------
+    sigma = np.zeros_like(x)
+
+    # left region [-1, -0.3]: low variance (easy)
+    mask_low = (x <= -0.3)
+    sigma[mask_low] = 0.1
+
+    # intermediate region (-0.3, 0): moderate variance + oscillation
+    mask_mid = (x > -0.3) & (x < 0)
+    sigma[mask_mid] = 0.2 + 0.15 * np.abs(np.sin(10 * x[mask_mid]))
+
+    # sparse region [0, 0.4]: low variance and few points (hard, few points)
+    mask_sparse = (x >= 0) & (x <= 0.4)
+    sigma[mask_sparse] = 0.05 + 0.1 * np.abs(np.sin(12 * x[mask_sparse]))
+
+    # right region (0.4, 1]: back to moderate variance
+    mask_right = (x > 0.4)
+    sigma[mask_right] = 0.3 + 0.1 * (x[mask_right] > 0.7)
+
+    # optional global scaling
+    sigma *= std_dev / (1/5)
+
+    # generate y
+    y = mu + np.random.normal(scale=sigma, size=len(x))
+
+    return pd.DataFrame({'x': x, 'y': y})
+
+np.random.seed(42)
+n= 1500
+data = make_variable_data_v2(n)
+train, rest = train_test_split(data, test_size=0.5, random_state=42)
+cal, test = train_test_split(rest, test_size=0.5, random_state=42)
+
+credal_CP_bart, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
+
+X_test_grid = np.linspace(-1.15, 1.15, 500).astype(np.float32).reshape(-1, 1)
+# plotting uncertainty decomposition for BART
+plot_uncertainty_decomposition_bart(
+    credal_CP_bart,
+    X_test_grid,
+    X_test_bart,
+    Y_test_bart,
+    normalize=True,
+)
+
+
 
