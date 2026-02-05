@@ -15,7 +15,8 @@ from credal_cp.epistemic_models import (
     DE_MDN_model,
 )
 from tqdm import tqdm
-
+from sklearn.preprocessing import StandardScaler
+from sklearn.neighbors import NearestNeighbors
 
 class CredalCPRegressor(BaseEstimator):
     """
@@ -75,6 +76,8 @@ class CredalCPRegressor(BaseEstimator):
         nc_type,
         base_model,
         alpha,
+        adaptive_gamma=True,
+        base_gamma = 0.1,
     ):
         self.nc_type = nc_type
         self.base_model = base_model
@@ -87,6 +90,8 @@ class CredalCPRegressor(BaseEstimator):
         self.base_model_type = None
         self.base_is_sklearn = False
         self.base_is_fitted = False
+        self.gamma = base_gamma
+        self.adaptive_gamma = adaptive_gamma
 
         # case 2: an sklearn Estimator instance
         if isinstance(base_model, BaseEstimator):
@@ -235,13 +240,15 @@ class CredalCPRegressor(BaseEstimator):
                     random_seed=random_seed_fit
                 )
                 self.base_is_fitted = True
+        
+        if self.adaptive_gamma:
+            self.fit_gamma(X)
         return self
     
     def calibrate(
             self, 
             X_calib, 
             y_calib,
-            beta=0.1,
             random_seed_calib=0,
             N_samples_MC=300,
             ):
@@ -260,7 +267,11 @@ class CredalCPRegressor(BaseEstimator):
         self : object
             Returns self.
         """
-        self.beta = beta
+        if self.adaptive_gamma:
+            gamma_quantiles = self.compute_gamma(X_calib)
+        else:
+            gamma_quantiles = self.gamma * np.ones(len(X_calib))
+
         self.rng = np.random.default_rng(random_seed_calib)
         # For this, use mixture quantile to derive the vector of quantiles to be used for each x
         if self.base_model_type == "MDN" and self.nn_type == "MC_Dropout":
@@ -290,13 +301,14 @@ class CredalCPRegressor(BaseEstimator):
                     mu_chosen, 
                     sigma_chosen,
                     rng= self.rng,
+                    return_scale=True,
                     )
 
                     self.q_grid = q_grid
 
                     # obtaining lower and upper quantiles for the current x
-                    q_low_raw.append(np.quantile(q_grid[:, 0], self.beta/2))
-                    q_upp_raw.append(np.quantile(q_grid[:, 1], 1 - self.beta/2))
+                    q_low_raw.append(np.quantile(q_grid[:, 0], gamma_quantiles[i]/2))
+                    q_upp_raw.append(np.quantile(q_grid[:, 1], 1 - gamma_quantiles[i]/2))
                     i += 1
                 
                 q_low_raw = np.array(q_low_raw)
@@ -334,8 +346,8 @@ class CredalCPRegressor(BaseEstimator):
                     )
 
                     # obtaining lower and upper quantiles for the current x
-                    q_low_raw.append(np.quantile(q_grid[:, 0], self.beta/2))
-                    q_upp_raw.append(np.quantile(q_grid[:, 1], 1 - self.beta/2))
+                    q_low_raw.append(np.quantile(q_grid[:, 0], gamma_quantiles[i]/2))
+                    q_upp_raw.append(np.quantile(q_grid[:, 1], 1 - gamma_quantiles[i]/2))
                     i += 1
                 
                 q_low_array = np.array(q_low_raw)
@@ -369,8 +381,12 @@ class CredalCPRegressor(BaseEstimator):
                 q_upp_grid = q_samples[:, :, 1]
 
                 # obtaining lower and upper quantiles for each x_calib
-                q_low_raw = np.quantile(q_low_grid, self.beta/2, axis=1)
-                q_upp_raw = np.quantile(q_upp_grid, 1 - self.beta/2, axis=1)
+                if self.adaptive_gamma:
+                    q_low_raw = np.array([np.quantile(q_low_grid[i, :], gamma_quantiles[i]/2) for i in range(len(X_calib))])
+                    q_upp_raw = np.array([np.quantile(q_upp_grid[i, :], 1 - gamma_quantiles[i]/2) for i in range(len(X_calib))])
+                else:
+                    q_low_raw = np.quantile(q_low_grid, self.gamma/2, axis=1)
+                    q_upp_raw = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=1)
 
                 # with lower and upper quantiles, we can compute the modified nonconformity scores
                 self.nc_scores = np.maximum(q_low_raw - y_calib, y_calib - q_upp_raw)
@@ -395,8 +411,16 @@ class CredalCPRegressor(BaseEstimator):
                 q_upp_grid = q_samples[:, :, 1]
 
                 # obtaining lower and upper quantiles for each x_calib
-                q_low_raw = np.quantile(q_low_grid, self.beta/2, axis=0)
-                q_upp_raw = np.quantile(q_upp_grid, 1 - self.beta/2, axis=0)
+                q_low_raw = np.quantile(q_low_grid, self.gamma/2, axis=0)
+                q_upp_raw = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=0)
+
+                # obtaining lower and upper quantiles for each x_calib
+                if self.adaptive_gamma:
+                    q_low_raw = np.array([np.quantile(q_low_grid[:, i], gamma_quantiles[i]/2) for i in range(len(X_calib))])
+                    q_upp_raw = np.array([np.quantile(q_upp_grid[:, i], 1 - gamma_quantiles[i]/2) for i in range(len(X_calib))])
+                else:
+                    q_low_raw = np.quantile(q_low_grid, self.gamma/2, axis=0)
+                    q_upp_raw = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=0)
 
                 # with lower and upper quantiles, we can compute the modified nonconformity scores
                 self.nc_scores = np.maximum(q_low_raw - y_calib, y_calib - q_upp_raw)
@@ -406,6 +430,41 @@ class CredalCPRegressor(BaseEstimator):
                 
         return self.cutoff
     
+    def fit_gamma(self, X):
+        self.scaler_x = StandardScaler().fit(X)
+        # standardizing XStandardScaler()
+        X_scaled = self.scaler_x.transform(X)
+        k = 50
+        self.gamma_model = NearestNeighbors(n_neighbors=k).fit(X_scaled)
+
+        distances, indices = self.gamma_model.kneighbors(X_scaled)
+
+        # storing the last distance
+        last_neighbor_dist = distances[:, -1]
+
+        # computing quantile on gammas
+        self.q_lo_gamma = np.quantile(last_neighbor_dist, 0.5)
+        self.q_hi_gamma = np.quantile(last_neighbor_dist, 0.9)
+        return self
+    
+    @staticmethod
+    def sigma(u):
+        return 1 / (1 + np.exp(-u))
+    
+    def compute_gamma(self, X, eps = 1e-5):
+        X_scaled = self.scaler_x.transform(X)
+        distances, indices = self.gamma_model.kneighbors(X_scaled)
+        last_neighbor_dist = distances[:, -1]
+
+        scarce_score = (last_neighbor_dist - self.q_lo_gamma) / (self.q_hi_gamma - self.q_lo_gamma + eps)
+        gamma_min = self.gamma/4
+        gamma_max = 1 - self.gamma/4
+        gamma_values = gamma_max - ((gamma_max - gamma_min) * self.sigma(scarce_score))
+
+        return gamma_values
+
+
+
     def predict(
             self,
             X_test,
@@ -426,6 +485,11 @@ class CredalCPRegressor(BaseEstimator):
         y_pred : array-like, shape (n_samples,)
             Predicted values.
         """
+        if self.adaptive_gamma:
+            gamma_quantiles = self.compute_gamma(X_test)
+        else:
+            gamma_quantiles = self.gamma * np.ones(len(X_test))
+
         if self.base_model_type == "MDN" and self.nn_type == "MC_Dropout":
             pi_test, mu_test, sigma_test = self.base_model.predict_mcdropout(
                 X_test, 
@@ -457,8 +521,8 @@ class CredalCPRegressor(BaseEstimator):
                     )
                     
                     # obtaining lower and upper quantiles for the current x
-                    q_low_pred.append(np.quantile(q_grid[:, 0], self.beta/2))
-                    q_upp_pred.append(np.quantile(q_grid[:, 1], 1 - self.beta/2))
+                    q_low_pred.append(np.quantile(q_grid[:, 0], gamma_quantiles[i]/2))
+                    q_upp_pred.append(np.quantile(q_grid[:, 1], 1 - gamma_quantiles[i]/2))
                     if disentangle:
                         aleatoric_unc.append(np.mean(q_grid[:, 1] - q_grid[:, 0]))
                     i += 1
@@ -512,8 +576,8 @@ class CredalCPRegressor(BaseEstimator):
                     )
 
                     # obtaining lower and upper quantiles for the current x
-                    q_low_pred.append(np.quantile(q_grid[:, 0], self.beta/2))
-                    q_upp_pred.append(np.quantile(q_grid[:, 1], 1 - self.beta/2))
+                    q_low_pred.append(np.quantile(q_grid[:, 0], gamma_quantiles[i]/2))
+                    q_upp_pred.append(np.quantile(q_grid[:, 1], 1 - gamma_quantiles[i]/2))
                     if disentangle:
                         aleatoric_unc.append(np.mean(q_grid[:, 1] - q_grid[:, 0]))
 
@@ -552,9 +616,13 @@ class CredalCPRegressor(BaseEstimator):
                 if disentangle:
                     aleatoric_unc = np.mean(q_upp_grid - q_low_grid, axis=1)
 
-                # obtaining lower and upper quantiles for each x_test
-                q_low_pred = np.quantile(q_low_grid, self.beta/2, axis=1)
-                q_upp_pred = np.quantile(q_upp_grid, 1 - self.beta/2, axis=1)
+                # obtaining lower and upper quantiles for each x_calib
+                if self.adaptive_gamma:
+                    q_low_pred = np.array([np.quantile(q_low_grid[i, :], gamma_quantiles[i]/2) for i in range(len(X_test))])
+                    q_upp_pred = np.array([np.quantile(q_upp_grid[i, :], 1 - gamma_quantiles[i]/2) for i in range(len(X_test))])
+                else:
+                    q_low_pred = np.quantile(q_low_grid, self.gamma/2, axis=1)
+                    q_upp_pred = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=1)
 
                 lower_cp = q_low_pred - self.cutoff
                 upper_cp = q_upp_pred + self.cutoff
@@ -580,9 +648,13 @@ class CredalCPRegressor(BaseEstimator):
                 if disentangle:
                     aleatoric_unc = np.mean(q_upp_grid - q_low_grid, axis=0)
 
-                # obtaining lower and upper quantiles for each x_test
-                q_low_pred = np.quantile(q_low_grid, self.beta/2, axis=0)
-                q_upp_pred = np.quantile(q_upp_grid, 1 - self.beta/2, axis=0)
+                # obtaining lower and upper quantiles for each x_calib
+                if self.adaptive_gamma:
+                    q_low_pred = np.array([np.quantile(q_low_grid[:, i], gamma_quantiles[i]/2) for i in range(len(X_test))])
+                    q_upp_pred = np.array([np.quantile(q_upp_grid[:, i], 1 - gamma_quantiles[i]/2) for i in range(len(X_test))])
+                else:
+                    q_low_pred = np.quantile(q_low_grid, self.gamma/2, axis=0)
+                    q_upp_pred = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=0)
 
                 lower_cp = q_low_pred - self.cutoff
                 upper_cp = q_upp_pred + self.cutoff

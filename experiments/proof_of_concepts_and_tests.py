@@ -158,11 +158,11 @@ def make_homoscedastic_sin(n=3000, noise_std=0.1):
     return df.sample(frac=1.0, random_state=0).reset_index(drop=True)
 
 # Generate data
-epis_data = make_gap_epistemic_few_middle(n=5000, noise_std=0.1, p_middle=0.01)
-epis_data_mixture = make_epistemic_mixture_gaps(rng, n=5000)
+epis_data = make_gap_epistemic_few_middle(n=3000, noise_std=0.1, p_middle=0.01)
+epis_data_mixture = make_epistemic_mixture_gaps(rng, n=3000)
 # other more regular datasets for testing
-hetero_data = make_heteroscedastic_sin(n=5000, noise_base=0.05)
-homosc_data = make_homoscedastic_sin(n=5000, noise_std=0.1)
+hetero_data = make_heteroscedastic_sin(n=3000, noise_base=0.05)
+homosc_data = make_homoscedastic_sin(n=3000, noise_std=0.1)
 
 ############# Regular data MDN proof of concept #############
 # starting with homoscedastic data
@@ -202,24 +202,36 @@ def train_MDN_and_obtain_int(
         mdn_model = MDN_model(
         input_shape = 1,
         num_components = 1,
-        hidden_layers = [64],
+        hidden_layers = [64, 64],
         dropout_rate = 0.0,
         normalize_y = normalize_y,
+        log_y=False,
+        type="gaussian",
+        base_model_type="density",
         )
 
         mdn_model.fit(
         X_train,
         Y_train,
-        scale = True,
-        patience = 50,
-        epochs = 500,
-        batch_size = 32,
-        lr = 1e-3,
-    )
+        proportion_train=0.7,
+        epochs=500,
+        lr=1e-3,
+        gamma=0.99,
+        batch_size=64,
+        step_size=10,
+        weight_decay=0.0,
+        verbose=0,
+        patience=50,
+        scale=True,
+        random_seed_split=0,
+        random_seed_fit=123,
+        )
         
         # first predicting the mean
         mdn_model.set_type_base_model("regression")
         mean_grid = mdn_model.predict(X_grid, N = 10000)
+#        pi, mu, sigma = mdn_model.predict(X_grid)
+#        mean_grid = torch.sum(pi * mu, dim=1)
 
         # deriving the non conformalized quantiles
         mdn_model.set_type_base_model("quantile", alpha = alpha)
@@ -239,11 +251,48 @@ def train_MDN_and_obtain_int(
         pred_cqr_grid = np.column_stack((lo_cqr, up_cqr))
         return pred_grid, pred_cqr_grid, mean_grid, mdn_model
     else:
+        # no dropout version for CQR and naive
+        mdn_model_nd = MDN_model(
+        input_shape = 1,
+        num_components = 1,
+        hidden_layers = [64, 64],
+        dropout_rate = 0,
+        normalize_y = normalize_y,
+    )
+
+        mdn_model_nd.fit(
+        X_train,
+        Y_train,
+        scale = True,
+        patience = 30,
+        epochs = 500,
+        batch_size = 32,
+        lr = 0.001,
+    )
+        
+        # deriving the non conformalized quantiles
+        mdn_model_nd.set_type_base_model("quantile", alpha = alpha)
+
+        # making grid predictions
+        pred_grid = mdn_model_nd.predict(X_grid, N = 10000)
+
+        # standard CQR
+        print("Calibrating CQR intervals \n")
+        q_cqr = mdn_model_nd.predict(X_cal, N = 10000)
+        nc_scores_cqr = np.maximum(q_cqr[:, 0] - Y_cal, Y_cal - q_cqr[:, 1])
+        n = len(nc_scores_cqr)
+        cutoff_cqr = np.quantile(nc_scores_cqr, q=np.ceil((n + 1) * (1 - alpha)) / n)
+
+        lo_cqr = pred_grid[:, 0] - cutoff_cqr
+        up_cqr = pred_grid[:, 1] + cutoff_cqr
+
+        pred_cqr_grid = np.column_stack((lo_cqr, up_cqr))
+
         mdn_model = MDN_model(
         input_shape = 1,
         num_components = 1,
-        hidden_layers = [128],
-        dropout_rate = 0.3,
+        hidden_layers = [64, 64],
+        dropout_rate = 0.1,
         normalize_y = normalize_y,
     )
 
@@ -256,29 +305,11 @@ def train_MDN_and_obtain_int(
         batch_size = 32,
         lr = 0.001,
     )
-        # deriving the non conformalized quantiles
-        mdn_model.set_type_base_model("quantile", alpha = alpha)
-
-        # making grid predictions
-        pred_grid = mdn_model.predict(X_grid, N = 10000)
-
-        # standard CQR
-        print("Calibrating CQR intervals \n")
-        q_cqr = mdn_model.predict(X_cal, N = 10000)
-        nc_scores_cqr = np.maximum(q_cqr[:, 0] - Y_cal, Y_cal - q_cqr[:, 1])
-        n = len(nc_scores_cqr)
-        cutoff_cqr = np.quantile(nc_scores_cqr, q=np.ceil((n + 1) * (1 - alpha)) / n)
-
-        lo_cqr = pred_grid[:, 0] - cutoff_cqr
-        up_cqr = pred_grid[:, 1] + cutoff_cqr
-
-        pred_cqr_grid = np.column_stack((lo_cqr, up_cqr))
-
         # Obtaining the credal conformalized region by hand
         print("Calibrating Credal CP intervals \n")
         pi_calib, mu_calib, sigma_calib = mdn_model.predict_mcdropout(
             X_cal, 
-            num_samples = 300,
+            num_samples = 500,
             )
 
         lower_q = alpha / 2
@@ -297,10 +328,10 @@ def train_MDN_and_obtain_int(
             mu_chosen, 
             sigma_chosen,
             rng= rng,
+            return_scale = True,
             )
 
             q_grid = q_grid
-
             # obtaining lower and upper quantiles for the current x
             q_low_raw.append(np.quantile(q_grid[:, 0], beta/2))
             q_upp_raw.append(np.quantile(q_grid[:, 1], 1 - beta/2))
@@ -316,7 +347,7 @@ def train_MDN_and_obtain_int(
         # For grid predictions
         pi_grid, mu_grid, sigma_grid = mdn_model.predict_mcdropout(
             X_grid,
-            num_samples = 300,
+            num_samples = 500,
             )
 
         q_low_grid, q_upp_grid = [], []
@@ -325,12 +356,14 @@ def train_MDN_and_obtain_int(
             pi_chosen = pi_grid[:, i, :]
             mu_chosen = mu_grid[:, i, :]
             sigma_chosen = sigma_grid[:, i, :]
+
             q_grid = mdn_model.mixture_quantile(
             [lower_q, upper_q], 
             pi_chosen, 
             mu_chosen, 
             sigma_chosen,
             rng= rng,
+            return_scale = True,
             )
 
             q_grid = q_grid
@@ -359,13 +392,11 @@ def plot_MDN_intervals(
         X_grid,
         ):
     x = X_grid.flatten()
-    order = np.argsort(x)
-    x_s = x[order]
 
     # Use pred_grid for the "raw" MDN predictive interval if it contains quantiles/intervals.
     pred_arr = np.asarray(pred_grid)
-    std_lo = pred_arr[:, 0] if pred_arr.shape[1] >= 2 else None
-    std_hi = pred_arr[:, 1] if pred_arr.shape[1] >= 2 else None
+    std_lo = pred_arr[:, 0]
+    std_hi = pred_arr[:, 1]
     raw_lo = pred_grid_raw[:, 0]
     raw_hi = pred_grid_raw[:, 1]
     cp_lo = pred_grid_cp[:, 0]
@@ -378,8 +409,7 @@ def plot_MDN_intervals(
 
     # Panel 1: vanilla MDN predictive quantiles (raw)
     ax = axes[0]
-    ax.fill_between(x_s, raw_lo[order], raw_hi[order], color='C0', alpha=0.25, label='MDN predictive interval (raw)')
-    y_pred_grid = pred_grid.reshape(-1) if np.ndim(pred_grid) > 1 and pred_grid.shape[1] == 1 else np.asarray(pred_grid)
+    ax.fill_between(x, raw_lo, raw_hi, color='C0', alpha=0.25, label='MDN predictive interval (raw)')
     ax.scatter(test["x"], test["y"], s=18, color='k', alpha=0.7)
     ax.scatter(train["x"], train["y"], s=10, color='gray', alpha=0.3)
     ax.set_xlabel("x")
@@ -389,7 +419,7 @@ def plot_MDN_intervals(
 
     # Panel 2: conformalized Credal CP intervals
     ax = axes[1]
-    ax.fill_between(x_s, cp_lo[order], cp_hi[order], color='C1', alpha=0.25, label='Credal CP calibrated interval')
+    ax.fill_between(x, cp_lo, cp_hi, color='C1', alpha=0.25, label='Credal CP calibrated interval')
     ax.scatter(test["x"], test["y"], s=18, color='k', alpha=0.7)
     ax.scatter(train["x"], train["y"], s=10, color='gray', alpha=0.3)
     ax.set_xlabel("x")
@@ -398,7 +428,7 @@ def plot_MDN_intervals(
 
     # Panel 3: standard quantiles
     ax = axes[2]
-    ax.fill_between(x_s, std_lo[order], std_hi[order], color='C2', alpha=0.25, label='Standard intervals')
+    ax.fill_between(x, std_lo, std_hi, color='C2', alpha=0.25, label='Standard intervals')
     ax.scatter(test["x"], test["y"], s=18, color='k', alpha=0.7)
     ax.scatter(train["x"], train["y"], s=10, color='gray', alpha=0.3)
     ax.set_xlabel("x")
@@ -407,7 +437,7 @@ def plot_MDN_intervals(
 
     # Panel 4: Conformalized Quantile Regression (CQR) intervals
     ax = axes[3]
-    ax.fill_between(x_s, cqr_lo[order], cqr_hi[order], color='C4', alpha=0.25, label='CQR calibrated interval')
+    ax.fill_between(x, cqr_lo, cqr_hi, color='C4', alpha=0.25, label='CQR calibrated interval')
     ax.scatter(test["x"], test["y"], s=18, color='k', alpha=0.7)
     ax.scatter(train["x"], train["y"], s=10, color='gray', alpha=0.3)
     ax.set_xlabel("x")
@@ -428,9 +458,7 @@ def plot_two_intervals(
     colors=("C0", "C1"),
     figsize=(12, 4),
 ):
-    x = np.asarray(X_grid).reshape(-1)
-    order = np.argsort(x)
-    x_s = x[order]
+    x = np.asarray(X_grid).flatten()
 
     pi1 = np.asarray(pred_interval_1)
     pi2 = np.asarray(pred_interval_2)
@@ -441,13 +469,12 @@ def plot_two_intervals(
     fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=True)
     axes = axes.flatten()
     # prepare mu_grid
-    mu_arr = np.asarray(mu_grid).reshape(-1)
-    mu_s = mu_arr[order]
+    mu_arr = np.asarray(mu_grid).flatten()
 
     # Left plot
     ax = axes[0]
-    ax.fill_between(x_s, lo1[order], hi1[order], color=colors[0], alpha=0.25, label=titles[0])
-    ax.plot(x_s, mu_s, color='red', linewidth=1.5, label='mu_grid')
+    ax.fill_between(x, lo1, hi1, color=colors[0], alpha=0.25, label=titles[0])
+    ax.plot(x, mu_arr, color='red', linewidth=1.5, label='mu_grid')
     if test_df is not None:
         ax.scatter(test_df["x"], test_df["y"], s=18, color="k", alpha=0.7, label="Test")
     if train_df is not None:
@@ -458,8 +485,8 @@ def plot_two_intervals(
 
     # Right plot
     ax = axes[1]
-    ax.fill_between(x_s, lo2[order], hi2[order], color=colors[1], alpha=0.25, label=titles[1])
-    ax.plot(x_s, mu_s, color='red', linewidth=1.5, label='mu_grid')
+    ax.fill_between(x, lo2, hi2, color=colors[1], alpha=0.25, label=titles[1])
+    ax.plot(x, mu_arr, color='red', linewidth=1.5, label='mu_grid')
     if test_df is not None:
         ax.scatter(test_df["x"], test_df["y"], s=18, color="k", alpha=0.7, label="Test")
     if train_df is not None:

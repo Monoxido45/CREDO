@@ -1,5 +1,4 @@
 ######## Code for Predictive models
-
 # used torch packages
 import torch
 import torch.nn as nn
@@ -33,6 +32,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import gpytorch
 from scipy.stats import norm, gamma
+from scipy.optimize import brentq
 
 
 #### Mixture density network models
@@ -130,29 +130,35 @@ class MDN_model(BaseEstimator):
     # MDN loss
     @staticmethod
     def mdn_loss(pi, mu, sigma, y_true, type="gaussian"):
-        y_true = y_true.view(-1, 1)
-        y_true = y_true.expand_as(mu)
+        y_true = y_true.view(-1, 1).expand_as(mu)
 
         if type == "gaussian":
-            log_pdf = -torch.log(sigma * np.sqrt(2.0 * np.pi)) - 0.5 * ((y_true - mu) / sigma)**2
-            
-            log_pi = torch.log(pi + 1e-8)
-            
-            loss = -torch.logsumexp(log_pi + log_pdf, dim=1)
-            
-        return torch.mean(loss)
+            # log N(y | mu, sigma)
+            result = (
+                -0.5 * ((y_true - mu) / sigma) ** 2
+                - torch.log(sigma * np.sqrt(2.0 * np.pi))
+            )
+            log_pi = torch.log(pi + 1e-8)  # stability
+            log_prob = torch.logsumexp(log_pi + result, dim=1)
+            return -torch.mean(log_prob)
+
+        elif type == "gamma":
+            result = torch.sum(pi * gamma_pdf(y_true, mu, sigma), dim=1)
+            return -torch.mean(torch.log(result + 1e-12))
+
+        raise ValueError(f"Unknown type={type}")
 
     # Mixture coeficient obtention
     def get_mixture_coef(self, y_pred):
-        pi = F.softmax(y_pred[:, : self.num_components], dim=1)
+        K = self.num_components
+        pi = F.softmax(y_pred[:, : K], dim=1)
         # pi = pi / pi.sum(dim=1, keepdim=True)
         if self.type == "gaussian":
-            mu = y_pred[:, self.num_components : 2 * self.num_components]
-            sigma = F.softplus(y_pred[:, 2 * self.num_components :]) + 1e-6
-
+            mu = y_pred[:, K : 2 * K]
+            sigma = F.softplus(y_pred[:, 2 * K :]) + 1e-6
         elif self.type == "gamma":
-            mu = F.softplus(y_pred[:, self.num_components : 2 * self.num_components])
-            sigma = F.softplus(y_pred[:, 2 * self.num_components :])
+            mu = F.softplus(y_pred[:, K : 2 * K])
+            sigma = F.softplus(y_pred[:, 2 * K :])
         # sigma = torch.exp(y_pred[:, 2 * num_components:])
         return pi, mu, sigma
 
@@ -220,12 +226,6 @@ class MDN_model(BaseEstimator):
             if self.log_y:
                 y_train, self.lmbda = st.boxcox(y_train)
                 y_val = st.boxcox(y_val, lmbda=self.lmbda)
-                if self.normalize_y:
-                    self.y_scaler = StandardScaler()
-                    self.y_scaler.fit(y_train.reshape(-1, 1))
-
-                    y_train = self.y_scaler.transform(y_train.reshape(-1, 1)).flatten()
-                    y_val = self.y_scaler.transform(y_val.reshape(-1, 1)).flatten()
 
             elif self.normalize_y:
                 self.y_scaler = StandardScaler()
@@ -397,6 +397,7 @@ class MDN_model(BaseEstimator):
         mu_predictions = torch.stack(mu_predictions)
         sigma_predictions = torch.stack(sigma_predictions)
 
+        self.model.eval()
         if return_mean:
             pi_mean = torch.mean(pi_predictions, dim=0)
             mu_mean = torch.mean(mu_predictions, dim=0)
@@ -435,36 +436,55 @@ class MDN_model(BaseEstimator):
             pred_test = self.model(X_test)
             pi, mu, sigma = self.get_mixture_coef(pred_test)
 
-        if self.base_model_type == "regression":
-            mean_test = self.mixture_mean(pi, mu).numpy()
-            return mean_test
-        
-        elif self.base_model_type == "quantile":
-            alphas = [self.alpha / 2, 1 - (self.alpha / 2)]
-            quantiles_test = self.mixture_quantile(alphas, pi, mu, sigma, N=N)
-            return quantiles_test
-        
-        # density part
-        elif self.base_model_type == "density" and (y_test is not None):
-            # normalizing y_test if needed
-            if self.log_y:
-                y_test = st.boxcox(y_test, lmbda=self.lmbda)
-            if self.normalize_y:
-                y_test = self.y_scaler.transform(y_test.reshape(-1, 1)).flatten()
+            if self.base_model_type == "regression":
+                mean_test = self.mixture_mean(pi, mu).numpy()
+                if self.normalize_y:
+                    mean_test = self.y_scaler.inverse_transform(mean_test.reshape(-1, 1)).flatten()
+                return mean_test
+            
+            elif self.base_model_type == "quantile":
+                alphas = [self.alpha / 2, 1 - (self.alpha / 2)]
+                quantiles_test = self.mixture_quantile(
+                    alphas, 
+                    pi, 
+                    mu, 
+                    sigma, 
+                    N=N, 
+                    return_scale=True,
+                    )
+                return quantiles_test
+            
+            # density part
+            elif self.base_model_type == "density" and (y_test is not None):
+                # normalizing y_test if needed
+                if self.log_y:
+                    y_test = st.boxcox(y_test, lmbda=self.lmbda)
+                if self.normalize_y:
+                    y_test = self.y_scaler.transform(y_test.reshape(-1, 1)).flatten()
 
-            # transforming to tensor also if needed
-            if isinstance(y_test, np.ndarray):
-                y_test = torch.tensor(y_test, dtype=torch.float32)
-                density_test = self.mixture_density(y_test, pi, mu, sigma)
-            if return_params:
-                return density_test, pi, mu, sigma
-            else:
-                return density_test
+                # transforming to tensor also if needed
+                if isinstance(y_test, np.ndarray):
+                    y_test = torch.tensor(y_test, dtype=torch.float32)
+                    density_test = self.mixture_density(y_test, pi, mu, sigma)
+                if return_params:
+                    return density_test, pi, mu, sigma
+                else:
+                    return density_test
 
-        elif self.base_model_type == "density" and (y_test is None):
-            return pi, mu, sigma
+            elif self.base_model_type == "density" and (y_test is None):
+                return pi, mu, sigma
 
-    def mixture_quantile(self, alphas, pi, mu, sigma, rng=0, N=1000):   
+    def mixture_quantile(
+            self, 
+            alphas, 
+            pi, 
+            mu, 
+            sigma, 
+            rng=0, 
+            method = "MC", 
+            N=1000, 
+            return_scale = False,
+            ):   
         """
         Compute quantiles for each mixture component.
 
@@ -495,15 +515,41 @@ class MDN_model(BaseEstimator):
         if n_comp == 1:
             for j, alpha in enumerate(alphas):
                 quantile_matrix[:, j] = mu.flatten() + sigma.flatten() * norm.ppf(alpha)
+                if return_scale and self.normalize_y:
+                    quantile_matrix[:, j] = self.y_scaler.inverse_transform(
+                        quantile_matrix[:, j].reshape(-1, 1)).flatten()
         else:
-            # N samples from each mixture
-            samples = self.sample_from_mixture(pi, mu, sigma, N=N)
-
-            # Quantile computation
-            for j, alpha in enumerate(alphas):
-                quantile_matrix[:, j] = np.quantile(samples, alpha, axis=1)
-
+            if method == "MC":
+                samples = self.sample_from_mixture(pi, mu, sigma, N=N)
+                # Quantile computation
+                for j, alpha in enumerate(alphas):
+                    quantile_matrix[:, j] = np.quantile(samples, alpha, axis=1)
+                    if return_scale and self.normalize_y:
+                        quantile_matrix[:, j] = self.y_scaler.inverse_transform(
+                            quantile_matrix[:, j].reshape(-1, 1)).flatten()
+                        
+            elif method == "root":
+                n_samples = pi.shape[0]
+                for j, alpha in enumerate(alphas):
+                    for i in range(n_samples):
+                        quantile_matrix[i, j] = self.mixture_quantile_root(alpha, pi[i], mu[i], sigma[i])
+                    if return_scale and self.normalize_y:
+                        quantile_matrix[:, j] = self.y_scaler.inverse_transform(
+                            quantile_matrix[:, j].reshape(-1, 1)).flatten()
+                        
         return quantile_matrix
+
+    def mixture_quantile_root(alpha, pi, mu, sigma):
+        # pi, mu, sigma are for ONE observation (n_components,)
+        def cdf_func(y):
+            # Weighted sum of individual Gaussian CDFs
+            return np.sum(pi * norm.cdf(y, mu, sigma)) - alpha
+        
+        # Define a wide search range based on the mixture means and stds
+        low = np.min(mu - 5 * sigma)
+        high = np.max(mu + 5 * sigma)
+        
+        return brentq(cdf_func, low, high)
 
     # Computing means using the mixture parameters
     @staticmethod
@@ -910,7 +956,7 @@ class MDN_model(BaseEstimator):
 
         return quantiles
 
-
+  
 #### Neural Network Classifier Base Architecture
 class NN_base(nn.Module):
     def __init__(self, input_shape, num_classes, hidden_layers, dropout_rate=0.4):
