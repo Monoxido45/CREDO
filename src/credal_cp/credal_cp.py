@@ -77,7 +77,7 @@ class CredalCPRegressor(BaseEstimator):
         base_model,
         alpha,
         adaptive_gamma=True,
-        base_gamma = 0.1,
+        gamma = 0.1,
     ):
         self.nc_type = nc_type
         self.base_model = base_model
@@ -90,7 +90,7 @@ class CredalCPRegressor(BaseEstimator):
         self.base_model_type = None
         self.base_is_sklearn = False
         self.base_is_fitted = False
-        self.gamma = base_gamma
+        self.gamma = gamma
         self.adaptive_gamma = adaptive_gamma
 
         # case 2: an sklearn Estimator instance
@@ -131,11 +131,14 @@ class CredalCPRegressor(BaseEstimator):
             random_seed_split=0,
             random_seed_fit=1250,
             n_MCMC=2000,
+            base_model_type = None,
             **fit_params):
         self.nn_type = nn_type
         if self.base_is_sklearn and not self.base_is_fitted:
             self.base_model.fit(X, y, **fit_params)
             self.base_is_fitted = True
+            self.base_model_type = base_model_type
+
         elif not self.base_is_sklearn and self.base_model_type == "string_unfitted":
             # MDN + Dropout or other BNN approximations
             if self.base_model == "MDN" and self.nn_type == "MC_Dropout":
@@ -430,11 +433,10 @@ class CredalCPRegressor(BaseEstimator):
                 
         return self.cutoff
     
-    def fit_gamma(self, X):
+    def fit_gamma(self, X, k =50):
         self.scaler_x = StandardScaler().fit(X)
         # standardizing XStandardScaler()
         X_scaled = self.scaler_x.transform(X)
-        k = 50
         self.gamma_model = NearestNeighbors(n_neighbors=k).fit(X_scaled)
 
         distances, indices = self.gamma_model.kneighbors(X_scaled)
@@ -462,8 +464,6 @@ class CredalCPRegressor(BaseEstimator):
         gamma_values = gamma_max - ((gamma_max - gamma_min) * self.sigma(scarce_score))
 
         return gamma_values
-
-
 
     def predict(
             self,
