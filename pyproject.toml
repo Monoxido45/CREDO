@@ -40,6 +40,8 @@ packages = [
     { include = "credal_cp", from = "src" }
 ]
 
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
 
 [tool.poetry.group.dev.dependencies]
 scikit-learn = "^1.5.1"
