@@ -188,8 +188,34 @@ def fit_methods(
     upper_uacqrp = uacqr_pred_test["UACQR-P"]["upper"]
     uacqrp_int = np.column_stack((lower_uacqrp, upper_uacqrp))
 
+    # checking if there are any infinite bounds in UACQR-S or UACQR-P and removing 
+    # those indices from all methods to ensure fair comparison
+    lower_s = np.asarray(uacqr_pred_test["UACQR-S"]["lower"])
+    upper_s = np.asarray(uacqr_pred_test["UACQR-S"]["upper"])
+    finite_s = np.isfinite(lower_s) & np.isfinite(upper_s)
+
+    lower_p = np.asarray(uacqr_pred_test["UACQR-P"]["lower"])
+    upper_p = np.asarray(uacqr_pred_test["UACQR-P"]["upper"])
+    finite_p = np.isfinite(lower_p) & np.isfinite(upper_p)
+
+    # unified mask: keep only indices that are finite in both methods
+    good_mask = finite_s & finite_p
+    n_total = good_mask.shape[0]
+    n_removed = int((~good_mask).sum())
+    print(f"Combined removal: excluding {n_removed} of {n_total} test points with infinite bounds in either UACQR-S or UACQR-P")
+
+    # apply the unified filter to the stored predictions and to uacqrs_int
+    y_test = y_test[good_mask]
+    uacqrs_int = uacqrs_int[good_mask]
+    uacqrp_int = uacqrp_int[good_mask]
+    cqr_int = cqr_int[good_mask]
+    cqrr_int = cqrr_int[good_mask]
+    credo_adaptive_int = credo_adaptive_int[good_mask]
+    credo_fixed_int = credo_fixed_int[good_mask]
+
     del uacqr_results
     gc.collect()
+    
     # evaluating metrics of interest
     # marginal coverage
     cover_credo_adap = average_coverage(
