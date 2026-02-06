@@ -123,13 +123,12 @@ def fit_methods(
     adaptive_gamma = False,
     gamma = gamma,
     is_fitted = True,
-    base_model_type = "BART"
     )
 
     credal_CP_bart_fixed.fit(
         X_train, 
         y_train,
-        base_model_type = credal_CP_bart_adaptive.base_model_type,
+        base_model_type ="BART",
     )
     
     credal_CP_bart_fixed.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
