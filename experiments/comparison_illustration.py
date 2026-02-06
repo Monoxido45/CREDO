@@ -371,7 +371,7 @@ def fit_bart(train, cal, test):
         base_model = "BART",
         alpha = 0.1,
         adaptive_gamma = True,
-        base_gamma = 0.05,
+        gamma = 0.05,
     )
 
     # starting fitting

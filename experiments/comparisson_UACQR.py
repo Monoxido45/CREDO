@@ -1,4 +1,4 @@
-from uacqr import uacqr
+from experiments.uacqr import uacqr
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -8,7 +8,6 @@ from sklearn.model_selection import train_test_split
 # importing our package
 from credal_cp.credal_cp import CredalCPRegressor
 import numpy as np
-
 ###### PASTA
 RESULTS_DIR = "results"
 os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -86,7 +85,7 @@ credal_CP_bart = CredalCPRegressor(
     base_model = "BART",
     alpha = 0.1,
     adaptive_gamma = True,
-    base_gamma = 0.05,
+    gamma = 0.05,
 )
 
 # starting fitting
@@ -96,7 +95,7 @@ credal_CP_bart.fit(
     progressbar = True,
     n_cores = 4,
     n_MCMC = 1000,
-    alpha_bart = 0.98,
+    alpha_bart = 0.985,
 )
 
 
@@ -121,17 +120,17 @@ rfqr_params = {
     "min_samples_leaf": 5,
 }
 
-catboost_params = {
-    "iterations": 1000,
-    "learning_rate": 1e-3,
-    "depth": 6,  # default value
-    "l2_leaf_reg": 3,  # default value
-    "random_strength": 1,  # default value
-    "bagging_temperature": 1,  # default value
-    "od_type": "Iter",
-    "od_wait": 50,
-    "use_best_model": False,
-}
+# catboost_params = {
+#    "iterations": 1000,
+#    "learning_rate": 1e-3,
+#    "depth": 6,  # default value
+#    "l2_leaf_reg": 3,  # default value
+#    "random_strength": 1,  # default value
+#    "bagging_temperature": 1,  # default value
+#    "od_type": "Iter",
+#    "od_wait": 50,
+#    "use_best_model": False,
+# }
 
 
 # fitting base estimator and UACQR
@@ -150,7 +149,7 @@ uacqr_results = uacqr(
 
 uacqr_results.fit(X_train, Y_train)
 uacqr_results.calibrate(X_cal, Y_cal)
-uacqr_pred_test = uacqr_results.predict_uacqr(X_test)
+uacqr_pred_test = uacqr_results.predict(X_test)
 
 #Average_coverage_cqrr = average_coverage(
      #uacqr_pred_test["CQR-r"]["upper"], uacqr_pred_test["CQR-r"]["lower"], Y_test)
@@ -161,9 +160,9 @@ uacqr_pred_test = uacqr_results.predict_uacqr(X_test)
 # ============================================
 # Plotting and predicting
 # ============================================
-X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
+X_test_grid = np.linspace(-1.15, 1.15, 500).astype(np.float32).reshape(-1, 1)
 pred_bart = credal_CP_bart.predict(X_test_grid)
-pred_cqr = uacqr_results.predict_uacqr(X_test_grid)
+pred_cqr = uacqr_results.predict(X_test_grid)
 
 # Simple concise plotting assuming predict() returns (N,2) arrays [lower, upper]
 pred_bart = np.asarray(pred_bart)
@@ -172,6 +171,15 @@ center_bart = 0.5 * (lower_bart + upper_bart)
 
 xx = X_test_grid.ravel()
 fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharey=True)
+# Global sizes (will affect legends and any subsequent text)
+fontsize = 16
+plt.rcParams.update({
+        "axes.titlesize": fontsize,
+        "axes.labelsize": fontsize,
+        "legend.fontsize": fontsize,
+        "xtick.labelsize": fontsize,
+        "ytick.labelsize": fontsize,
+    })
 
 # =========================
 # BART (top-left)
@@ -179,18 +187,17 @@ fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharey=True)
 ax = axes[0, 0]
 
 ax.scatter(X_test.ravel(), Y_test.ravel(),
-           s=30, color="k", alpha=0.8, label="Test data", zorder=3)
+           s=30, color="k", alpha=0.8, zorder=3)
 
 ax.fill_between(xx, lower_bart, upper_bart,
-                color="C0", alpha=0.25, label="BART interval")
+                color="C0", alpha=0.25)
 
 ax.plot(xx, center_bart,
-        color="C0", lw=1, label="BART center")
+        color="C0", lw=1)
 
 ax.set_xlabel("x")
 ax.set_ylabel("y")
-ax.set_title("BART")
-ax.legend()
+ax.set_title("CREDO", fontweight="bold")
 ax.grid(True)
 
 # =========================
@@ -198,25 +205,20 @@ ax.grid(True)
 # =========================
 ax = axes[0, 1]
 
-x_test_plot = X_test.ravel()
-idx = np.argsort(x_test_plot)
+lower_cqr = pred_cqr["CQR"]["lower"]
+upper_cqr = pred_cqr["CQR"]["upper"]
 
-x_sorted = x_test_plot[idx]
-lower_sorted = uacqr_pred_test["CQR"]["lower"][idx]
-upper_sorted = uacqr_pred_test["CQR"]["upper"][idx]
-
-ax.scatter(x_test_plot, Y_test.ravel(),
+ax.scatter(X_test.ravel(), Y_test.ravel(),
            s=30, color="k", alpha=0.8, zorder=3)
 
-ax.fill_between(x_sorted, lower_sorted, upper_sorted,
-                color="C1", alpha=0.25, label="CQR interval")
+ax.fill_between(xx, lower_cqr, upper_cqr,
+                color="C1", alpha=0.25)
 
-ax.plot(x_sorted, 0.5 * (upper_sorted + lower_sorted),
-        color="C1", lw=1, label="CQR center")
+ax.plot(xx, 0.5 * (upper_cqr + lower_cqr),
+        color="C1", lw=1)
 
 ax.set_xlabel("x")
 ax.set_title("CQR")
-ax.legend()
 ax.grid(True)
 
 # =========================
@@ -224,22 +226,21 @@ ax.grid(True)
 # =========================
 ax = axes[1, 0]
 
-lower_sorted = uacqr_pred_test["CQR-r"]["lower"][idx]
-upper_sorted = uacqr_pred_test["CQR-r"]["upper"][idx]
+lower_cqrr = pred_cqr["CQR-r"]["lower"]
+upper_cqrr = pred_cqr["CQR-r"]["upper"]
 
-ax.scatter(x_test_plot, Y_test.ravel(),
+ax.scatter(X_test.ravel(), Y_test.ravel(),
            s=30, color="k", alpha=0.8, zorder=3)
 
-ax.fill_between(x_sorted, lower_sorted, upper_sorted,
-                color="C2", alpha=0.25, label="CQR-r interval")
+ax.fill_between(xx, lower_cqrr, upper_cqrr,
+                color="C2", alpha=0.25)
 
-ax.plot(x_sorted, 0.5 * (upper_sorted + lower_sorted),
-        color="C2", lw=1, label="CQR-r center")
+ax.plot(xx, 0.5 * (upper_cqrr + lower_cqrr),
+        color="C2", lw=1)
 
 ax.set_xlabel("x")
 ax.set_ylabel("y")
 ax.set_title("CQR-r")
-ax.legend()
 ax.grid(True)
 
 # =========================
@@ -247,28 +248,27 @@ ax.grid(True)
 # =========================
 ax = axes[1, 1]
 
-lower_sorted = uacqr_pred_test["UACQR-S"]["lower"][idx]
-upper_sorted = uacqr_pred_test["UACQR-S"]["upper"][idx]
+lower_uacqrs = pred_cqr["UACQR-S"]["lower"]
+upper_uacqrs = pred_cqr["UACQR-S"]["upper"]
 
-ax.scatter(x_test_plot, Y_test.ravel(),
+ax.scatter(X_test.ravel(), Y_test.ravel(),
            s=30, color="k", alpha=0.8, zorder=3)
 
-ax.fill_between(x_sorted, lower_sorted, upper_sorted,
-                color="C3", alpha=0.25, label="UACQR-S interval")
+ax.fill_between(xx, lower_uacqrs, upper_uacqrs,
+                color="C3", alpha=0.25)
 
-ax.plot(x_sorted, 0.5 * (upper_sorted + lower_sorted),
-        color="C3", lw=1, label="UACQR-S center")
+ax.plot(xx, 0.5 * (upper_uacqrs + lower_uacqrs),
+        color="C3", lw=1)
 
 ax.set_xlabel("x")
 ax.set_title("UACQR-S")
-ax.legend()
 ax.grid(True)
 
 # =========================
 # Save
 # =========================
 plt.tight_layout()
-
+plt.show()
 output_path = os.path.join(RESULTS_DIR, "bart_CQR_CQRr_UACQR_teste.png")
 plt.savefig(output_path, dpi=300, bbox_inches="tight")
 plt.close()
