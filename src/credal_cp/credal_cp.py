@@ -77,6 +77,7 @@ class CredalCPRegressor(BaseEstimator):
         base_model,
         alpha,
         adaptive_gamma=True,
+        is_fitted=False,
         gamma = 0.1,
     ):
         self.nc_type = nc_type
@@ -97,11 +98,7 @@ class CredalCPRegressor(BaseEstimator):
         if isinstance(base_model, BaseEstimator):
             self.base_model = base_model
             self.base_is_sklearn = True
-            try:
-                check_is_fitted(self.base_model)
-                self.base_is_fitted = True
-            except Exception:
-                self.base_is_fitted = False
+            self.base_is_fitted = is_fitted
             self.base_model_type = "sklearn_fitted_estimator" if self.base_is_fitted else "sklearn_unfitted_estimator"
 
         # case 3: non-sklearn object
@@ -138,7 +135,7 @@ class CredalCPRegressor(BaseEstimator):
             self.base_model.fit(X, y, **fit_params)
             self.base_is_fitted = True
             self.base_model_type = base_model_type
-
+            
         elif not self.base_is_sklearn and self.base_model_type == "string_unfitted":
             # MDN + Dropout or other BNN approximations
             if self.base_model == "MDN" and self.nn_type == "MC_Dropout":

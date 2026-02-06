@@ -20,6 +20,7 @@ from credal_cp.utils import (
 )
 from uacqr import uacqr
 import pickle
+import os
 
 os.chdir(original_path)
 print(original_path)
@@ -34,7 +35,6 @@ parser.add_argument("-seed_initial", "--seed_initial", type=int, default=15, hel
 parser.add_argument("-dataset", "--dataset", type=str, default="airfoil", help="dataset to use for the experiment")
 parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default="rfqr", help="UACQR and CQR base models: 'rfqr' or 'catboost'")
 parser.add_argument("-n_cores", "--n_cores", type=int, default=4, help="number of cores to use for parallel processing")
-parser.add_argument("-uacqr_seed", "--uacqr_seed", type = int, default = 45, help="seed for the random generator used in UACQR")
 args = parser.parse_args()
 
 alpha = args.alpha
@@ -46,7 +46,6 @@ seed_initial = args.seed_initial
 dataset = args.dataset
 uacqr_model = args.uacqr_model
 n_cores = args.n_cores
-uacqr_seed = args.uacqr_seed
 
 DATA_PATH = os.path.join(original_path , "data")
 RESULTS_PATH = os.path.join(original_path , "results")
@@ -58,6 +57,29 @@ torch.manual_seed(seed_initial)
 torch.cuda.manual_seed(seed_initial)
 alpha = 0.1
 gamma = 0.05
+
+# Check for an existing checkpoint to optionally resume the experiment
+chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
+chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint.pkl")
+resume_from = 0
+checkpoint_data = None
+loaded_cover = loaded_isl = loaded_IL = loaded_pcorr = None
+loaded_seeds_so_far = None
+
+if os.path.exists(chk_file):
+    try:
+        with open(chk_file, "rb") as f:
+            checkpoint_data = pickle.load(f)
+        checkpoint_flag = True
+        print(f"Found checkpoint for dataset '{dataset}'. Resuming from iteration {resume_from}.")
+    except Exception as e:
+        print(f"Failed to load checkpoint '{chk_file}': {e}")
+        checkpoint_data = None
+        checkpoint_flag = False
+else:
+    print(f"No checkpoint found at '{chk_file}'. Starting a new run.")
+    checkpoint_flag = False
+
 
 def generate_seeds(seed_initial, n_rep):
     np.random.seed(seed_initial)
@@ -71,6 +93,7 @@ def fit_methods(
         y_calib,
         X_test,
         y_test,
+        i,
 ): 
     # Fitting CREDO with BART
     credal_CP_bart_adaptive = CredalCPRegressor(
@@ -89,6 +112,7 @@ def fit_methods(
         n_MCMC = n_MCMC,
         normalize_y=True,
         alpha_bart = alpha_bart,
+        random_seed_fit=i,
     )
     credal_CP_bart_adaptive.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
 
@@ -119,27 +143,27 @@ def fit_methods(
     # Fitting UACQR
     if uacqr_model == "rfqr":
         rfqr_params = {
-    "n_estimators": 100,
-    "max_features" : "sqrt",
-    "min_samples_leaf": 5,
+        "n_estimators": 100,
+        "max_features" : "sqrt",
+        "min_samples_leaf": 5,
     }
         uacqr_params = {
-    "model_type": "rfqr",
-    "B": 100, 
-    "uacqrs_agg": "std",
-    "base_model_type": "Quantile",
+        "model_type": "rfqr",
+        "B": 100, 
+        "uacqrs_agg": "std",
+        "base_model_type": "Quantile",
         }
 
         uacqr_results = uacqr(
         rfqr_params,
         bootstrapping_for_uacqrp=False,
+        uacqrs_bagging=False,
         q_lower=alpha / 2 * 100,
         q_upper=(1 - alpha / 2) * 100,
         alpha = alpha,
         model_type=uacqr_params["model_type"],
         B=uacqr_params["B"],
-        random_state=uacqr_seed,
-        uacqrs_bagging=False,
+        random_state=i,
         uacqrs_agg=uacqr_params["uacqrs_agg"],
      )
         
@@ -278,15 +302,29 @@ def run_experiment(dataset,
                    n_rep, 
                    target_column, 
                    prop_test = 0.2, 
-                   prop_train = 0.5):
+                   prop_train = 0.5,
+                   checkpoint_flag = False,
+                   checkpoint_data = None,
+                   ):
     data = pd.read_csv(os.path.join(DATA_PATH, f"{dataset}.csv"))
 
-    seeds = generate_seeds(seed_initial, n_rep)
-    cover_results = []
-    isl_results = []
-    IL_results = []
-    pcorr_results = []
-    for i in tqdm(range(n_rep), desc = f"Running methods for dataset: {dataset}"):
+    if checkpoint_flag:
+        resume_from = int(checkpoint_data.get("iteration", -1)) + 1
+        cover_results = checkpoint_data.get("cover_results", [])
+        isl_results = checkpoint_data.get("isl_results", [])
+        IL_results = checkpoint_data.get("IL_results", [])
+        pcorr_results = checkpoint_data.get("pcorr_results", [])
+        seeds = checkpoint_data.get("seeds", None)
+        print(f"Resuming from iteration {resume_from}. Loaded {len(cover_results)} results so far.")
+    else:
+        resume_from = 0
+        seeds = generate_seeds(seed_initial, n_rep)
+        cover_results = []
+        isl_results = []
+        IL_results = []
+        pcorr_results = []
+
+    for i in tqdm(range(resume_from, n_rep), desc = f"Running methods for dataset: {dataset}"):
         print(f"Repetition {i+1}/{n_rep}")
         seed = seeds[i]
         X = data.drop(columns=[target_column])
@@ -298,7 +336,6 @@ def run_experiment(dataset,
         X_train, X_calib, y_train, y_calib = train_test_split(
             X_train_calib, y_train_calib, test_size=prop_train, random_state=seed
         )
-
         
         X_train = X_train.to_numpy(dtype=np.float32)
         y_train = y_train.to_numpy()
@@ -315,11 +352,36 @@ def run_experiment(dataset,
             y_calib,
             X_test,
             y_test,
+            i,
         )
         cover_results.append(cover_array)
         isl_results.append(isl_array)
         IL_results.append(IL_array)
         pcorr_results.append(pcorr_array)
+
+        def save_checkpoint(iteration, seeds):
+            try:
+                checkpoint = {
+                    "cover_results": cover_results,
+                    "isl_results": isl_results,
+                    "IL_results": IL_results,
+                    "pcorr_results": pcorr_results,
+                    "iteration": iteration,
+                    "seeds": seeds,
+                    "alpha": alpha,
+                    "gamma": gamma,
+                    "dataset": dataset,
+                }
+                chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
+                os.makedirs(chk_dir, exist_ok=True)
+                filepath = os.path.join(chk_dir, f"{dataset}_checkpoint.pkl")
+                with open(filepath, "wb") as f:
+                    pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
+            except Exception as e:
+                print(f"Failed saving checkpoint at iter {iteration+1}: {e}")
+
+        # save checkpoint after each repetition
+        save_checkpoint(i, seeds)
     
     # summarize results: convert lists to arrays and compute mean and sd (sample sd if n_rep>1)
     cover_results = np.array(cover_results)
@@ -358,6 +420,8 @@ cover, isl, IL, pcorr = run_experiment(
     dataset = dataset, 
     n_rep = n_rep, 
     target_column = "target",
+    checkpoint_flag = checkpoint_flag,
+    checkpoint_data = checkpoint_data
     )
 
 raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}")
@@ -370,4 +434,13 @@ for name, arr in to_save.items():
         pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
+chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint.pkl")
+try:
+    if os.path.exists(chk_file):
+        os.remove(chk_file)
+        chk_dir = os.path.dirname(chk_file)
+        if os.path.isdir(chk_dir) and not os.listdir(chk_dir):
+            os.rmdir(chk_dir)
+except Exception as e:
+    print(f"Failed to delete checkpoint {chk_file}: {e}")
 
