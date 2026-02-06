@@ -41,7 +41,19 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.11,<4.0"
+python = ">=3.11,<3.14"
+numpy = ">=1.26"
+scipy = ">=1.14.1"
+scikit-learn = ">=1.5.1"
+matplotlib = ">=3.9.2"
+seaborn = ">=0.12.2"
+tqdm = ">=4.66.5"
+torch = ">=2.3.1"
+gpytorch = ">=1.13"
+pymc = "==5.26.1"
+pymc-bart = "==0.11.0"
+arviz = "==0.22.0"
+pyqt5  = ">=5.15.11,<6.0.0"
 
 [tool.poetry.group.dev.dependencies]
 scikit-learn = "^1.5.1"

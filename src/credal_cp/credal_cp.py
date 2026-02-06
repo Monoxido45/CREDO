@@ -241,6 +241,8 @@ class CredalCPRegressor(BaseEstimator):
                 )
                 self.base_is_fitted = True
         
+        else:
+          self.base_model_type = base_model_type
         if self.adaptive_gamma:
             self.fit_gamma(X)
         return self

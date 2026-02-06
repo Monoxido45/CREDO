@@ -122,6 +122,8 @@ def fit_methods(
     alpha = alpha,
     adaptive_gamma = False,
     gamma = gamma,
+    is_fitted = True,
+    base_model_type = "BART"
     )
 
     credal_CP_bart_fixed.fit(
