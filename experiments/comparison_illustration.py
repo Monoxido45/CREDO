@@ -19,6 +19,7 @@ from matplotlib.patches import Patch
 # For reproducibility
 np.random.seed(125)
 torch.manual_seed(125)
+rng = np.random.default_rng(125)
 
 device = torch.device("cpu")  # change to "cuda" if desired
 
@@ -118,8 +119,68 @@ def make_variable_data(n, std_dev=1/5):
 
     return pd.DataFrame({'x': x, 'y': y})
 
+# third type of data
+def make_epistemic_mixture_gaps(rng, n):
+    """
+    Example where:
+      - several gaps in the input space
+      - noise is small and constant (mostly aleatoric)
+      - mean is non-linear
+    """
+
+    # Mixture to create dense regions, sparse regions, and a few tail points (extrapolation pressure)
+    mix = rng.choice([0, 1, 2, 3], size=n, p=[0.55, 0.30, 0.10, 0.05])
+
+    x = np.empty(n)
+    x[mix == 0] = rng.normal(loc=-1.8, scale=0.35, size=(mix == 0).sum())   # dense left cluster
+    x[mix == 1] = rng.normal(loc=1.6,  scale=0.45, size=(mix == 1).sum())   # dense right cluster
+    x[mix == 2] = rng.uniform(-0.4, 0.4, size=(mix == 2).sum())            # sparse middle band
+    x[mix == 3] = rng.choice([-3.8, 3.8], size=(mix == 3).sum()) + rng.normal(0, 0.15, size=(mix == 3).sum())
+
+    x = np.clip(x, -4.2, 4.2)
+    x = np.sort(x)
+    X = x.reshape(-1, 1)
+
+
+    def f(x_):
+        """Smooth latent function."""
+        return 0.8*np.sin(1.1*x_) + 0.25*x_ + 0.45*np.cos(0.6*x_)
+
+
+    def sigma_base(x_):
+        """Heteroscedastic baseline scale."""
+        return (
+            0.12
+            + 0.10*np.exp(-0.5*((x_+1.7)/0.5)**2)
+            + 0.25/(1+np.exp(-(x_-1.2)))
+            + 0.06*(x_/3.0)**2
+        )
+
+
+    def sample_noise(x_):
+        """
+        Adds conditional heterogeneity beyond Gaussian:
+        A 'shock' component (shifted, high-variance) occurs with probability increasing in right tail and far tails.
+        """
+        x_ = np.asarray(x_)
+
+        p_shock = 0.05 + 0.35/(1+np.exp(-(x_-1.3))) + 0.15*(np.abs(x_) > 3.2)
+        p_shock = np.clip(p_shock, 0.05, 0.65)
+
+        shock = rng.binomial(1, p_shock, size=x_.shape[0])
+
+        e_main  = rng.normal(0, 1, size=x_.shape[0])
+        e_shock = rng.normal(loc=1.8, scale=2.2, size=x_.shape[0])  # shifted & heavier
+
+        return (1-shock)*e_main + shock*e_shock
+
+
+    y = f(x) + sigma_base(x) * sample_noise(x)
+    df = pd.DataFrame({"x": x, "y": y})
+    return df.sample(frac=1.0, random_state=0).reset_index(drop=True)
+
 # Generate data
-data = make_gap_epistemic_few_middle(n=2500, noise_std=0.1)
+data = make_gap_epistemic_few_middle(n=1500, noise_std=0.1)
 
 # Train / cal / test split
 train, rest = train_test_split(data, test_size=0.5, random_state=125)
@@ -309,6 +370,8 @@ def fit_bart(train, cal, test):
         nc_type = 'Quantile',
         base_model = "BART",
         alpha = 0.1,
+        adaptive_gamma = True,
+        gamma = 0.05,
     )
 
     # starting fitting
@@ -318,13 +381,12 @@ def fit_bart(train, cal, test):
         progressbar = True,
         n_cores = 4,
         n_MCMC = 1000,
-        alpha_bart = 0.98,
+        alpha_bart = 0.985,
     )
 
     bart_cutoff = credal_CP_bart.calibrate(
         X_cal, 
-        Y_cal, 
-        beta = 0.1,
+        Y_cal,
         N_samples_MC=1000
         )
     
@@ -356,27 +418,104 @@ def plot_uncertainty_decomposition_bart(
 
     xx = X_test_grid.ravel()
 
-    # Create a 2x2 grid: top row = uncertainty decomposition, bottom row = prediction intervals
+    # Create a 1x2 grid: left = uncertainty decomposition, right = prediction intervals
     fig, axes = plt.subplots(1, 2, figsize=(12, 8), sharex=True)
+    
+    # Increase caption/font sizes for this figure
+    fontsize = 16
+    plt.rcParams.update({
+        "axes.titlesize": fontsize,
+        "axes.labelsize": fontsize,
+        "legend.fontsize": fontsize,
+        "xtick.labelsize": fontsize,
+        "ytick.labelsize": fontsize,
+    })
 
-    # Top-left: BART uncertainty decomposition
+    # Make room at the top for legends placed above the titles
+    fig.subplots_adjust(top=0.82)
+
+    # Left: BART uncertainty decomposition
     ax = axes[0]
-    ax.plot(xx, new_aleatoric, label="Aleatoric", color="C2")
-    ax.plot(xx, new_epistemic, label="Epistemic", color="C1")
+    l1, = ax.plot(xx, new_aleatoric, label="Aleatoric", color="C2")
+    l2, = ax.plot(xx, new_epistemic, label="Epistemic", color="C1")
     ax.set_title("Normalized Uncertainty Decomposition (BART)")
-    ax.set_ylabel("Uncertainty percentage")
-    ax.legend()
+    ax.set_ylabel("Uncertainty percentage", fontsize=fontsize)
+    ax.set_xlabel("x", fontsize=fontsize)
     ax.grid(True)
+    # Place legend above the title, horizontally
+    ax.legend(handles=[l1, l2], loc="lower center", bbox_to_anchor=(0.5, 1.025), ncol=2, frameon=False)
 
-    # Bottom-right: BART prediction intervals
+    # Right: BART prediction intervals
     ax = axes[1]
-    ax.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha=0.4, zorder=3)
-    ax.fill_between(xx, lower, upper, color="C0", alpha=0.25, label="Prediction Interval")
-    ax.plot(xx, center_ens, color="C0", lw=1, label="Interval Center")
+    s = ax.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha=0.4, zorder=3)
+    p = ax.fill_between(xx, lower, upper, color="C0", alpha=0.25, label="Prediction Interval")
+    c = ax.plot(xx, center_ens, color="C0", lw=1, label="Interval Center")
     ax.set_title("Prediction Intervals (BART)")
-    ax.set_xlabel("x")
-    ax.legend()
+    ax.set_xlabel("x", fontsize=fontsize)
     ax.grid(True)
+    # Place legend above the title, horizontally
+    handles = [p, c[0]]
+    labels = ["Prediction Interval", "Interval Center"]
+    ax.legend(handles=handles, labels=labels, loc="lower center", bbox_to_anchor=(0.5, 1.025), ncol=2, frameon=False)
+
+    plt.tight_layout()
+    plt.show()
+
+def plot_gamma(
+    credal_CP_bart,
+    X_test_grid,
+    gamma_grid,
+    X_test,
+    Y_test,
+):
+    y_pred = credal_CP_bart.predict(X_test_grid)
+    
+     # Also get full prediction intervals (conformalized) for both methods to plot below
+    pred_intervals = np.asarray(y_pred)
+
+    lower, upper = pred_intervals[:, 0], pred_intervals[:, 1]
+
+    xx = X_test_grid.ravel()
+
+    # Prediction intervals and centers
+    pred_intervals = np.asarray(y_pred)
+    lower, upper = pred_intervals[:, 0], pred_intervals[:, 1]
+    center = 0.5 * (lower + upper)
+
+    xx = X_test_grid.ravel()
+    gamma = np.asarray(gamma_grid).ravel()
+
+    # Create a 2-row figure: top = prediction intervals, bottom = gamma(x)
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+
+    # Increase caption/font sizes for readability
+    fontsize = 16
+    plt.rcParams.update({
+        "axes.titlesize": fontsize,
+        "axes.labelsize": fontsize,
+        "legend.fontsize": fontsize,
+        "xtick.labelsize": fontsize,
+        "ytick.labelsize": fontsize,
+    })
+
+    # Top: BART prediction intervals (no x-axis ticks/label shown here)
+    ax_top = axes[0]
+    ax_top.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha=0.4, zorder=3)
+    ax_top.fill_between(xx, lower, upper, color="C0", alpha=0.25, label="Prediction Interval")
+    ax_top.plot(xx, center, color="C0", lw=1, label="Interval Center")
+    ax_top.set_title("Prediction Intervals (BART)")
+    ax_top.grid(True)
+    ax_top.tick_params(labelbottom=False)  # hide x-scale on the top plot
+    ax_top.legend(loc="upper left")
+
+    # Bottom: gamma(x)
+    ax_bot = axes[1]
+    ax_bot.plot(xx, gamma, color="C4", lw=2, label=r"$\gamma(x)$")
+    ax_bot.set_title("Adaptive gamma(x) (BART)")
+    ax_bot.set_xlabel("x", fontsize=fontsize)  # use X-scale label only here
+    ax_bot.set_ylabel("gamma", fontsize=fontsize)
+    ax_bot.grid(True)
+    ax_bot.legend(loc="upper left")
 
     plt.tight_layout()
     plt.show()
@@ -539,30 +678,6 @@ plot_uncertainty_decomposition(
     Y_test,
 )
 
-# looking at SD
-sd_dropout = credal_CP_dropout.sigma_list
-# stack sigma tensors as rows (assumes all entries have same number of elements)
-sigma_rows = torch.stack([s.flatten().detach().cpu() for s in sd_dropout], dim=0)
-
-# mean across columns (per-row mean)
-sigma_row_means = sigma_rows.mean(dim=1)
-
-# optional: convert to numpy for printing/plotting
-sigma_row_means_np = sigma_row_means.numpy()
-
-# Plot sigma (MC samples) as a function of X_test_grid
-xx = X_test_grid.ravel()
-
-plt.figure(figsize=(8, 4))
-
-plt.plot(xx, sigma_row_means_np, color="C1", lw=2)
-plt.xlabel("x")
-plt.ylabel("sigma")
-plt.title("Predicted sigma vs x")
-plt.legend()
-plt.grid(True)
-plt.show()
-
 # plotting all results
 plot_results(
     credal_CP_ensemble, 
@@ -576,28 +691,51 @@ plot_results(
 ####### Fitting bart-based method #######
 credal_CP_bart, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
 
-X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
+X_test_grid = np.linspace(-1.15, 1.15, 500).astype(np.float32).reshape(-1, 1)
+
 # plotting uncertainty decomposition for BART
 plot_uncertainty_decomposition_bart(
     credal_CP_bart,
     X_test_grid,
     X_test_bart,
     Y_test_bart,
+    normalize=True,
 )
 
+# un-normalized plot
+plot_uncertainty_decomposition_bart(
+    credal_CP_bart,
+    X_test_grid,
+    X_test_bart,
+    Y_test_bart,
+    normalize=False,
+)
+
+# illustrating gamma(x) for BART
+gamma_grid = credal_CP_bart.compute_gamma(X_test_grid)
+
+plot_gamma(
+    credal_CP_bart,
+    X_test_grid,
+    gamma_grid,
+    X_test_bart,
+    Y_test_bart,
+)
 
 ############ Testing the other example with variable noise ############
 np.random.seed(42)
-n= 2500
+n= 1500
 data = make_variable_data(n)
 train, rest = train_test_split(data, test_size=0.5, random_state=42)
 cal, test = train_test_split(rest, test_size=0.5, random_state=42)
 
+
+############# neural networks based methods #############
 credal_CP_ensemble, credal_CP_dropout, \
         cqr_dropout, cqr_r_dropout, \
             X_test, Y_test = fit_all_methods(train, cal, test)
 
-X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
+X_test_grid = np.linspace(-1, 1, 500).astype(np.float32).reshape(-1, 1)
 
 plot_uncertainty_decomposition(
     credal_CP_ensemble,
@@ -620,13 +758,107 @@ plot_results(
 ####### Fitting bart-based method #######
 credal_CP_bart, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
 
-X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
+X_test_grid = np.linspace(-1.15, 1.15, 500).astype(np.float32).reshape(-1, 1)
 # plotting uncertainty decomposition for BART
 plot_uncertainty_decomposition_bart(
     credal_CP_bart,
     X_test_grid,
     X_test_bart,
     Y_test_bart,
-    normalize=False,
+    normalize=True,
 )
+
+# last different epistemic scenario
+n= 1500
+data = make_epistemic_mixture_gaps(rng, n)
+train, rest = train_test_split(data, test_size=0.5, random_state=42)
+cal, test = train_test_split(rest, test_size=0.5, random_state=42)
+
+credal_CP_bart, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
+
+X_test_grid = np.linspace(-4.35, 4.35, 700).astype(np.float32).reshape(-1, 1)
+# plotting uncertainty decomposition for BART
+plot_uncertainty_decomposition_bart(
+    credal_CP_bart,
+    X_test_grid,
+    X_test_bart,
+    Y_test_bart,
+    normalize=True,
+)
+
+
+# changing second epistemic scenario 
+def make_variable_data_v2(n, std_dev=1/5):
+    # proportion of points in the scarce region
+    p_scarce = 0.02      # few points in [0, 0.4]
+    n_scarce = int(n * p_scarce)
+    n_dense = n - n_scarce
+
+    # dense region: outside [0, 0.4]
+    x_dense = np.random.uniform(low=-1, high=1, size=n_dense)
+    x_dense = x_dense[(x_dense < 0) | (x_dense > 0.4)]
+    while len(x_dense) < n_dense:
+        new_samples = np.random.uniform(low=-1, high=1, size=n_dense)
+        new_samples = new_samples[(new_samples < 0) | (new_samples > 0.4)]
+        x_dense = np.concatenate([x_dense, new_samples])
+    x_dense = x_dense[:n_dense]
+
+    # scarce region: [0, 0.4]
+    x_scarce = np.random.uniform(low=0, high=0.4, size=n_scarce)
+
+    # join everything
+    x = np.concatenate([x_dense, x_scarce])
+    np.random.shuffle(x)
+
+    # true mean
+    mu = (x**3) + 2 * np.exp(-6 * (x - 0.3)**2)
+
+    # --------------------------
+    # variance is quite complex
+    # --------------------------
+    sigma = np.zeros_like(x)
+
+    # left region [-1, -0.3]: low variance (easy)
+    mask_low = (x <= -0.3)
+    sigma[mask_low] = 0.1
+
+    # intermediate region (-0.3, 0): moderate variance + oscillation
+    mask_mid = (x > -0.3) & (x < 0)
+    sigma[mask_mid] = 0.2 + 0.15 * np.abs(np.sin(10 * x[mask_mid]))
+
+    # sparse region [0, 0.4]: low variance and few points (hard, few points)
+    mask_sparse = (x >= 0) & (x <= 0.4)
+    sigma[mask_sparse] = 0.05 + 0.1 * np.abs(np.sin(12 * x[mask_sparse]))
+
+    # right region (0.4, 1]: back to moderate variance
+    mask_right = (x > 0.4)
+    sigma[mask_right] = 0.3 + 0.1 * (x[mask_right] > 0.7)
+
+    # optional global scaling
+    sigma *= std_dev / (1/5)
+
+    # generate y
+    y = mu + np.random.normal(scale=sigma, size=len(x))
+
+    return pd.DataFrame({'x': x, 'y': y})
+
+np.random.seed(42)
+n= 1500
+data = make_variable_data_v2(n)
+train, rest = train_test_split(data, test_size=0.5, random_state=42)
+cal, test = train_test_split(rest, test_size=0.5, random_state=42)
+
+credal_CP_bart, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
+
+X_test_grid = np.linspace(-1.15, 1.15, 500).astype(np.float32).reshape(-1, 1)
+# plotting uncertainty decomposition for BART
+plot_uncertainty_decomposition_bart(
+    credal_CP_bart,
+    X_test_grid,
+    X_test_bart,
+    Y_test_bart,
+    normalize=True,
+)
+
+
 

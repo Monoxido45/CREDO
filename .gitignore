@@ -1,1 +1,4 @@
 .Rproj.user
+*unc*
+src/credal_cp/__pycache__/
+
