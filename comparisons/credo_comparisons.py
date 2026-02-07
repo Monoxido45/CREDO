@@ -6,6 +6,7 @@ import torch
 from argparse import ArgumentParser
 import gc
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
 original_path = os.getcwd()
@@ -157,8 +158,8 @@ def fit_methods(
 
         uacqr_results = uacqr(
         rfqr_params,
-        bootstrapping_for_uacqrp=False,
-        uacqrs_bagging=False,
+        bootstrapping_for_uacqrp=True,
+        uacqrs_bagging=True,
         q_lower=alpha / 2 * 100,
         q_upper=(1 - alpha / 2) * 100,
         alpha = alpha,
@@ -370,7 +371,6 @@ def run_experiment(dataset,
         y_calib = y_calib.to_numpy()
         X_test = X_test.to_numpy(dtype=np.float32)
         y_test = y_test.to_numpy()
-
 
         cover_array, isl_array, IL_array, pcorr_array = fit_methods(
             X_train,
