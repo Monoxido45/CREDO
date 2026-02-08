@@ -29,12 +29,12 @@ print(original_path)
 parser = ArgumentParser()
 parser.add_argument("-alpha", "--alpha",type=float, default=0.1, help="miscoverage level for conformal prediction")
 parser.add_argument("-gamma","--gamma", type=float, default=0.05, help="adaptive gamma parameter")
-parser.add_argument("-n_rep", "--n_rep", type=int, default=10, help="number of repetitions for the experiment")
+parser.add_argument("-n_rep", "--n_rep", type=int, default=30, help="number of repetitions for the experiment")
 parser.add_argument("-n_MCMC", "--n_MCMC", type=int, default=1000, help="number of MCMC samples for BART")
-parser.add_argument("-alpha_bart", "--alpha_bart", type=float, default=0.98, help="alpha parameter for BART prior")
+parser.add_argument("-alpha_bart", "--alpha_bart", type=float, default=0.95, help="alpha parameter for BART prior")
 parser.add_argument("-seed_initial", "--seed_initial", type=int, default=15, help="initial seed for random generator to create seeds for repetitions")
 parser.add_argument("-dataset", "--dataset", type=str, default="airfoil", help="dataset to use for the experiment")
-parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default="rfqr", help="UACQR and CQR base models: 'rfqr' or 'catboost'")
+parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default="catboost", help="UACQR and CQR base models: 'rfqr' or 'catboost'")
 parser.add_argument("-n_cores", "--n_cores", type=int, default=4, help="number of cores to use for parallel processing")
 args = parser.parse_args()
 
@@ -56,12 +56,10 @@ os.makedirs(RESULTS_PATH, exist_ok=True)
 rng = np.random.default_rng(seed_initial)
 torch.manual_seed(seed_initial)
 torch.cuda.manual_seed(seed_initial)
-alpha = 0.1
-gamma = 0.05
 
 # Check for an existing checkpoint to optionally resume the experiment
 chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
-chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint.pkl")
+chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
 resume_from = 0
 checkpoint_data = None
 loaded_cover = loaded_isl = loaded_IL = loaded_pcorr = None
@@ -147,7 +145,7 @@ def fit_methods(
         rfqr_params = {
         "n_estimators": 100,
         "max_features" : "sqrt",
-        "min_samples_leaf": 5,
+        "min_samples_leaf": 10,
     }
         uacqr_params = {
         "model_type": "rfqr",
@@ -168,6 +166,37 @@ def fit_methods(
         random_state=i,
         uacqrs_agg=uacqr_params["uacqrs_agg"],
      )
+    elif uacqr_model == "catboost":
+        catboost_params = {
+            "iterations": 1000,
+            "learning_rate": 0.01,
+            "depth": 6, 
+            "l2_leaf_reg": 3, 
+            "random_strength": 1, 
+            "bagging_temperature": 1, 
+            "od_type": "Iter",
+            "od_wait": 50,
+            "use_best_model": False,
+        }
+
+        uacqr_params = {
+        "model_type": "catboost",
+        "B": 1000,
+        "uacqrs_agg": "std",
+        "base_model_type": "Quantile",
+        }
+
+        uacqr_results = uacqr(
+        catboost_params,
+        q_lower=alpha / 2 * 100,
+        q_upper=(1 - alpha / 2) * 100,
+        model_type=uacqr_params["model_type"],
+        B=uacqr_params["B"],
+        random_state=i,
+        uacqrs_agg=uacqr_params["uacqrs_agg"],
+     )
+        
+
         
     uacqr_results.fit(X_train, y_train)
     uacqr_results.calibrate(X_calib, y_calib)
@@ -372,6 +401,12 @@ def run_experiment(dataset,
         X_test = X_test.to_numpy(dtype=np.float32)
         y_test = y_test.to_numpy()
 
+        if dataset in ["airfoil","cycle", "superconductivity", "concrete"]:
+            y_scaler = StandardScaler()
+            y_train = y_scaler.fit_transform(y_train.reshape(-1, 1)).flatten()
+            y_calib = y_scaler.transform(y_calib.reshape(-1, 1)).flatten()
+            y_test = y_scaler.transform(y_test.reshape(-1, 1)).flatten()
+
         cover_array, isl_array, IL_array, pcorr_array = fit_methods(
             X_train,
             y_train,
@@ -401,7 +436,7 @@ def run_experiment(dataset,
                 }
                 chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
                 os.makedirs(chk_dir, exist_ok=True)
-                filepath = os.path.join(chk_dir, f"{dataset}_checkpoint.pkl")
+                filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
                 with open(filepath, "wb") as f:
                     pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
             except Exception as e:
@@ -434,7 +469,7 @@ def run_experiment(dataset,
     df_IL = pd.DataFrame({"methods": methods ,"mean": IL_mean, "sd": IL_sd})
     df_pcorr = pd.DataFrame({"methods": methods ,"mean": pcorr_mean, "sd": pcorr_sd})
 
-    data_dir = os.path.join(RESULTS_PATH, f"{dataset}_summary")
+    data_dir = os.path.join(RESULTS_PATH, f"{dataset}_{uacqr_model}_summary")
     os.makedirs(data_dir, exist_ok=True)
 
     df_cover.to_csv(os.path.join(data_dir, f"{dataset}_coverage_summary.csv"))
@@ -456,12 +491,12 @@ os.makedirs(raw_dir, exist_ok=True)
 
 to_save = {"cover": cover, "isl": isl, "IL": IL, "pcorr": pcorr}
 for name, arr in to_save.items():
-    filepath = os.path.join(raw_dir, f"{dataset}_{name}_raw.pkl")
+    filepath = os.path.join(raw_dir, f"{dataset}_{name}_{uacqr_model}_raw.pkl")
     with open(filepath, "wb") as f:
         pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint.pkl")
+chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{uacqr_model}.pkl")
 try:
     if os.path.exists(chk_file):
         os.remove(chk_file)
