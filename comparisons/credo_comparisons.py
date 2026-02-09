@@ -19,9 +19,16 @@ from credal_cp.utils import (
     corr_coverage_widths,
     compute_interval_length,
 )
+# uacqr part
 from uacqr import uacqr
+# EPIC part
+from epic import QuantileScore, EPIC_split
 import pickle
 import os
+
+# Importing outlier to inlier ratio auxiliary functions
+from sklearn.neighbors import LocalOutlierFactor
+from sklearn.manifold import TSNE
 
 os.chdir(original_path)
 print(original_path)
@@ -32,7 +39,7 @@ parser.add_argument("-gamma","--gamma", type=float, default=0.05, help="adaptive
 parser.add_argument("-n_rep", "--n_rep", type=int, default=30, help="number of repetitions for the experiment")
 parser.add_argument("-n_MCMC", "--n_MCMC", type=int, default=1000, help="number of MCMC samples for BART")
 parser.add_argument("-alpha_bart", "--alpha_bart", type=float, default=0.95, help="alpha parameter for BART prior")
-parser.add_argument("-seed_initial", "--seed_initial", type=int, default=15, help="initial seed for random generator to create seeds for repetitions")
+parser.add_argument("-seed_initial", "--seed_initial", type=int, default=45, help="initial seed for random generator to create seeds for repetitions")
 parser.add_argument("-dataset", "--dataset", type=str, default="airfoil", help="dataset to use for the experiment")
 parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default="catboost", help="UACQR and CQR base models: 'rfqr' or 'catboost'")
 parser.add_argument("-n_cores", "--n_cores", type=int, default=4, help="number of cores to use for parallel processing")
@@ -92,6 +99,7 @@ def fit_methods(
         y_calib,
         X_test,
         y_test,
+        mdn_params,
         i,
 ): 
     # Fitting CREDO with BART
@@ -195,12 +203,36 @@ def fit_methods(
         random_state=i,
         uacqrs_agg=uacqr_params["uacqrs_agg"],
      )
-        
-
-        
+    
     uacqr_results.fit(X_train, y_train)
     uacqr_results.calibrate(X_calib, y_calib)
     uacqr_pred_test = uacqr_results.predict(X_test)
+
+    # Fitting EPICSCORE
+    epic_obj = EPIC_split(
+            QuantileScore,
+            uacqr_results,
+            alpha=alpha,
+            is_fitted=True,
+            base_model_type=uacqr_params["base_model_type"],
+        )
+    epic_obj.fit(X_train, y_train)
+    epic_obj.calib(
+        X_calib,
+        y_calib,
+        num_components=mdn_params["num_components"],
+        dropout_rate=mdn_params["dropout_rate"],
+        hidden_layers=mdn_params["hidden_layers"],
+        patience=mdn_params["patience"],
+        epochs=mdn_params["epochs"],
+        normalize_y=mdn_params["normalize_y"],
+        scale=mdn_params["scale"],
+        batch_size=mdn_params["batch_size"],
+        verbose=mdn_params["verbose"],
+        type=mdn_params["type"],
+        ensemble=False,
+    )
+    pred_epic_mdn_test = epic_obj.predict(X_test)
 
     lower_cqr = uacqr_pred_test["CQR"]["lower"]
     upper_cqr = uacqr_pred_test["CQR"]["upper"]
@@ -242,8 +274,11 @@ def fit_methods(
     cqrr_int = cqrr_int[good_mask]
     credo_adaptive_int = credo_adaptive_int[good_mask]
     credo_fixed_int = credo_fixed_int[good_mask]
+    pred_epic_mdn_test = pred_epic_mdn_test[good_mask]
 
     del uacqr_results
+    gc.collect()
+    del epic_obj
     gc.collect()
     
     # evaluating metrics of interest
@@ -268,6 +303,10 @@ def fit_methods(
         uacqrp_int[:, 1], uacqrp_int[:, 0],
         y_test
     )
+    cover_epic_mdn = average_coverage(
+        pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0],
+        y_test
+    )
     cover_array = np.array([
         cover_credo_adap,
         cover_credo_fixed,
@@ -275,6 +314,7 @@ def fit_methods(
         cover_cqrr,
         cover_uacqrs,
         cover_uacqrp,
+        cover_epic_mdn,
     ])
 
     # ISL
@@ -298,6 +338,10 @@ def fit_methods(
         uacqrp_int[:, 1], uacqrp_int[:, 0],
         y_test, alpha
     )
+    isl_epic_mdn = average_interval_score_loss(
+        pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0],
+        y_test, alpha
+    )
     isl_array = np.array([
         isl_credo_adap,
         isl_credo_fixed,
@@ -305,6 +349,7 @@ def fit_methods(
         isl_cqrr,
         isl_uacqrs,
         isl_uacqrp,
+        isl_epic_mdn,
     ])
 
     # IL
@@ -314,6 +359,7 @@ def fit_methods(
     IL_cqrr = np.mean(compute_interval_length(cqrr_int[:, 1], cqrr_int[:, 0]))
     IL_uacqrs = np.mean(compute_interval_length(uacqrs_int[:, 1], uacqrs_int[:, 0]))
     IL_uacqrp = np.mean(compute_interval_length(uacqrp_int[:, 1], uacqrp_int[:, 0]))
+    IL_epic_mdn = np.mean(compute_interval_length(pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0]))
     IL_array = np.array([
         IL_credo_adap,
         IL_credo_fixed,
@@ -321,6 +367,7 @@ def fit_methods(
         IL_cqrr,
         IL_uacqrs,
         IL_uacqrp,
+        IL_epic_mdn,
     ])
 
     # pcorr
@@ -344,6 +391,10 @@ def fit_methods(
         uacqrp_int[:, 1], uacqrp_int[:, 0],
         y_test
     )
+    pcorr_epic_mdn = corr_coverage_widths(
+        pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0],
+        y_test
+    )
     pcorr_array = np.array([
         pcorr_credo_adap,
         pcorr_credo_fixed,
@@ -351,6 +402,7 @@ def fit_methods(
         pcorr_cqrr,
         pcorr_uacqrs,
         pcorr_uacqrp,
+        pcorr_epic_mdn,
     ])
 
     return cover_array, isl_array, IL_array, pcorr_array
@@ -364,6 +416,26 @@ def run_experiment(dataset,
                    checkpoint_data = None,
                    ):
     data = pd.read_csv(os.path.join(DATA_PATH, f"{dataset}.csv"))
+
+    # EPICSCORE params
+    mdn_params = {
+    "num_components": 3,
+    "dropout_rate": 0.5,
+    "epistemic_model": "MC_dropout",
+    "hidden_layers": [64, 64],
+    "patience": 50,
+    "epochs": 2000,
+    "scale": True,
+    "batch_size": 40,
+    "normalize_y": True,
+    "verbose": 0,
+    "type": "gaussian",
+    }
+
+    if data.shape[0] > 10000:
+        mdn_params["batch_size"] = 125
+    if dataset == "WEC":
+        mdn_params["batch_size"] = 250
 
     if checkpoint_flag:
         resume_from = int(checkpoint_data.get("iteration", -1)) + 1
@@ -414,6 +486,7 @@ def run_experiment(dataset,
             y_calib,
             X_test,
             y_test,
+            mdn_params,
             i,
         )
         cover_results.append(cover_array)
@@ -456,7 +529,7 @@ def run_experiment(dataset,
         sd = arr.std(axis=0, ddof=1) if arr.shape[0] > 1 else np.zeros_like(mean)
         return mean, sd
 
-    methods = ["credo_adap", "credo_fixed", "cqr", "cqrr", "uacqrs", "uacqrp"]
+    methods = ["credo_adap", "credo_fixed", "cqr", "cqrr", "uacqrs", "uacqrp", "EPIC"]
 
     cover_mean, cover_sd = mean_sd(cover_results)
     isl_mean, isl_sd = mean_sd(isl_results)
