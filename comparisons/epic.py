@@ -252,6 +252,21 @@ class MDN_model(BaseEstimator):
             return -torch.mean(torch.log(result + 1e-12))
 
         raise ValueError(f"Unknown type={type}")
+    
+    # Mixture coeficient obtention
+    def get_mixture_coef(self, y_pred):
+        K = self.num_components
+        pi = F.softmax(y_pred[:, : K], dim=1)
+        # pi = pi / pi.sum(dim=1, keepdim=True)
+        if self.type == "gaussian":
+            mu = y_pred[:, K : 2 * K]
+            sigma = F.softplus(y_pred[:, 2 * K :]) + 1e-6
+        elif self.type == "gamma":
+            mu = F.softplus(y_pred[:, K : 2 * K])
+            sigma = F.softplus(y_pred[:, 2 * K :])
+        # sigma = torch.exp(y_pred[:, 2 * num_components:])
+        return pi, mu, sigma
+    
 
     def fit(
         self,
