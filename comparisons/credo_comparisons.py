@@ -168,7 +168,7 @@ def fit_methods(
     
     uacqr_results.fit(X_train, y_train)
     uacqr_results.calibrate(X_calib, y_calib)
-    uacqr_pred_test = uacqr_results.predict(X_test)
+    uacqr_pred_test = uacqr_results.predict_uacqr(X_test)
 
     X_train = X_train.to_numpy(dtype=np.float32)
     y_train = y_train.to_numpy()
