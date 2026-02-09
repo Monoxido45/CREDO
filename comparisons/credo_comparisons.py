@@ -482,13 +482,6 @@ def run_experiment(dataset,
         X_train, X_calib, y_train, y_calib = train_test_split(
             X_train_calib, y_train_calib, test_size=prop_train, random_state=seed
         )
-        
-        X_train = X_train.to_numpy(dtype=np.float32)
-        y_train = y_train.to_numpy()
-        X_calib = X_calib.to_numpy(dtype=np.float32)
-        y_calib = y_calib.to_numpy()
-        X_test = X_test.to_numpy(dtype=np.float32)
-        y_test = y_test.to_numpy()
 
         if dataset in ["airfoil","cycle", "superconductivity", "concrete", "airfoil", "homes", "meps19", "protein"]:
             scale_y = True
