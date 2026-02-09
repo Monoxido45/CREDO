@@ -473,7 +473,7 @@ def run_experiment(dataset,
         X_test = X_test.to_numpy(dtype=np.float32)
         y_test = y_test.to_numpy()
 
-        if dataset in ["airfoil","cycle", "superconductivity", "concrete"]:
+        if dataset in ["airfoil","cycle", "superconductivity", "concrete", "airfoil", "homes", "meps19", "protein"]:
             y_scaler = StandardScaler()
             y_train = y_scaler.fit_transform(y_train.reshape(-1, 1)).flatten()
             y_calib = y_scaler.transform(y_calib.reshape(-1, 1)).flatten()
@@ -526,7 +526,7 @@ def run_experiment(dataset,
 
     def mean_sd(arr):
         mean = arr.mean(axis=0)
-        sd = arr.std(axis=0, ddof=1) if arr.shape[0] > 1 else np.zeros_like(mean)
+        sd = arr.std(axis=0, ddof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=1) if arr.shape[0] > 1 else np.zeros_like(mean)
         return mean, sd
 
     methods = ["credo_adap", "credo_fixed", "cqr", "cqrr", "uacqrs", "uacqrp", "EPIC"]
