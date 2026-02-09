@@ -35,7 +35,7 @@ print(original_path)
 
 parser = ArgumentParser()
 parser.add_argument("-alpha", "--alpha",type=float, default=0.1, help="miscoverage level for conformal prediction")
-parser.add_argument("-gamma","--gamma", type=float, default=0.05, help="adaptive gamma parameter")
+parser.add_argument("-gamma","--gamma", type=float, default=0.1, help="adaptive gamma parameter")
 parser.add_argument("-n_rep", "--n_rep", type=int, default=30, help="number of repetitions for the experiment")
 parser.add_argument("-n_MCMC", "--n_MCMC", type=int, default=1000, help="number of MCMC samples for BART")
 parser.add_argument("-alpha_bart", "--alpha_bart", type=float, default=0.95, help="alpha parameter for BART prior")
@@ -113,9 +113,8 @@ def fit_methods(
     print(f"Fitting UACQR")
     if uacqr_model == "rfqr":
         rfqr_params = {
-        "n_estimators": 100,
+        "n_estimators": 300,
         "max_features" : "sqrt",
-        "min_samples_leaf": 10,
     }
         uacqr_params = {
         "model_type": "rfqr",
@@ -138,15 +137,13 @@ def fit_methods(
      )
     elif uacqr_model == "catboost":
         catboost_params = {
-            "iterations": 1000,
-            "learning_rate": 0.01,
-            "depth": 6, 
- #           "l2_leaf_reg": 1, 
-#            "random_strength": 1, 
-#            "bagging_temperature": 1, 
-            "od_type": "Iter",
-            "od_wait": 50,
-            "use_best_model": False,
+                "iterations": 1000,
+                "depth": 6,
+                "l2_leaf_reg": 3, 
+                "random_strength": 1,
+                "random_strength": 1,
+                "bagging_temperature": 1,
+                # auto-tuned learning rate
         }
 
         uacqr_params = {
@@ -164,7 +161,7 @@ def fit_methods(
         B=uacqr_params["B"],
         random_state=i,
         uacqrs_agg=uacqr_params["uacqrs_agg"],
-     )
+        )
     
     uacqr_results.fit(X_train, y_train)
     uacqr_results.calibrate(X_calib, y_calib)
@@ -483,7 +480,7 @@ def run_experiment(dataset,
             X_train_calib, y_train_calib, test_size=prop_train, random_state=seed
         )
 
-        if dataset in ["airfoil","cycle", "superconductivity", "concrete", "airfoil", "homes", "meps19", "protein"]:
+        if dataset in ["superconductivity", "homes", "meps19", "protein"]:
             scale_y = True
         else:
             scale_y = False
@@ -536,7 +533,7 @@ def run_experiment(dataset,
 
     def mean_sd(arr):
         mean = arr.mean(axis=0)
-        sd = arr.std(axis=0, ddof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=1) if arr.shape[0] > 1 else np.zeros_like(mean)
+        sd = arr.std(axis=0, ddof=1) if arr.shape[0] > 1 else np.zeros_like(mean)
         return mean, sd
 
     methods = ["credo_adap", "credo_fixed", "cqr", "cqrr", "uacqrs", "uacqrp", "EPIC"]
