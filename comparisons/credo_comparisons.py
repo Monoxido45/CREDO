@@ -170,11 +170,11 @@ def fit_methods(
     uacqr_results.calibrate(X_calib, y_calib)
     uacqr_pred_test = uacqr_results.predict_uacqr(X_test)
 
-    X_train = X_train.to_numpy(dtype=np.float32)
+    X_train = X_train.to_numpy()
     y_train = y_train.to_numpy()
-    X_calib = X_calib.to_numpy(dtype=np.float32)
+    X_calib = X_calib.to_numpy()
     y_calib = y_calib.to_numpy()
-    X_test = X_test.to_numpy(dtype=np.float32)
+    X_test = X_test.to_numpy()
     y_test = y_test.to_numpy()
 
     # Fitting EPICSCORE
