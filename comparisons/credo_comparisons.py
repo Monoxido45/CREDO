@@ -101,54 +101,16 @@ def fit_methods(
         y_test,
         mdn_params,
         i,
+        scale_y = False,
 ): 
-    # Fitting CREDO with BART
-    credal_CP_bart_adaptive = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = "BART",
-    alpha = alpha,
-    adaptive_gamma = True,
-    gamma = gamma,
-    )
-    
-    credal_CP_bart_adaptive.fit(
-        X_train, 
-        y_train,
-        progressbar = True,
-        n_cores = n_cores,
-        n_MCMC = n_MCMC,
-        normalize_y=True,
-        alpha_bart = alpha_bart,
-        random_seed_fit=i,
-    )
-    credal_CP_bart_adaptive.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
-
-    credal_CP_bart_fixed = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = credal_CP_bart_adaptive.base_model,
-    alpha = alpha,
-    adaptive_gamma = False,
-    gamma = gamma,
-    is_fitted = True,
-    )
-
-    credal_CP_bart_fixed.fit(
-        X_train, 
-        y_train,
-        base_model_type ="BART",
-    )
-    
-    credal_CP_bart_fixed.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
-
-    credo_adaptive_int = credal_CP_bart_adaptive.predict(X_test)
-    credo_fixed_int = credal_CP_bart_fixed.predict(X_test)
-
-    # deleting CREDO models to free memory
-    del credal_CP_bart_adaptive
-    del credal_CP_bart_fixed
-    gc.collect()
+    if scale_y:
+        y_scaler = StandardScaler().set_output(transform="pandas")
+        y_train = y_scaler.fit_transform(y_train.to_frame())
+        y_calib = y_scaler.transform(y_calib.to_frame())
+        y_test = y_scaler.transform(y_test.to_frame())
 
     # Fitting UACQR
+    print(f"Fitting UACQR")
     if uacqr_model == "rfqr":
         rfqr_params = {
         "n_estimators": 100,
@@ -208,7 +170,15 @@ def fit_methods(
     uacqr_results.calibrate(X_calib, y_calib)
     uacqr_pred_test = uacqr_results.predict(X_test)
 
+    X_train = X_train.to_numpy(dtype=np.float32)
+    y_train = y_train.to_numpy()
+    X_calib = X_calib.to_numpy(dtype=np.float32)
+    y_calib = y_calib.to_numpy()
+    X_test = X_test.to_numpy(dtype=np.float32)
+    y_test = y_test.to_numpy()
+
     # Fitting EPICSCORE
+    print(f"Fitting EPICSCORE")
     epic_obj = EPIC_split(
             QuantileScore,
             uacqr_results,
@@ -233,6 +203,55 @@ def fit_methods(
         ensemble=False,
     )
     pred_epic_mdn_test = epic_obj.predict(X_test)
+    del epic_obj
+    gc.collect()
+
+    # Fitting CREDO with BART
+    print(f"Fitting CREDO with BART")
+    credal_CP_bart_adaptive = CredalCPRegressor(
+    nc_type = 'Quantile',
+    base_model = "BART",
+    alpha = alpha,
+    adaptive_gamma = True,
+    gamma = gamma,
+    )
+    
+    credal_CP_bart_adaptive.fit(
+        X_train, 
+        y_train,
+        progressbar = True,
+        n_cores = n_cores,
+        n_MCMC = n_MCMC,
+        normalize_y=True,
+        alpha_bart = alpha_bart,
+        random_seed_fit=i,
+    )
+    credal_CP_bart_adaptive.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
+
+    credal_CP_bart_fixed = CredalCPRegressor(
+    nc_type = 'Quantile',
+    base_model = credal_CP_bart_adaptive.base_model,
+    alpha = alpha,
+    adaptive_gamma = False,
+    gamma = gamma,
+    is_fitted = True,
+    )
+
+    credal_CP_bart_fixed.fit(
+        X_train, 
+        y_train,
+        base_model_type ="BART",
+    )
+    
+    credal_CP_bart_fixed.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
+
+    credo_adaptive_int = credal_CP_bart_adaptive.predict(X_test)
+    credo_fixed_int = credal_CP_bart_fixed.predict(X_test)
+
+    # deleting CREDO models to free memory
+    del credal_CP_bart_adaptive
+    del credal_CP_bart_fixed
+    gc.collect()
 
     lower_cqr = uacqr_pred_test["CQR"]["lower"]
     upper_cqr = uacqr_pred_test["CQR"]["upper"]
@@ -277,8 +296,6 @@ def fit_methods(
     pred_epic_mdn_test = pred_epic_mdn_test[good_mask]
 
     del uacqr_results
-    gc.collect()
-    del epic_obj
     gc.collect()
     
     # evaluating metrics of interest
@@ -474,10 +491,9 @@ def run_experiment(dataset,
         y_test = y_test.to_numpy()
 
         if dataset in ["airfoil","cycle", "superconductivity", "concrete", "airfoil", "homes", "meps19", "protein"]:
-            y_scaler = StandardScaler()
-            y_train = y_scaler.fit_transform(y_train.reshape(-1, 1)).flatten()
-            y_calib = y_scaler.transform(y_calib.reshape(-1, 1)).flatten()
-            y_test = y_scaler.transform(y_test.reshape(-1, 1)).flatten()
+            scale_y = True
+        else:
+            scale_y = False
 
         cover_array, isl_array, IL_array, pcorr_array = fit_methods(
             X_train,
@@ -488,6 +504,7 @@ def run_experiment(dataset,
             y_test,
             mdn_params,
             i,
+            scale_y = scale_y,
         )
         cover_results.append(cover_array)
         isl_results.append(isl_array)
