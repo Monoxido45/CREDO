@@ -22,6 +22,28 @@ from sklearn.model_selection import train_test_split
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
 
+# importing jax and gpjax dependencies
+from jax.scipy.stats import norm
+from jaxtyping import install_import_hook
+with install_import_hook("gpjax", "beartype.beartype"):
+    import gpjax as gpx
+import jax.numpy as jnp
+import jax.random as jr
+from gpjax.likelihoods import (
+    HeteroscedasticGaussian,
+    LogNormalTransform,
+    SoftplusTransform,
+)
+# for centroids in the data
+from sklearn.cluster import KMeans
+from gpjax.variational_families import (
+    HeteroscedasticVariationalFamily,
+    VariationalGaussianInit,
+)
+import optax as ox
+
+
+
 import scipy.stats as st
 from scipy.stats import norm
 from scipy.stats import gamma
@@ -1246,29 +1268,45 @@ class MC_classifier(BaseEstimator):
 
 
 #### GP models
-# Basic GP model
+# Using GPyjax
 class GP_model(BaseEstimator):
     """
     Gaussian Process model.
 
-    Gaussian Process regressor using sklearn GP implementation.
+    Gaussian Process regressor using GPyjax implementation.
     """
 
-    def __init__(self, kernel=None, normalize_y=True, log_y=False):
+    def __init__(
+            self,
+            kernel= None,
+            normalize_y=True,
+            heteroscedastic=False,
+    ):
         """
         Input:
         (i) kernel: Kernel specifying the covariance structure of the GP. Default is None.
         (ii) normalize_y: Whether to normalize the target variable. Default is True.
-        (iii) log_y: Whether to apply log transformation to the target variable. Default is False.
+        (iii) heteroscedastic: Whether the model is heteroscedastic. Default is False.
 
         Output:
         (i) Initialized GP_model object.
         """
-        self.kernel = kernel
-        self.normalize_y = normalize_y
-        self.log_y = log_y
+        if kernel is None:
+            self.kernel = gpx.kernels.Matern52() + gpx.kernels.RationalQuadratic()
+        else:
+            self.kernel = kernel
 
-    def fit(self, X, y, scale=False, random_state=0, optimizer="fmin_l_bfgs_b"):
+        self.normalize_y = normalize_y
+        self.heteroscedastic = heteroscedastic
+
+    def fit(
+            self, 
+            X, 
+            y, 
+            scale=False, 
+            random_state=0,
+            activation_sigma = "softplus",
+            ):
         """
         Fit GP model.
 
@@ -1277,492 +1315,183 @@ class GP_model(BaseEstimator):
         (ii) y (np.ndarray): Training target data.
         (iii) scale (bool): Whether to scale or not the data. Default is False.
         (iv) random_state (int): Random seed fixed to perform model fitting. Default is 0.
-        (v) optimizer (str): Optimizer used for optimizing the kernel's parameter. Default is 'fmin_l_bfgs_b'.
+        (v) activation_sigma (str): Activation function used for the noise process. Default is "softplus".
 
         Output:
         (i) fitted GP_model object.
         """
+        # scaling part
         if scale:
             self.scaler_X = StandardScaler()
             X = self.scaler_X.fit_transform(X)
             self.scale_x = True
         else:
             self.scale_x = False
-
-        if self.log_y:
-            y = np.log(y)
-
-        self.model = GaussianProcessRegressor(
-            kernel=self.kernel,
-            normalize_y=self.normalize_y,
-            random_state=random_state,
-            optimizer=optimizer,
-        )
-        self.model.fit(X, y)
-    
-    def sample_quantiles_from_posterior(self, X_test, quantiles, n_samples=100, random_seed = 0):
-        """
-        Sample from the posterior distribution of the GP model.
-
-        Input:
-            (i) X_test (np.ndarray): Testing feature matrix.
-            (ii) n_samples (int): Number of samples to draw from the posterior. Default is 100.
-        Output:
-            (i) np.ndarray: Samples drawn from the posterior distribution of shape (n_test, n_samples).
-        """
-        quantiles = np.asarray(quantiles)
-        rng = np.random.default_rng(random_seed)
-        if self.scale_x:
-            X_test_scaled = self.scaler_X.transform(X_test)
-        else:
-            X_test_scaled = X_test
+        if self.normalize_y:
+            self.y_scaler = StandardScaler()
+            y = self.y_scaler.fit_transform(y.reshape(-1, 1)).flatten()
         
-        # Calculate parameters for latent function posterior f(X)|D
-        pred_mean, pred_cov_Y = self.model.predict(X_test_scaled, return_cov=True)
+        key = jr.PRNGKey(random_state)
+        x_jp, y_jp = jnp.array(X, dtype=jnp.float64), jnp.array(y.reshape(-1, 1), dtype=jnp.float64)
+        self.train_data = gpx.Dataset(X=x_jp, y=y_jp)
         
-        # Observation noise variance (sigma_n^2)
-        sigma_n2 = self.model.alpha
-        pred_cov_f = pred_cov_Y - sigma_n2 * np.identity(pred_cov_Y.shape[0])
+        # usual GP without heteroscedasticity
+        if not self.heteroscedastic:
+            meanf = gpx.mean_functions.Zero()
+            prior = gpx.gps.Prior(mean_function=meanf, kernel=self.kernel)
+            likelihood = gpx.likelihoods.Gaussian(num_datapoints=self.train_data.n)
+            posterior_model = prior * likelihood
 
-        # Sample from the latent function posterior: f(X) ~ N(mu_f, Sigma_f)
-        # samples shape: (num_samples, n_test_samples)
-        f_samples = rng.multivariate_normal(
-            mean=pred_mean,
-            cov=pred_cov_f,
-            size=n_samples
-        ).T #(n_calib, n_samples)
-
-        # Calculate the quantile correction factor given by residuals
-        Z_alphas = norm.ppf(quantiles)
-        sigma_n = np.sqrt(sigma_n2)
-        
-        # Correction term shape: (n_quantiles,)
-        quantile_correction = Z_alphas * sigma_n
-
-        # Calculate the quantile for each function sample, using numpy broadcasting
-        # Result shape: (n_samples, n_test_samples, n_quantiles)
-        quantile_samples = f_samples[:, :, None] + quantile_correction[None, None, :]
-
-        # Rearrange axes to the desired (n_calib, n_samples, n_quantiles)
-        quantile_samples = np.transpose(quantile_samples, (1, 0, 2))
-        
-        # Inverse log transform if necessary
-        if self.log_y:
-            # Flatten to perform inverse transform, then reshape back
-            original_shape = quantile_samples.shape
-            samples_flat = quantile_samples.flatten()
-            samples_inverse_scaled = np.exp(samples_flat) 
-            quantile_samples = samples_inverse_scaled.reshape(original_shape)
-            
-        return quantile_samples
-
-    def predict_cdf(self, X_test, y_test):
-        """
-        Predict conditional CDF of Y given X.
-
-        Input:
-            (i) X_test (np.ndarray): Testing feature matrix.
-            (ii) y_test (np.ndarray): Testing labels.
-
-        Output:
-            (i) np.ndarray: Array with the conditional CDF values of Y|X.
-        """
-        if self.scale_x:
-            X_test = self.scaler_X.transform(X_test)
-        if self.log_y:
-            y_test = np.log(y_test)
-
-        pred_mean, pred_std = self.model.predict(X_test, return_std=True)
-
-        s_prime = norm.cdf(y_test, loc=pred_mean, scale=pred_std)
-
-        return s_prime
-
-    def predict_params(self, X_test):
-        """
-        Predict predictive parameters given each X.
-
-        Input:
-            (i) X_test (np.ndarray): Testing feature matrix.
-
-        Output:
-            (i) Tuple (np.ndarray, np.ndarray): Tuple containing the predictive mean and standard deviation given X.
-        """
-        if self.scale_x:
-            X_test = self.scaler_X.transform(X_test)
-
-        if self.log_y:
-            pred_mean, pred_std = self.model.predict(X_test, return_std=True)
-
-        return pred_mean, pred_std
-
-
-class GP_base(gpytorch.models.ApproximateGP):
-    """
-    A base class for Gaussian Process models using GPyTorch's ApproximateGP.
-    This class implements a Gaussian Process model with a variational inference
-    strategy using inducing points.
-    """
-
-    def __init__(self, inducing_points, kernel_type="matern"):
-        # Using Cholesky for a more faithful representation of the covariance
-        variational_distribution = gpytorch.variational.CholeskyVariationalDistribution(
-            inducing_points.size(0)
-        )
-        variational_strategy = gpytorch.variational.VariationalStrategy(
-            self,
-            inducing_points,
-            variational_distribution,
-            learn_inducing_locations=True,
-        )
-        super(GP_base, self).__init__(variational_strategy)
-        self.mean_module = gpytorch.means.ZeroMean()
-        
-        # Using Matern 2.5 as default for better uncertainty shapes
-        if kernel_type == "matern":
-            base_kernel = gpytorch.kernels.MaternKernel(nu=2.5)
-        else:
-            base_kernel = gpytorch.kernels.RBFKernel()
-            
-        self.covar_module = gpytorch.kernels.ScaleKernel(base_kernel + gpytorch.kernels.LinearKernel())
-
-    def forward(self, x):
-        mean_x = self.mean_module(x)
-        covar_x = self.covar_module(x)
-        return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
-
-
-# Variational GP model
-class GPApprox_model(BaseEstimator):
-    """
-    Gaussian Process Approximate Model.
-    """
-
-    def __init__(
-        self,
-        num_inducing_points=100,
-        lr_variational=0.05,
-        lr_hyperparams=0.01,
-        n_epochs=50,
-        log_y=False,
-        kernel_type="matern",
-    ):
-        """
-        Input:
-        (i) num_inducing_points (int): Number of inducing points to approximate the GP.
-        (ii) kernel: Kernel specifying the covariance structure. Default is RBF kernel.
-        (iii) lr_variational (float): Learning rate for variational parameters optimizer. Default is 0.1.
-        (iv) lr_hyperparams (float): Learning rate for hyperparameter optimizer. Default is 0.01.
-        (v) n_epochs (int): Number of training epochs. Default is 50.
-        (vi) log_y (bool): Whether to apply log transformation to the target variable. Default is False.
-
-        Output:
-        (i) Initialized GPApprox_model object.
-        """
-        self.num_inducing_points = num_inducing_points
-        self.lr_variational = lr_variational
-        self.lr_hyperparams = lr_hyperparams
-        self.n_epochs = n_epochs
-        self.model = None
-        self.likelihood = None
-        self.scaler_X = StandardScaler()
-        self.scaler_y = StandardScaler()
-        self.log_y = log_y
-        self.kernel_type = kernel_type
-
-    def fit(
-        self,
-        X_train,
-        y_train,
-        batch_size=100,
-        random_seed_split=45,
-        random_seed_fit=0,
-        proportion_train=0.7,
-        verbose=2,
-        patience=30,
-    ):
-        """
-        Fit the approximate GP model.
-
-        Input:
-        (i) X_train: Training input data.
-        (ii) y_train: Training target data.
-        (iii) batch_size: Batch size for training. Default is 100.
-        (iv) random_seed_split: Random seed for data splitting. Default is 45.
-        (v) random_seed_fit: Random seed for model fitting. Default is 0.
-        (vi) proportion_train: Proportion of data to be used for training. Default is 0.7.
-        (vii) verbose: Verbosity level (0, 1, or 2). Default is 2.
-        (viii) patience: Number of epochs with no improvement to trigger early stopping. Default is 30.
-
-        Output:
-        (i) Trained GPApprox_model object.
-        """
-        # Splitting data into train and validation
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_train,
-            y_train,
-            test_size=1 - proportion_train,
-            random_state=random_seed_split,
-        )
-
-        # Standardize data
-        X_train_standardized = torch.tensor(
-            self.scaler_X.fit_transform(X_train), dtype=torch.float32
-        )
-        y_train_standardized = torch.tensor(
-            self.scaler_y.fit_transform(y_train.reshape(-1, 1)), dtype=torch.float32
-        ).view(-1)
-
-        # standardize validation data
-        X_val_standardized = torch.tensor(# 7. Inverse log transform if necessary
-            self.scaler_X.transform(X_val), dtype=torch.float32
-        )
-        y_val_standardized = torch.tensor(
-            self.scaler_y.transform(y_val.reshape(-1, 1)), dtype=torch.float32
-        ).view(-1)
-
-        # Select inducing points
-        inducing_points = X_train_standardized[
-            torch.randperm(X_train_standardized.size(0))[: self.num_inducing_points]
-        ]
-
-        # Initialize model and likelihood
-        self.model = GP_base(inducing_points, kernel_type=self.kernel_type)
-        self.likelihood = gpytorch.likelihoods.GaussianLikelihood(
-            noise_constraint=gpytorch.constraints.GreaterThan(1e-4)
-        )
-
-        # Optimizers
-        variational_ngd_optimizer = gpytorch.optim.NGD(
-            self.model.variational_parameters(),
-            num_data=y_train_standardized.size(0),
-            lr=self.lr_variational,
-        )
-
-        hyperparameter_optimizer = torch.optim.Adam(
-            [
-                {"params": self.model.hyperparameters()},
-                {"params": self.likelihood.parameters()},
-            ],
-            lr=self.lr_hyperparams,
-        )
-
-        # Setting batch size
-        batch_size_train = int(proportion_train * batch_size)
-        batch_size_val = int((1 - proportion_train) * batch_size)
-
-        # DataLoader
-        train_dataset = TensorDataset(
-            X_train_standardized,
-            y_train_standardized,
-        )
-        val_dataset = TensorDataset(
-            X_val_standardized,
-            y_val_standardized,
-        )
-
-        train_loader = DataLoader(
-            train_dataset, batch_size=batch_size_train, shuffle=True
-        )
-        val_loader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True)
-
-        # Train the model
-        self.model.train()
-        self.likelihood.train()
-
-        # Scheduler to stabilize convergence
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            hyperparameter_optimizer, mode='min', factor=0.5, patience=10
-        )
-
-        mll = gpytorch.mlls.VariationalELBO(
-            self.likelihood, self.model, num_data=y_train_standardized.size(0)
-        )
-
-        losses_train = []
-        losses_val = []
-
-        # early stopping
-        best_val_loss = float("inf")
-        counter = 0
-
-        torch.manual_seed(random_seed_fit)
-        torch.cuda.manual_seed(random_seed_fit)
-
-        # Training loop
-        with gpytorch.settings.cholesky_jitter(1e-5):
-            for epoch in tqdm(range(self.n_epochs), desc="Fitting GP model"):
-                train_loss_epoch = 0
-                self.model.train()
-                self.likelihood.train()
-                # Looping through batches
-
-                for x_batch, y_batch in train_loader:
-                    variational_ngd_optimizer.zero_grad()
-                    hyperparameter_optimizer.zero_grad()
-                    output = self.model(x_batch)
-                    loss_train = -mll(output, y_batch)
-                    loss_train.backward()
-                    variational_ngd_optimizer.step()
-                    hyperparameter_optimizer.step()
-                    train_loss_epoch += loss_train.item()
-
-                self.model.eval()
-                self.likelihood.eval()
-                val_loss_epoch = 0
-                with torch.no_grad():
-                    for x_batch, y_batch in val_loader:
-                        output_val = self.model(x_batch)
-                        loss_val = -mll(output_val, y_batch)
-                        val_loss_epoch += loss_val.item()
-                
-
-                # average loss by epoch
-                train_loss_epoch /= len(train_loader)
-                val_loss_epoch /= len(val_loader)
-                losses_train.append(train_loss_epoch)
-                losses_val.append(val_loss_epoch)
-
-                # Step the scheduler
-                scheduler.step(val_loss_epoch)
-
-                if verbose == 1:
-                    print(
-                        f"Epoch {epoch}, Train Loss: {train_loss_epoch:.4f}, Validation Loss: {val_loss_epoch:.4f}"
-                    )
-
-                # Early stopping
-                if val_loss_epoch < best_val_loss:
-                    best_val_loss = val_loss_epoch
-                    counter = 0
-                else:
-                    counter += 1
-                    if counter >= patience:
-                        print(
-                            f"Early stopping in epoch {epoch} with best validation loss:  {best_val_loss:.4f}"
-                        )
-                        break
-
-        if verbose == 2:
-            fig, ax = plt.subplots()
-            ax.set_title("Training and Validation Loss")
-            ax.set_xlabel("Epoch")
-            ax.set_ylabel("Loss")
-
-            epochs_completed = len(losses_train)
-            ax.set_xlim(0, epochs_completed)
-
-            ax.plot(
-                range(epochs_completed), losses_train, label="Train Loss", color="blue"
+            self.opt_posterior, history = gpx.fit_scipy(
+                model=posterior_model,
+                objective=lambda p, d: -gpx.objectives.conjugate_mll(p, d),
+                train_data=self.train_data,
+                trainable=gpx.parameters.Parameter,
             )
-            ax.plot(
-                range(epochs_completed),
-                losses_val,
-                label="Validation Loss",
-                color="green",
-                linestyle="--",
-            )
-            plt.legend(loc="upper right")
-            plt.show()
 
+        elif self.heteroscedastic and activation_sigma == "lognormal":
+            self.activation_sigma = "lognormal"
+            signal_prior = gpx.gps.Prior(
+                mean_function=gpx.mean_functions.Zero(),
+                kernel=self.kernel,
+            )
+            noise_prior = gpx.gps.Prior(
+                mean_function=gpx.mean_functions.Zero(),
+                kernel=self.kernel,
+            )
+            likelihood = HeteroscedasticGaussian(
+                num_datapoints=self.train_data.n,
+                noise_prior=noise_prior,
+                noise_transform=LogNormalTransform(),
+            )
+            posterior = signal_prior * likelihood
+
+            # inducing points
+            num_inducing = min(50, self.train_data.n) 
+            kmeans = KMeans(n_clusters=num_inducing, n_init='auto', random_state=random_state)
+            z_init = jnp.array(kmeans.fit(X).cluster_centers_)
+
+            self.q = HeteroscedasticVariationalFamily(
+                posterior=posterior,
+                inducing_inputs=z_init,
+                inducing_inputs_g=z_init,
+            )
+
+            key, subkey = jr.split(key)
+            # optimizing hyperparameters
+            objective = lambda model, data: -gpx.objectives.heteroscedastic_elbo(model, data)
+            self.opt_posterior, history = gpx.fit(
+                model=self.q,
+                objective=objective,
+                train_data=self.train_data,
+                optim=ox.adam(learning_rate=0.01),
+                num_iters=1000,
+                key=subkey,
+                verbose = False
+            )
+        elif self.heteroscedastic and activation_sigma == "softplus":
+            self.activation_sigma = "softplus"
+            signal_prior = gpx.gps.Prior(
+                mean_function=gpx.mean_functions.Zero(),
+                kernel=self.kernel,
+            )
+            noise_prior = gpx.gps.Prior(
+                mean_function=gpx.mean_functions.Zero(),
+                kernel=self.kernel,
+            )
+            likelihood = HeteroscedasticGaussian(
+                num_datapoints=self.train_data.n,
+                noise_prior=noise_prior,
+                noise_transform=SoftplusTransform(),
+            )
+            posterior = signal_prior * likelihood
+
+            # inducing points
+            num_inducing = min(50, self.train_data.n) 
+            kmeans = KMeans(n_clusters=num_inducing, n_init='auto', random_state=random_state)
+            z_init = jnp.array(kmeans.fit(X).cluster_centers_)
+
+            self.q = HeteroscedasticVariationalFamily(
+                posterior=posterior,
+                inducing_inputs=z_init,
+                inducing_inputs_g=z_init,
+            )
+
+            key, subkey = jr.split(key)
+            # optimizing hyperparameters
+            objective = lambda model, data: -gpx.objectives.heteroscedastic_elbo(model, data)
+            self.opt_posterior, history = gpx.fit(
+                model=self.q,
+                objective=objective,
+                train_data=self.train_data,
+                optim=ox.adam(learning_rate=0.01),
+                num_iters=1000,
+                key=subkey,
+                verbose = False,
+            )
         return self
-
-    def predict_params(self, X_test):
-        """
-        Predict using the trained model.
-
-        Input:
-        (i) X_test: Testing input data.
-
-        Output:
-        (i) Tuple (mean predictions, standard deviation predictions).
-        """
-        self.model.eval()
-        self.likelihood.eval()
-
-        X_test_standardized = torch.tensor(
-            self.scaler_X.transform(X_test), dtype=torch.float32
-        )
-
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            predictive_distribution = self.likelihood(self.model(X_test_standardized))
-            pred_mean = predictive_distribution.mean.numpy()
-            pred_std = predictive_distribution.stddev.numpy()
-
-        # Undo standardization on mean predictions
-        pred_mean = self.scaler_y.inverse_transform(pred_mean.reshape(-1, 1)).flatten()
-        pred_std = pred_std * self.scaler_y.scale_
-
-        return pred_mean, pred_std
-
-    def predict_cdf(self, X_test, y_test):
-        """     
-        Predict the conditional CDF of Y|X.
-
-        Input:
-        (i) X_test (np.ndarray): Testing input data.
-        (ii) y_test (np.ndarray): Testing target data.
-
-        Output:
-        (i) np.ndarray: Array with the conditional CDF values of Y|X.
-        """
-        pred_mean, pred_std = self.predict_params(X_test)
-        cdf_values = norm.cdf(y_test, loc=pred_mean, scale=pred_std)
-
-        return cdf_values
     
-    def sample_quantiles_from_posterior(self, X_test, quantiles, n_samples=100, random_seed=0):
+    def predict_quantiles(
+            self, 
+            X_test, 
+            quantiles=[0.05, 0.95], 
+            key = jr.PRNGKey(0),
+            n_MC = 1000,):
         """
-        Generate samples of the predictive quantiles Q_alpha(Y|X, f) based on samples 
-        from the latent function posterior f(X)|D using GPyTorch for multiple quantile levels.
+        Predict quantiles for the test data.
 
         Input:
-            (i) X_test: Testing input data.
-            (ii) quantile_levels (list or np.ndarray): The quantile levels (e.g., [0.05, 0.5, 0.95]).
-            (iii) num_samples (int): Number of function samples to generate.
+        (i) X_test (np.ndarray): Test input data.
 
         Output:
-            (i) np.ndarray: Quantile samples Q_alpha(Y|X), shape (n_test_samples, num_samples, n_quantiles).
+        (i) Tuple containing the several lower and upper quantiles for each test sample.
         """
-        quantiles = np.asarray(quantiles)
+        if self.scale_x:
+            X_test = self.scaler_X.transform(X_test)
 
-        self.model.eval()
-        self.likelihood.eval()
+        x_jp = jnp.array(X_test, dtype=jnp.float64)
 
-        X_test_standardized = torch.tensor(# 7. Inverse log transform if necessary
-            self.scaler_X.transform(X_test), dtype=torch.float32
-        )
+        if not self.heteroscedastic:
+            key, subkey = jr.split(key)
+            latent_dist = self.opt_posterior.predict(x_jp, train_data=self.train_data)
+            sample_functions = latent_dist.sample(subkey, sample_shape=(n_MC,))
+            sigma = self.opt_posterior.likelihood.obs_stddev.get_value()
 
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            # Get the latent function distribution f(X*) from the model
-            latent_distribution = self.model(X_test_standardized)
-            
-            # Sample directly from the latent function distribution. 
-            f_samples_tensor = latent_distribution.sample(sample_shape=torch.Size([n_samples])) # (n_samples, n_test_samples)
-        
-        # Aleatoric part
-        sigma_n = np.sqrt(self.likelihood.noise.item())
-        Z_alphas = norm.ppf(quantiles)
-        quantile_correction = Z_alphas * sigma_n
-        correction_tensor = torch.tensor(quantile_correction, dtype=torch.float32)
+            z_scores = norm.ppf(quantiles)
+            quantile_functions = sample_functions[..., None] + z_scores * sigma
+            q_l = quantile_functions[:, :, 0]
+            q_u = quantile_functions[:, :, 1]
+        else:
+            key, subkey_f = jr.split(key)
+            # latent mean process
+            f_dist = self.opt_posterior.predict(x_jp, train_data=self.train_data)
+            f_samples = f_dist.sample(seed=subkey_f, sample_shape=(n_MC,))
 
-        # Calculate the quantile for each function sample
-        quantile_samples_tensor = f_samples_tensor[:, :, None] + correction_tensor[None, None, :] # (n_samples, n_test_samples, n_quantiles)
-        # Reshape to (n_test_samples, n_samples, n_quantiles)
-        quantile_samples = quantile_samples_tensor.permute(1, 0, 2).numpy()
-        
-        # Flatten the first two axes for inverse scaling, keeping n_quantiles separate
-        original_shape = quantile_samples.shape
-        samples_2d = quantile_samples.reshape(-1, original_shape[2])
+            # latent noise process
+            key, subkey_g = jr.split(key)
+            g_dist = self.q.latent_g.predict(x_jp, train_data=self.train_data)
+            g_samples = g_dist.sample(seed=subkey_g, sample_shape=(n_MC,))
 
-        samples_unscaled = self.scaler_y.inverse_transform(samples_2d)
-        quantile_samples = samples_unscaled.reshape(original_shape)
-        
-        # Inverse log transform if necessary
-        if self.log_y:
-            quantile_samples = np.exp(quantile_samples)
+            if self.activation_sigma == "lognormal":
+                sigma_samples = jnp.exp(g_samples / 2.0)
+            elif self.activation_sigma == "softplus":
+                sigma_samples = jnp.sqrt(jnp.log(1.0 + jnp.exp(g_samples)))
+            z_scores = norm.ppf(jnp.array(quantiles))
 
-        return quantile_samples
+            quantile_functions = (
+                f_samples[..., None] + 
+                sigma_samples[..., None] * z_scores[None, None, :]
+            )
+
+            q_l = quantile_functions[:, :, 0]
+            q_u = quantile_functions[:, :, 1]
+
+        if self.normalize_y:
+            original_shape = q_l.shape
+            q_l = self.y_scaler.inverse_transform(q_l.flatten().reshape(-1, 1)).reshape(original_shape)
+            q_u = self.y_scaler.inverse_transform(q_u.flatten().reshape(-1, 1)).reshape(original_shape)
+
+        return q_l, q_u
 
 
 #### BART model
