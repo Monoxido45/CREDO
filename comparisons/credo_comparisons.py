@@ -39,7 +39,7 @@ parser.add_argument("-gamma","--gamma", type=float, default=0.1, help="adaptive 
 parser.add_argument("-n_rep", "--n_rep", type=int, default=30, help="number of repetitions for the experiment")
 parser.add_argument("-n_MCMC", "--n_MCMC", type=int, default=1000, help="number of MCMC samples for BART")
 parser.add_argument("-alpha_bart", "--alpha_bart", type=float, default=0.95, help="alpha parameter for BART prior")
-parser.add_argument("-seed_initial", "--seed_initial", type=int, default=45, help="initial seed for random generator to create seeds for repetitions")
+parser.add_argument("-seed_initial", "--seed_initial", type=int, default=125, help="initial seed for random generator to create seeds for repetitions")
 parser.add_argument("-dataset", "--dataset", type=str, default="airfoil", help="dataset to use for the experiment")
 parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default="catboost", help="UACQR and CQR base models: 'rfqr' or 'catboost'")
 parser.add_argument("-n_cores", "--n_cores", type=int, default=4, help="number of cores to use for parallel processing")
@@ -283,14 +283,9 @@ def fit_methods(
     print(f"Combined removal: excluding {n_removed} of {n_total} test points with infinite bounds in either UACQR-S or UACQR-P")
 
     # apply the unified filter to the stored predictions and to uacqrs_int
-    y_test = y_test[good_mask]
+    y_test_uacqr = y_test[good_mask]
     uacqrs_int = uacqrs_int[good_mask]
     uacqrp_int = uacqrp_int[good_mask]
-    cqr_int = cqr_int[good_mask]
-    cqrr_int = cqrr_int[good_mask]
-    credo_adaptive_int = credo_adaptive_int[good_mask]
-    credo_fixed_int = credo_fixed_int[good_mask]
-    pred_epic_mdn_test = pred_epic_mdn_test[good_mask]
 
     del uacqr_results
     gc.collect()
@@ -311,25 +306,16 @@ def fit_methods(
     )
     cover_uacqrs = average_coverage(
         uacqrs_int[:, 1], uacqrs_int[:, 0],
-        y_test
+        y_test_uacqr
     )
     cover_uacqrp = average_coverage(
         uacqrp_int[:, 1], uacqrp_int[:, 0],
-        y_test
+        y_test_uacqr
     )
     cover_epic_mdn = average_coverage(
         pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0],
         y_test
     )
-    cover_array = np.array([
-        cover_credo_adap,
-        cover_credo_fixed,
-        cover_cqr,
-        cover_cqrr,
-        cover_uacqrs,
-        cover_uacqrp,
-        cover_epic_mdn,
-    ])
 
     # ISL
     isl_credo_adap = average_interval_score_loss(
@@ -346,25 +332,16 @@ def fit_methods(
     )
     isl_uacqrs = average_interval_score_loss(
         uacqrs_int[:, 1], uacqrs_int[:, 0],
-        y_test, alpha
+        y_test_uacqr, alpha
     )
     isl_uacqrp = average_interval_score_loss(
         uacqrp_int[:, 1], uacqrp_int[:, 0],
-        y_test, alpha
+        y_test_uacqr, alpha
     )
     isl_epic_mdn = average_interval_score_loss(
         pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0],
         y_test, alpha
     )
-    isl_array = np.array([
-        isl_credo_adap,
-        isl_credo_fixed,
-        isl_cqr,
-        isl_cqrr,
-        isl_uacqrs,
-        isl_uacqrp,
-        isl_epic_mdn,
-    ])
 
     # IL
     IL_credo_adap = np.mean(compute_interval_length(credo_adaptive_int[:, 1], credo_adaptive_int[:, 0]))
@@ -374,15 +351,6 @@ def fit_methods(
     IL_uacqrs = np.mean(compute_interval_length(uacqrs_int[:, 1], uacqrs_int[:, 0]))
     IL_uacqrp = np.mean(compute_interval_length(uacqrp_int[:, 1], uacqrp_int[:, 0]))
     IL_epic_mdn = np.mean(compute_interval_length(pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0]))
-    IL_array = np.array([
-        IL_credo_adap,
-        IL_credo_fixed,
-        IL_cqr,
-        IL_cqrr,
-        IL_uacqrs,
-        IL_uacqrp,
-        IL_epic_mdn,
-    ])
 
     # pcorr
     pcorr_credo_adap = corr_coverage_widths(
@@ -399,16 +367,50 @@ def fit_methods(
     )
     pcorr_uacqrs = corr_coverage_widths(
         uacqrs_int[:, 1], uacqrs_int[:, 0],
-        y_test
+        y_test_uacqr
     )
     pcorr_uacqrp = corr_coverage_widths(
         uacqrp_int[:, 1], uacqrp_int[:, 0],
-        y_test
+        y_test_uacqr
     )
     pcorr_epic_mdn = corr_coverage_widths(
         pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0],
         y_test
     )
+    
+    if n_removed == n_total:
+      IL_uacqrs, IL_uacqrp = np.nan, np.nan
+      isl_uacqrs, isl_uacqrp= np.nan, np.nan
+      cover_uacqrs, cover_uacqrp = np.nan, np.nan
+      pcorr_uacqrs, pcorr_uacqrp = np.nan, np.nan
+    
+    IL_array = np.array([
+        IL_credo_adap,
+        IL_credo_fixed,
+        IL_cqr,
+        IL_cqrr,
+        IL_uacqrs,
+        IL_uacqrp,
+        IL_epic_mdn,
+    ])
+    isl_array = np.array([
+        isl_credo_adap,
+        isl_credo_fixed,
+        isl_cqr,
+        isl_cqrr,
+        isl_uacqrs,
+        isl_uacqrp,
+        isl_epic_mdn,
+    ])
+    cover_array = np.array([
+        cover_credo_adap,
+        cover_credo_fixed,
+        cover_cqr,
+        cover_cqrr,
+        cover_uacqrs,
+        cover_uacqrp,
+        cover_epic_mdn,
+    ])
     pcorr_array = np.array([
         pcorr_credo_adap,
         pcorr_credo_fixed,
@@ -424,8 +426,7 @@ def fit_methods(
 def run_experiment(dataset, 
                    n_rep, 
                    target_column, 
-                   prop_test = 0.2, 
-                   prop_train = 0.5,
+                   prop_test = 0.2,
                    checkpoint_flag = False,
                    checkpoint_data = None,
                    ):
@@ -476,8 +477,12 @@ def run_experiment(dataset,
         X_train_calib, X_test, y_train_calib, y_test = train_test_split(
             X, y, test_size=prop_test, random_state=seed
         )
+        if X.shape[0] < 5000:
+          prop_train = 0.5
+        else:
+          prop_train = 0.7
         X_train, X_calib, y_train, y_calib = train_test_split(
-            X_train_calib, y_train_calib, test_size=prop_train, random_state=seed
+            X_train_calib, y_train_calib, test_size=1-prop_train, random_state=seed
         )
 
         if dataset in ["superconductivity", "homes", "meps19", "protein"]:
@@ -532,8 +537,8 @@ def run_experiment(dataset,
     pcorr_results = np.array(pcorr_results)
 
     def mean_sd(arr):
-        mean = arr.mean(axis=0)
-        sd = arr.std(axis=0, ddof=1) if arr.shape[0] > 1 else np.zeros_like(mean)
+        mean = np.nanmean(arr, axis=0, )
+        sd = np.nanstd(arr, axis=0, ddof=1) if arr.shape[0] > 1 else np.zeros_like(mean)
         return mean, sd
 
     methods = ["credo_adap", "credo_fixed", "cqr", "cqrr", "uacqrs", "uacqrp", "EPIC"]
