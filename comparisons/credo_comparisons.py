@@ -367,6 +367,9 @@ def fit_methods(
     pcorr_cqr = corr_coverage_widths(
         cqr_int[:, 1], cqr_int[:, 0], y_test
     )
+    pcorr_cqrr = corr_coverage_widths(
+        cqrr_int[:, 1], cqrr_int[:, 0], y_test
+    )
     if not (n_removed == n_total):
       pcorr_uacqrs = corr_coverage_widths(
           uacqrs_int[:, 1], uacqrs_int[:, 0],
@@ -376,23 +379,6 @@ def fit_methods(
           uacqrp_int[:, 1], uacqrp_int[:, 0],
           y_test_uacqr
       )
-    pcorr_epic_mdn = corr_coverage_widths(
-        pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0],
-        y_test
-    )
-    pcorr_cqrr = corr_coverage_widths(
-        cqrr_int[:, 1], cqrr_int[:, 0], y_test
-    )
-    if not (n_removed == n_total):
-        pcorr_uacqrs = corr_coverage_widths(
-          uacqrs_int[:, 1], uacqrs_int[:, 0],
-          y_test_uacqr
-       )
-        pcorr_uacqrp = corr_coverage_widths(
-          uacqrp_int[:, 1], uacqrp_int[:, 0],
-          y_test_uacqr
-       )
-
     pcorr_epic_mdn = corr_coverage_widths(
         pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0],
         y_test
