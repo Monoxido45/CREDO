@@ -984,22 +984,15 @@ class MDN_model(BaseEstimator):
         (i) quantiles (torch.Tensor): Tensor of shape (n_samples, len(probs)) containing the quantiles
         for each mixture and probability.
         """
-        if isinstance(samples, np.ndarray):
-            samples = torch.tensor(samples, dtype=torch.float32)
-        if isinstance(probs, np.ndarray):
-            probs = torch.tensor(probs, dtype=torch.float32)
-
         n_samples, _ = samples.shape
         n_probs = len(probs)
 
-        quantiles = torch.zeros((n_samples, n_probs), dtype=torch.float32)
+        quantiles = np.zeros((n_samples, n_probs))
 
         for j in range(n_samples):
             for k, prob in enumerate(probs):
-
                 quantiles[j, k] = np.quantile(samples[j, :], prob)
-
-        return quantiles
+        return torch.from_numpy(quantiles)
 
 # EPIC with MDN for the predictive model
 class EPIC_split(BaseEstimator):
