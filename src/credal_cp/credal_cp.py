@@ -356,7 +356,8 @@ class CredalCPRegressor(BaseEstimator):
                 q_low_grid, q_upp_grid = self.base_model.predict_quantiles(
                     X_calib,
                     quantiles=[lower_q, upper_q],
-                    random_seed=jr.PRNGKey(random_seed_calib),
+                    key=jr.PRNGKey(random_seed_calib),
+                    n_MC = N_samples_MC,
                 )
 
                 # obtaining lower and upper quantiles for each x_calib
@@ -583,7 +584,7 @@ class CredalCPRegressor(BaseEstimator):
                 q_low_grid, q_upp_grid = self.base_model.predict_quantiles(
                     X_test,
                     quantiles=[self.alpha / 2, 1 - self.alpha / 2],
-                    random_seed=jr.PRNGKey(random_seed_test),
+                    key=jr.PRNGKey(random_seed_test),
                 )
 
                 if disentangle:
