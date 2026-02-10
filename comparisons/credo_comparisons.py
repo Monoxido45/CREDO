@@ -42,7 +42,7 @@ parser.add_argument("-alpha_bart", "--alpha_bart", type=float, default=0.95, hel
 parser.add_argument("-seed_initial", "--seed_initial", type=int, default=125, help="initial seed for random generator to create seeds for repetitions")
 parser.add_argument("-dataset", "--dataset", type=str, default="airfoil", help="dataset to use for the experiment")
 parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default="catboost", help="UACQR and CQR base models: 'rfqr' or 'catboost'")
-parser.add_argument("-outlier_analysis", "--outlier_analysis", action="store_true", help="whether to perform outlier analysis using LOF and t-SNE")
+parser.add_argument("-outlier_analysis", "--outlier_analysis", type=bool, help="whether to perform outlier analysis using LOF and t-SNE")
 parser.add_argument("-n_cores", "--n_cores", type=int, default=4, help="number of cores to use for parallel processing")
 args = parser.parse_args()
 
@@ -856,6 +856,8 @@ def run_experiment_outlier(
     n_components=2,
     tsne_random_state=120,
     seed_initial=145,
+    checkpoint_flag = False,
+    checkpoint_data = None,
 ):
     data = pd.read_csv(os.path.join(DATA_PATH, f"{dataset}.csv"))
 
@@ -992,7 +994,7 @@ def run_experiment(dataset,
                    prop_test = 0.2,
                    checkpoint_flag = False,
                    checkpoint_data = None,
-                   ):
+):
     data = pd.read_csv(os.path.join(DATA_PATH, f"{dataset}.csv"))
 
     # EPICSCORE params
@@ -1048,7 +1050,7 @@ def run_experiment(dataset,
             X_train_calib, y_train_calib, test_size=1-prop_train, random_state=seed
         )
 
-        if dataset in ["superconductivity", "homes", "meps19", "protein"]:
+        if dataset in ["superconductivity", "homes", "protein"]:
             scale_y = True
         else:
             scale_y = False
