@@ -10,7 +10,6 @@ from sklearn.utils.validation import check_is_fitted
 from credal_cp.epistemic_models import (
     MDN_model,
     GP_model,
-    GPApprox_model,
     BART_model,
     DE_MDN_model,
 )
@@ -83,6 +82,7 @@ class CredalCPRegressor(BaseEstimator):
     ):
         self.nc_type = nc_type
         self.base_model = base_model
+        self.is_fitted = is_fitted
 
         # metadata about the provided base_model
         # Simplify: require sklearn estimators to be instantiated (instances of BaseEstimator).
@@ -596,7 +596,7 @@ class CredalCPRegressor(BaseEstimator):
                 else:
                     q_low_pred = np.quantile(q_low_grid, self.gamma/2, axis=0)
                     q_upp_pred = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=0)
-                    
+
                 lower_cp = q_low_pred - self.cutoff
                 upper_cp = q_upp_pred + self.cutoff
 
