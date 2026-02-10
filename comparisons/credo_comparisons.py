@@ -630,9 +630,7 @@ def fit_methods_outlier(
     inlier_scores = lof.negative_outlier_factor_[inlier_indexes]
     # computing inlier scores
     size = int((y_test.shape[0] - outlier_obs.shape[0]) * inlier_size)
-    most_inlier_idxs = np.argsort(inlier_scores)[::-1][:size]
-    # outlier labels
-    most_cont_labels = y_test[outlier_indexes]
+    most_inlier_idxs = inlier_indexes[np.argsort(inlier_scores)[::-1][:size]]
 
     # selecting prediction intervals for inliers and outliers
     credo_adapt_outliers = credo_adaptive_int[outlier_indexes]
@@ -684,11 +682,11 @@ def fit_methods_outlier(
 
     uacqrs_outliers = uacqrs_outliers[outlier_keep_pos]
     uacqrp_outliers = uacqrp_outliers[outlier_keep_pos]
-    y_test_out_uacqr = most_cont_labels[outlier_keep_pos]
+    y_test_out_uacqr = y_test_out[outlier_keep_pos]
 
     uacqrs_inliers = uacqrs_inliers[inlier_keep_pos]
     uacqrp_inliers = uacqrp_inliers[inlier_keep_pos]
-    y_test_in_uacqr = most_cont_labels[inlier_keep_pos]
+    y_test_in_uacqr = y_test_in[inlier_keep_pos]
     del uacqr_results
     gc.collect()
     
