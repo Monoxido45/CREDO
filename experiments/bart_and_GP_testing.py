@@ -357,7 +357,10 @@ Y_test = test["y"].values.astype(np.float32)
 # ============================================
 kernel = (
     gpx.kernels.RBF() + 
-    gpx.kernels.Matern32()
+    gpx.kernels.Matern52()
+)
+kernel_noise = (
+    gpx.kernels.RBF()
 )
 
 credal_CP_gp = CredalCPRegressor(
@@ -385,6 +388,8 @@ credal_CP_gp_hetero.fit(
     scale = True,
     heteroscedastic = True,
     kernel = kernel,
+    kernel_noise = kernel_noise,
+    activation_sigma="lognormal",
     )
 
 
@@ -395,12 +400,11 @@ gp_cutoff = credal_CP_gp.calibrate(X_cal, Y_cal,
 gp_hetero_cutoff = credal_CP_gp_hetero.calibrate(X_cal, Y_cal,
                                              N_samples_MC=1000)
 
-
 # ============================================
 # 3. Plotting and predicting
 # ============================================
 # Prediction on the test set grid
-X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
+X_test_grid = np.linspace(-1.15, 1.15, 500).astype(np.float32).reshape(-1, 1)
 pred_gp = credal_CP_gp.predict(X_test_grid)
 pred_gp_hetero = credal_CP_gp_hetero.predict(X_test_grid)
 

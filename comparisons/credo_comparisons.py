@@ -8,6 +8,7 @@ import gc
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
+import copy
 
 original_path = os.getcwd()
 os.chdir(os.path.join(original_path, "comparisons"))
@@ -19,6 +20,10 @@ from credal_cp.utils import (
     corr_coverage_widths,
     compute_interval_length,
 )
+from jaxtyping import install_import_hook
+with install_import_hook("gpjax", "beartype.beartype"):
+    import gpjax as gpx
+
 # uacqr part
 from uacqr import uacqr
 # EPIC part
@@ -45,6 +50,11 @@ parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default="catboost
 parser.add_argument("-outlier_analysis", "--outlier_analysis", type=bool, help="whether to perform outlier analysis using LOF and t-SNE")
 parser.add_argument("-n_cores", "--n_cores", type=int, default=4, help="number of cores to use for parallel processing")
 parser.add_argument("-m_bart", "--m_bart", type=int, default=100, help="number of trees used in CREDO-BART")
+parser.add_argument("-kernel", "--kernel", type=str, default="RBF + Matern52", 
+                    help="kernel to use for Gaussian Process regression in CREDO: 'RBF', 'Matern32', 'Matern52' or 'RationalQuadratic'")
+parser.add_argument("-kernel_noise", "--kernel_noise", type=str, default="RBF", 
+                    help="kernel to use for Gaussian Process noise in CREDO: 'RBF', 'Matern32', 'Matern52' or 'RationalQuadratic'")
+parser.add_argument("-activation_noise", "--activation_noise", type=str, default="softplus", help="activation function for noise in Gaussian Process")
 args = parser.parse_args()
 
 alpha = args.alpha
@@ -58,6 +68,33 @@ uacqr_model = args.uacqr_model
 outlier_analysis = args.outlier_analysis
 n_cores = args.n_cores
 m_bart = args.m_bart
+kernel = args.kernel
+kernel_noise = args.kernel_noise
+activation_noise = args.activation_noise
+
+if kernel == "RBF":
+    kernel_gp = gpx.kernels.RBF()
+elif kernel == "Matern32":
+    kernel_gp = gpx.kernels.Matern32()
+elif kernel == "Matern52":
+    kernel_gp = gpx.kernels.Matern52()
+elif kernel == "RationalQuadratic":
+    kernel_gp = gpx.kernels.RationalQuadratic()
+elif kernel == "RBF + Matern52":
+    kernel_gp = gpx.kernels.RBF() + gpx.kernels.Matern52()
+else:
+    kernel = (
+    gpx.kernels.RBF() + 
+    gpx.kernels.Matern32()+
+    gpx.kernels.Matern52(lengthscale=0.12)
+)
+
+if kernel_noise == "RBF":
+    kernel_noise_gp = gpx.kernels.RBF()
+elif kernel_noise == "Matern32":
+    kernel_noise_gp = gpx.kernels.Matern32()
+else:
+    kernel_noise_gp = gpx.kernels.RationalQuadratic()
 
 DATA_PATH = os.path.join(original_path , "data")
 RESULTS_PATH = os.path.join(original_path , "results")
@@ -210,6 +247,47 @@ def fit_methods(
     del epic_obj
     gc.collect()
 
+    # Fitting CREDO with GP
+    print(f"Fitting CREDO with GP")
+    credal_CP_gp = CredalCPRegressor(
+        nc_type = 'Quantile',
+        base_model = "GP",
+        alpha = alpha,
+        adaptive_gamma = True,
+        gamma = gamma,
+    )
+
+    credal_CP_gp_heter = copy.deepcopy(credal_CP_gp)
+
+    credal_CP_gp.fit(
+        X_train,
+        y_train,
+        kernel = kernel_gp,
+        normalize_y = True,
+        scale = True,
+        heteroscedastic = False,
+    )
+
+    credal_CP_gp_heter.fit(
+        X_train,
+        y_train,
+        kernel = kernel_gp,
+        normalize_y = True,
+        scale = True,
+        activation_sigma = activation_noise,
+        heteroscedastic = True,
+    )
+
+    credal_CP_gp.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
+    credal_CP_gp_heter.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
+
+    credo_CP_gp_pred = credal_CP_gp.predict(X_test)
+    credo_CP_gp_heter_pred = credal_CP_gp_heter.predict(X_test)
+
+    del credal_CP_gp
+    del credal_CP_gp_heter
+    gc.collect()
+
     # Fitting CREDO with BART
     print(f"Fitting CREDO with BART")
     credal_CP_bart_adaptive = CredalCPRegressor(
@@ -306,6 +384,12 @@ def fit_methods(
     cover_credo_fixed = average_coverage(
         credo_fixed_int[:, 1], credo_fixed_int[:, 0], y_test
     )
+    cover_credo_gp = average_coverage(
+        credo_CP_gp_pred[:, 1], credo_CP_gp_pred[:, 0], y_test
+    )
+    cover_credo_gp_heter = average_coverage(
+        credo_CP_gp_heter_pred[:, 1], credo_CP_gp_heter_pred[:, 0], y_test
+    )
     cover_cqr = average_coverage(
         cqr_int[:, 1], cqr_int[:, 0], y_test
     )
@@ -332,6 +416,12 @@ def fit_methods(
     isl_credo_fixed = average_interval_score_loss(
         credo_fixed_int[:, 1], credo_fixed_int[:, 0], y_test, alpha
     )
+    isl_credo_gp = average_interval_score_loss(
+        credo_CP_gp_pred[:, 1], credo_CP_gp_pred[:, 0], y_test, alpha
+    )
+    isl_credo_gp_heter = average_interval_score_loss(
+        credo_CP_gp_heter_pred[:, 1], credo_CP_gp_heter_pred[:, 0], y_test, alpha
+    )
     isl_cqr = average_interval_score_loss(
         cqr_int[:, 1], cqr_int[:, 0], y_test, alpha
     )
@@ -352,6 +442,8 @@ def fit_methods(
     )
 
     # IL
+    IL_credo_gp = np.mean(compute_interval_length(credo_CP_gp_pred[:, 1], credo_CP_gp_pred[:, 0]))
+    IL_credo_gp_heter = np.mean(compute_interval_length(credo_CP_gp_heter_pred[:, 1], credo_CP_gp_heter_pred[:, 0]))
     IL_credo_adap = np.mean(compute_interval_length(credo_adaptive_int[:, 1], credo_adaptive_int[:, 0]))
     IL_credo_fixed = np.mean(compute_interval_length(credo_fixed_int[:, 1], credo_fixed_int[:, 0]))
     IL_cqr = np.mean(compute_interval_length(cqr_int[:, 1], cqr_int[:, 0]))
@@ -361,6 +453,12 @@ def fit_methods(
     IL_epic_mdn = np.mean(compute_interval_length(pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0]))
 
     # pcorr
+    pcorr_credo_gp = corr_coverage_widths(
+        credo_CP_gp_pred[:, 1], credo_CP_gp_pred[:, 0], y_test
+    )
+    pcorr_credo_gp_heter = corr_coverage_widths(
+        credo_CP_gp_heter_pred[:, 1], credo_CP_gp_heter_pred[:, 0], y_test
+    )
     pcorr_credo_adap = corr_coverage_widths(
         credo_adaptive_int[:, 1], credo_adaptive_int[:, 0], y_test
     )
@@ -394,6 +492,8 @@ def fit_methods(
       pcorr_uacqrs, pcorr_uacqrp = np.nan, np.nan
     
     IL_array = np.array([
+        IL_credo_gp,
+        IL_credo_gp_heter,
         IL_credo_adap,
         IL_credo_fixed,
         IL_cqr,
@@ -403,6 +503,8 @@ def fit_methods(
         IL_epic_mdn,
     ])
     isl_array = np.array([
+        isl_credo_gp,
+        isl_credo_gp_heter,
         isl_credo_adap,
         isl_credo_fixed,
         isl_cqr,
@@ -412,6 +514,8 @@ def fit_methods(
         isl_epic_mdn,
     ])
     cover_array = np.array([
+        cover_credo_gp,
+        cover_credo_gp_heter,
         cover_credo_adap,
         cover_credo_fixed,
         cover_cqr,
@@ -421,6 +525,8 @@ def fit_methods(
         cover_epic_mdn,
     ])
     pcorr_array = np.array([
+        pcorr_credo_gp,
+        pcorr_credo_gp_heter,
         pcorr_credo_adap,
         pcorr_credo_fixed,
         pcorr_cqr,
@@ -548,6 +654,48 @@ def fit_methods_outlier(
     del epic_obj
     gc.collect()
 
+    # Fitting CREDO with GP
+    print(f"Fitting CREDO with GP")
+    credal_CP_gp = CredalCPRegressor(
+        nc_type = 'Quantile',
+        base_model = "GP",
+        alpha = alpha,
+        adaptive_gamma = True,
+        gamma = gamma,
+    )
+
+    credal_CP_gp_heter = copy.deepcopy(credal_CP_gp)
+
+    credal_CP_gp.fit(
+        X_train,
+        y_train,
+        kernel = kernel_gp,
+        normalize_y = True,
+        scale = True,
+        heteroscedastic = False,
+    )
+
+    credal_CP_gp_heter.fit(
+        X_train,
+        y_train,
+        kernel = kernel_gp,
+        normalize_y = True,
+        scale = True,
+        activation_sigma = activation_noise,
+        heteroscedastic = True,
+    )
+
+    credal_CP_gp.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
+    credal_CP_gp_heter.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
+
+    credo_CP_gp_pred = credal_CP_gp.predict(X_test)
+    credo_CP_gp_heter_pred = credal_CP_gp_heter.predict(X_test)
+
+    del credal_CP_gp
+    del credal_CP_gp_heter
+    gc.collect()
+    
+
     # Fitting CREDO with BART
     print(f"Fitting CREDO with BART")
     credal_CP_bart_adaptive = CredalCPRegressor(
@@ -636,6 +784,8 @@ def fit_methods_outlier(
     most_inlier_idxs = inlier_indexes[np.argsort(inlier_scores)[::-1][:size]]
 
     # selecting prediction intervals for inliers and outliers
+    credo_gp_outliers = credo_CP_gp_pred[outlier_indexes]
+    credo_gp_heter_outliers = credo_CP_gp_heter_pred[outlier_indexes]
     credo_adapt_outliers = credo_adaptive_int[outlier_indexes]
     credo_fixed_outliers = credo_fixed_int[outlier_indexes]
     cqr_outliers = cqr_int[outlier_indexes]
@@ -645,6 +795,8 @@ def fit_methods_outlier(
     epic_mdn_outliers = pred_epic_mdn_test[outlier_indexes]
     y_test_out = y_test[outlier_indexes]
 
+    credo_gp_inliers = credo_CP_gp_pred[most_inlier_idxs]
+    credo_gp_heter_inliers = credo_CP_gp_heter_pred[most_inlier_idxs]
     credo_adapt_inliers = credo_adaptive_int[most_inlier_idxs]
     credo_fixed_inliers = credo_fixed_int[most_inlier_idxs]
     cqr_inliers = cqr_int[most_inlier_idxs]
@@ -695,6 +847,16 @@ def fit_methods_outlier(
     
     # evaluating metrics of interest
     # coverage for outliers
+    cover_credo_gp_out = average_coverage(
+        credo_CP_gp_pred[outlier_indexes][:, 1], 
+        credo_CP_gp_pred[outlier_indexes][:, 0], 
+        y_test_out
+    )
+    cover_credo_gp_heter_out = average_coverage(
+        credo_CP_gp_heter_pred[outlier_indexes][:, 1], 
+        credo_CP_gp_heter_pred[outlier_indexes][:, 0], 
+        y_test_out
+    )
     cover_credo_adap_out = average_coverage(
         credo_adapt_outliers[:, 1], credo_adapt_outliers[:, 0], y_test_out
     )
@@ -721,6 +883,16 @@ def fit_methods_outlier(
     )
 
     # ISL on outliers
+    isl_credo_gp_out = average_interval_score_loss(
+        credo_CP_gp_pred[outlier_indexes][:, 1], 
+        credo_CP_gp_pred[outlier_indexes][:, 0], 
+        y_test_out, alpha
+    )
+    isl_credo_gp_heter_out = average_interval_score_loss(
+        credo_CP_gp_heter_pred[outlier_indexes][:, 1], 
+        credo_CP_gp_heter_pred[outlier_indexes][:, 0], 
+        y_test_out, alpha
+    )
     isl_credo_adap_out = average_interval_score_loss(
         credo_adapt_outliers[:, 1], credo_adapt_outliers[:, 0], y_test_out, alpha
     )
@@ -747,6 +919,28 @@ def fit_methods_outlier(
     )
 
     # Interval length ratio
+    credo_gp_ratio = np.mean(
+            compute_interval_length(
+                credo_CP_gp_pred[outlier_indexes][:, 1], 
+                credo_CP_gp_pred[outlier_indexes][:, 0]
+            )
+        ) / np.mean(
+            compute_interval_length(
+                credo_CP_gp_pred[most_inlier_idxs][:, 1], 
+                credo_CP_gp_pred[most_inlier_idxs][:, 0]
+            )
+        )
+    credo_gp_heter_ratio = np.mean(
+            compute_interval_length(
+                credo_CP_gp_heter_pred[outlier_indexes][:, 1], 
+                credo_CP_gp_heter_pred[outlier_indexes][:, 0]
+            )
+        ) / np.mean(
+            compute_interval_length(
+                credo_CP_gp_heter_pred[most_inlier_idxs][:, 1], 
+                credo_CP_gp_heter_pred[most_inlier_idxs][:, 0]
+            )
+        )
     credo_adap_ratio = np.mean(
             compute_interval_length(
                 credo_adapt_outliers[:, 1], credo_adapt_outliers[:, 0]
@@ -817,6 +1011,8 @@ def fit_methods_outlier(
         uacqrs_ratio, uacqrp_ratio = np.nan, np.nan
     
     isl_array = np.array([
+        isl_credo_gp_out,
+        isl_credo_gp_heter_out,
         isl_credo_adap_out,
         isl_credo_fixed_out,
         isl_cqr_out,
@@ -826,6 +1022,8 @@ def fit_methods_outlier(
         isl_epic_mdn_out,
     ])
     cover_array = np.array([
+        cover_credo_gp_out,
+        cover_credo_gp_heter_out,
         cover_credo_adap_out,
         cover_credo_fixed_out,
         cover_cqr_out,
@@ -835,6 +1033,8 @@ def fit_methods_outlier(
         cover_epic_mdn_out,
     ])
     ratio_array = np.array([
+        credo_gp_ratio,
+        credo_gp_heter_ratio,
         credo_adap_ratio,
         credo_fixed_ratio,
         cqr_ratio,
@@ -970,7 +1170,7 @@ def run_experiment_outlier(
         sd = np.nanstd(arr, axis=0, ddof=1) if arr.shape[0] > 1 else np.zeros_like(mean)
         return mean, sd
 
-    methods = ["credo_adap", "credo_fixed", "cqr", "cqrr", "uacqrs", "uacqrp", "EPIC"]
+    methods = ["credo_GP", "credo_GP_heter", "credo_BART_adap", "credo_BART_fixed", "cqr", "cqrr", "uacqrs", "uacqrp", "EPIC"]
 
     cover_mean, cover_sd = mean_sd(coverage_results)
     isl_mean, isl_sd = mean_sd(isl_results)
@@ -1107,7 +1307,7 @@ def run_experiment(dataset,
         sd = np.nanstd(arr, axis=0, ddof=1) if arr.shape[0] > 1 else np.zeros_like(mean)
         return mean, sd
 
-    methods = ["credo_adap", "credo_fixed", "cqr", "cqrr", "uacqrs", "uacqrp", "EPIC"]
+    methods = ["credo_GP", "credo_GP_heter", "credo_BART_adap", "credo_BART_fixed", "cqr", "cqrr", "uacqrs", "uacqrp", "EPIC"]
 
     cover_mean, cover_sd = mean_sd(cover_results)
     isl_mean, isl_sd = mean_sd(isl_results)
