@@ -131,6 +131,7 @@ class CredalCPRegressor(BaseEstimator):
             n_MCMC=2000,
             base_model_type = None,
             activation_sigma = "softplus",
+            kernel = None,
             **fit_params):
         self.nn_type = nn_type
         if self.base_is_sklearn and not self.base_is_fitted:
@@ -196,6 +197,7 @@ class CredalCPRegressor(BaseEstimator):
                 print("Fitting Gaussian Process model")
                 self.base_model_type = "GP"
                 self.base_model = GP_model(
+                    kernel=kernel,
                    **fit_params
                 )
 

@@ -1,9 +1,11 @@
 # Repeating code from credal sets testing but for 
 # BART and GP
 # First starting by first example
+
 # ============================================
 # 0. Imports & data generation
 # ============================================
+from jaxtyping import install_import_hook
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -16,6 +18,9 @@ import torch
 from credal_cp.credal_cp import CredalCPRegressor
 import numpy as np
 import copy
+
+with install_import_hook("gpjax", "beartype.beartype"):
+    import gpjax as gpx
 
 # For reproducibility
 np.random.seed(125)
@@ -86,11 +91,12 @@ Y_test = test["y"].values.astype(np.float32)
 # ============================================
 # 2. Train and calibrate credal CPs
 # ============================================
-credal_CP_bart = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = "BART",
-    alpha = 0.1,
-    gamma = 0.1,
+kernel = (
+    gpx.kernels.RBF() + 
+    gpx.kernels.Matern52()
+)
+kernel_noise = (
+    gpx.kernels.RBF()
 )
 
 credal_CP_gp = CredalCPRegressor(
@@ -108,6 +114,7 @@ credal_CP_gp.fit(
     Y_train,
     scale = True,
     heteroscedastic = False,
+    kernel = kernel,
 )
 
 # fitting also the heteroscedastic version
@@ -116,8 +123,17 @@ credal_CP_gp_hetero.fit(
     Y_train,
     scale = True,
     heteroscedastic = True,
+    kernel = kernel,
+    kernel_noise = kernel_noise,
     )
 
+# BaRT-based credal CP
+credal_CP_bart = CredalCPRegressor(
+    nc_type = 'Quantile',
+    base_model = "BART",
+    alpha = 0.1,
+    gamma = 0.1,
+)
 # starting fitting
 credal_CP_bart.fit(
     X_train, 
@@ -138,12 +154,11 @@ gp_cutoff = credal_CP_gp.calibrate(X_cal, Y_cal,
 gp_hetero_cutoff = credal_CP_gp_hetero.calibrate(X_cal, Y_cal,
                                              N_samples_MC=1000)
 
-
 # ============================================
 # 3. Plotting and predicting
 # ============================================
 # Prediction on the test set grid
-X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
+X_test_grid = np.linspace(-1.15, 1.15, 500).astype(np.float32).reshape(-1, 1)
 pred_bart = credal_CP_bart.predict(X_test_grid)
 pred_gp = credal_CP_gp.predict(X_test_grid)
 pred_gp_hetero = credal_CP_gp_hetero.predict(X_test_grid)
@@ -188,6 +203,43 @@ ax.grid(True)
 
 # heteroscedastic GP plot (right)
 ax = axes[2]
+ax.scatter(X_test.ravel(), Y_test.ravel(), s=30, color="k", alpha=0.8, label="Test data", zorder=3)
+ax.fill_between(xx, lower_gp_hetero, upper_gp_hetero, color="C2", alpha=0.25, label="Het GP interval")
+ax.plot(xx, center_gp_hetero, color="C2", lw=1, label="Het GP center")
+ax.set_xlabel("x")
+ax.set_title("Heteroscedastic GP")
+ax.legend()
+ax.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+############## just between GP's for better visibility ############## 
+X_test_grid = np.linspace(-1.15, 1.15, 500).astype(np.float32).reshape(-1, 1)
+pred_gp = credal_CP_gp.predict(X_test_grid)
+pred_gp_hetero = credal_CP_gp_hetero.predict(X_test_grid)
+lower_gp,  upper_gp  = pred_gp[:, 0],  pred_gp[:, 1]
+lower_gp_hetero, upper_gp_hetero = pred_gp_hetero[:, 0], pred_gp_hetero[:, 1]
+
+center_gp  = 0.5 * (lower_gp  + upper_gp)
+center_gp_hetero = 0.5 * (lower_gp_hetero + upper_gp_hetero)
+xx = X_test_grid.ravel()
+
+fig, axes = plt.subplots(1, 2, figsize=(18, 5), sharey=True)
+
+# GP plot (middle)
+ax = axes[0]
+ax.scatter(X_test.ravel(), Y_test.ravel(), s=30, color="k", alpha=0.8, label="Test data", zorder=3)
+ax.fill_between(xx, lower_gp, upper_gp, color="C1", alpha=0.25, label="GP interval")
+ax.plot(xx, center_gp, color="C1", lw=1, label="GP center")
+ax.set_xlabel("x")
+ax.set_title("GP")
+ax.legend()
+ax.grid(True)
+
+# heteroscedastic GP plot (right)
+ax = axes[1]
 ax.scatter(X_test.ravel(), Y_test.ravel(), s=30, color="k", alpha=0.8, label="Test data", zorder=3)
 ax.fill_between(xx, lower_gp_hetero, upper_gp_hetero, color="C2", alpha=0.25, label="Het GP interval")
 ax.plot(xx, center_gp_hetero, color="C2", lw=1, label="Het GP center")
@@ -303,46 +355,44 @@ Y_test = test["y"].values.astype(np.float32)
 # ============================================
 # 2. Train and calibrate credal CPs
 # ============================================
-credal_CP_bart = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = "BART",
-    alpha = 0.1,
+kernel = (
+    gpx.kernels.RBF() + 
+    gpx.kernels.Matern32()
 )
 
 credal_CP_gp = CredalCPRegressor(
     nc_type = 'Quantile',
-    base_model = "GP_Approx",
-    alpha = 0.1,
+    base_model = "GP",
+    alpha = 0.1, # for simplicity in this example
+    gamma = 0.1,
 )
+
+credal_CP_gp_hetero = copy.deepcopy(credal_CP_gp)
 
 # fitting GP-based credal CP
 credal_CP_gp.fit(
     X_train,
     Y_train,
-    num_inducing_points = 100,
-    lr_variational = 0.005,
-    lr_hyperparams = 0.01,
-    batch_size= 45,
-    n_epochs = 300,
-    patience = 30,
+    scale = True,
+    heteroscedastic = False,
+    kernel = kernel,
 )
 
-# starting fitting
-credal_CP_bart.fit(
-    X_train, 
+# fitting also the heteroscedastic version
+credal_CP_gp_hetero.fit(
+    X_train,
     Y_train,
-    progressbar = True,
-    n_cores = 4,
-    n_MCMC = 1000,
-    alpha_bart = 0.98,
-)
+    scale = True,
+    heteroscedastic = True,
+    kernel = kernel,
+    )
 
 
 # calibration of the credal CPs
-bart_cutoff = credal_CP_bart.calibrate(X_cal, Y_cal, beta = 0.1,
-                                               N_samples_MC=1000)
+gp_cutoff = credal_CP_gp.calibrate(X_cal, Y_cal,
+                                             N_samples_MC=1000)
 
-gp_cutoff = credal_CP_gp.calibrate(X_cal, Y_cal, beta = 0.1, 
+gp_hetero_cutoff = credal_CP_gp_hetero.calibrate(X_cal, Y_cal,
                                              N_samples_MC=1000)
 
 
@@ -351,18 +401,18 @@ gp_cutoff = credal_CP_gp.calibrate(X_cal, Y_cal, beta = 0.1,
 # ============================================
 # Prediction on the test set grid
 X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
-pred_bart = credal_CP_bart.predict(X_test_grid)
 pred_gp = credal_CP_gp.predict(X_test_grid)
+pred_gp_hetero = credal_CP_gp_hetero.predict(X_test_grid)
 
 # Simple concise plotting assuming predict() returns (N,2) arrays [lower, upper]
-pred_bart = np.asarray(pred_bart)
 pred_gp  = np.asarray(pred_gp)
+pred_gp_hetero = np.asarray(pred_gp_hetero)
 
-lower_bart, upper_bart = pred_bart[:, 0], pred_bart[:, 1]
 lower_gp,  upper_gp  = pred_gp[:, 0],  pred_gp[:, 1]
+lower_gp_hetero, upper_gp_hetero = pred_gp_hetero[:, 0], pred_gp_hetero[:, 1]
 
-center_bart = 0.5 * (lower_bart + upper_bart)
 center_gp  = 0.5 * (lower_gp  + upper_gp)
+center_gp_hetero = 0.5 * (lower_gp_hetero + upper_gp_hetero)
 
 xx = X_test_grid.ravel()
 
@@ -371,21 +421,21 @@ fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
 # BART plot (left)
 ax = axes[0]
 ax.scatter(X_test.ravel(), Y_test.ravel(), s=30, color="k", alpha=0.8, label="Test data", zorder=3)
-ax.fill_between(xx, lower_bart, upper_bart, color="C0", alpha=0.25, label="BART interval")
-ax.plot(xx, center_bart, color="C0", lw=1, label="BART center")
+ax.fill_between(xx, lower_gp, upper_gp, color="C0", alpha=0.25, label="GP interval")
+ax.plot(xx, center_gp, color="C0", lw=1, label="GP center")
 ax.set_xlabel("x")
 ax.set_ylabel("y")
-ax.set_title("BART")
+ax.set_title("GP")
 ax.legend()
 ax.grid(True)
 
 # GP plot (right)
 ax = axes[1]
 ax.scatter(X_test.ravel(), Y_test.ravel(), s=30, color="k", alpha=0.8, label="Test data", zorder=3)
-ax.fill_between(xx, lower_gp, upper_gp, color="C1", alpha=0.25, label="GP interval")
-ax.plot(xx, center_gp, color="C1", lw=1, label="GP center")
+ax.fill_between(xx, lower_gp_hetero, upper_gp_hetero, color="C1", alpha=0.25, label="Hetero GP interval")
+ax.plot(xx, center_gp_hetero, color="C1", lw=1, label="Hetero GP center")
 ax.set_xlabel("x")
-ax.set_title("GP")
+ax.set_title("Heteroscedastic GP")
 ax.legend()
 ax.grid(True)
 
@@ -396,22 +446,22 @@ plt.show()
 # 4. Marginal coverage computation
 # ============================================
 # Compute marginal coverage on the test set
-pred_bart_test = np.asarray(credal_CP_bart.predict(X_test))
+pred_hetero_gp = np.asarray(credal_CP_gp_hetero.predict(X_test))
 pred_gp_test  = np.asarray(credal_CP_gp.predict(X_test))
 
-l_bart, u_bart = pred_bart_test[:, 0], pred_bart_test[:, 1]
+l_hetero_gp, u_hetero_gp = pred_hetero_gp[:, 0], pred_hetero_gp[:, 1]
 l_gp,  u_gp  = pred_gp_test[:, 0],  pred_gp_test[:, 1]
 y_true = Y_test.ravel()
 
-inside_bart = (y_true >= l_bart) & (y_true <= u_bart)
+inside_hetero_gp = (y_true >= l_hetero_gp) & (y_true <= u_hetero_gp)
 inside_gp  = (y_true >= l_gp)  & (y_true <= u_gp)
 
-coverage_bart = float(np.mean(inside_bart))
+coverage_hetero_gp = float(np.mean(inside_hetero_gp))
 coverage_gp  = float(np.mean(inside_gp))
-avg_len_bart = float(np.mean(u_bart - l_bart))
+avg_len_hetero_gp = float(np.mean(u_hetero_gp - l_hetero_gp))
 avg_len_gp  = float(np.mean(u_gp - l_gp))
 
-print(f"BART marginal coverage: {coverage_bart:.3f}, avg interval length: {avg_len_bart:.3f}")
+print(f"Hetero GP marginal coverage: {coverage_hetero_gp:.3f}, avg interval length: {avg_len_hetero_gp:.3f}")
 print(f"GP marginal coverage:  {coverage_gp:.3f}, avg interval length: {avg_len_gp:.3f}")
 
 

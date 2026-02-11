@@ -1761,8 +1761,10 @@ class GP_model(BaseEstimator):
     def __init__(
             self,
             kernel= None,
+            kernel_noise= None,
             normalize_y=True,
             heteroscedastic=False,
+            variational=False,
     ):
         """
         Input:
@@ -1774,12 +1776,20 @@ class GP_model(BaseEstimator):
         (i) Initialized GP_model object.
         """
         if kernel is None:
-            self.kernel = gpx.kernels.RationalQuadratic()
+            self.kernel = (gpx.kernels.RationalQuadratic() + 
+                           gpx.kernels.Matern52()
+                           )
         else:
             self.kernel = kernel
+        
+        if kernel_noise is None:
+            self.kernel_noise = gpx.kernels.RBF()
+        else:
+            self.kernel_noise = kernel_noise
 
         self.normalize_y = normalize_y
         self.heteroscedastic = heteroscedastic
+        self.variational = variational
 
     def fit(
             self, 
@@ -1802,6 +1812,10 @@ class GP_model(BaseEstimator):
         Output:
         (i) fitted GP_model object.
         """
+        if X.shape[0] > 5000 and not self.heteroscedastic and not self.variational:
+            print("Changing to variational because of the large amount of data.")
+            self.variational = True
+
         # scaling part
         if scale:
             self.scaler_X = StandardScaler()
@@ -1824,27 +1838,63 @@ class GP_model(BaseEstimator):
             likelihood = gpx.likelihoods.Gaussian(num_datapoints=self.train_data.n)
             posterior_model = prior * likelihood
 
-            self.opt_posterior, history = gpx.fit_scipy(
-                model=posterior_model,
-                objective=lambda p, d: -gpx.objectives.conjugate_mll(p, d),
-                train_data=self.train_data,
-                trainable=gpx.parameters.Parameter,
-            )
+            if self.variational:
+                num_inducing = min(50, self.train_data.n) 
+                kmeans = KMeans(n_clusters=num_inducing, n_init='auto', random_state=random_state)
+                z_init = jnp.array(kmeans.fit(X).cluster_centers_)
+
+                self.q = gpx.VariationalFamily(
+                    posterior=posterior_model,
+                    inducing_inputs=z_init,
+                )
+
+                objective = gpx.objectives.VariationalELBO(negative=True)
+
+                key, subkey = jr.split(key)
+                optimiser = ox.chain(
+                    ox.clip_by_global_norm(1.0), # Prevents massive gradient updates
+                    ox.adam(learning_rate=0.005),
+                    ox.zero_nans()
+                )
+
+                # optimizing hyperparameters
+                self.opt_posterior, history = gpx.fit(
+                    model=self.q,
+                    objective=objective,
+                    train_data=self.train_data,
+                    optim=optimiser,
+                    num_iters=2000,
+                    key=subkey,
+                    verbose = False,
+                )
+            else:
+                self.opt_posterior, history = gpx.fit_scipy(
+                    model=posterior_model,
+                    objective=lambda p, d: -gpx.objectives.conjugate_mll(p, d),
+                    train_data=self.train_data,
+                    trainable=gpx.parameters.Parameter,
+                )
 
         elif self.heteroscedastic and activation_sigma == "lognormal":
-            self.activation_sigma = "lognormal"
+            if activation_sigma == "lognormal":
+                self.activation_sigma = "lognormal"
+                noise_transform = LogNormalTransform()
+            elif activation_sigma == "softplus":
+                self.activation_sigma = "softplus"
+                noise_transform = SoftplusTransform()
+
             signal_prior = gpx.gps.Prior(
                 mean_function=gpx.mean_functions.Zero(),
                 kernel=self.kernel,
             )
             noise_prior = gpx.gps.Prior(
                 mean_function=gpx.mean_functions.Zero(),
-                kernel=self.kernel,
+                kernel=self.kernel_noise,
             )
             likelihood = HeteroscedasticGaussian(
                 num_datapoints=self.train_data.n,
                 noise_prior=noise_prior,
-                noise_transform=LogNormalTransform(),
+                noise_transform=noise_transform,
             )
             posterior = signal_prior * likelihood
 
@@ -1860,54 +1910,20 @@ class GP_model(BaseEstimator):
             )
 
             key, subkey = jr.split(key)
+            optimiser = ox.chain(
+                ox.clip_by_global_norm(1.0), # Prevents massive gradient updates
+                ox.adam(learning_rate=0.005),
+                ox.zero_nans()
+            )
+
             # optimizing hyperparameters
             objective = lambda model, data: -gpx.objectives.heteroscedastic_elbo(model, data)
             self.opt_posterior, history = gpx.fit(
                 model=self.q,
                 objective=objective,
                 train_data=self.train_data,
-                optim=ox.adam(learning_rate=0.01),
-                num_iters=1000,
-                key=subkey,
-                verbose = False
-            )
-        elif self.heteroscedastic and activation_sigma == "softplus":
-            self.activation_sigma = "softplus"
-            signal_prior = gpx.gps.Prior(
-                mean_function=gpx.mean_functions.Zero(),
-                kernel=self.kernel,
-            )
-            noise_prior = gpx.gps.Prior(
-                mean_function=gpx.mean_functions.Zero(),
-                kernel=self.kernel,
-            )
-            likelihood = HeteroscedasticGaussian(
-                num_datapoints=self.train_data.n,
-                noise_prior=noise_prior,
-                noise_transform=SoftplusTransform(),
-            )
-            posterior = signal_prior * likelihood
-
-            # inducing points
-            num_inducing = min(50, self.train_data.n) 
-            kmeans = KMeans(n_clusters=num_inducing, n_init='auto', random_state=random_state)
-            z_init = jnp.array(kmeans.fit(X).cluster_centers_)
-
-            self.q = HeteroscedasticVariationalFamily(
-                posterior=posterior,
-                inducing_inputs=z_init,
-                inducing_inputs_g=z_init,
-            )
-
-            key, subkey = jr.split(key)
-            # optimizing hyperparameters
-            objective = lambda model, data: -gpx.objectives.heteroscedastic_elbo(model, data)
-            self.opt_posterior, history = gpx.fit(
-                model=self.q,
-                objective=objective,
-                train_data=self.train_data,
-                optim=ox.adam(learning_rate=0.01),
-                num_iters=1000,
+                optim=optimiser,
+                num_iters=2000,
                 key=subkey,
                 verbose = False,
             )
@@ -1935,9 +1951,14 @@ class GP_model(BaseEstimator):
 
         if not self.heteroscedastic:
             key, subkey = jr.split(key)
-            latent_dist = self.opt_posterior.predict(x_jp, train_data=self.train_data)
-            sample_functions = latent_dist.sample(subkey, sample_shape=(n_MC,))
-            sigma = self.opt_posterior.likelihood.obs_stddev.get_value()
+            if not self.variational:
+                latent_dist = self.opt_posterior.predict(x_jp, train_data=self.train_data)
+                sample_functions = latent_dist.sample(subkey, sample_shape=(n_MC,))
+                sigma = self.opt_posterior.likelihood.obs_stddev.get_value()
+            else:
+                latent_dist = self.opt_posterior.predict(x_jp)
+                sample_functions = latent_dist.sample(subkey, sample_shape=(n_MC,))
+                sigma = self.opt_posterior.likelihood.obs_stddev.get_value()
 
             z_scores = norm.ppf(quantiles)
             quantile_functions = sample_functions[..., None] + z_scores * sigma
