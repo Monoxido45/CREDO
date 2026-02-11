@@ -1493,6 +1493,7 @@ class QuantileRegressionNN:
         dropout=0.3,
         hidden_layers=[64, 64],
         use_gpu=True,
+        undo_crossing=True,
     ):
         self.alpha = alpha
         self.quantiles = [alpha/2, 1-alpha/2]
@@ -1504,6 +1505,7 @@ class QuantileRegressionNN:
             hidden_layers=hidden_layers, 
             p_dropout=dropout
         ).to(self.device)
+        self.undo_crossing = undo_crossing
 
         self.scaler_x = StandardScaler()
         self.scaler_y = StandardScaler()
