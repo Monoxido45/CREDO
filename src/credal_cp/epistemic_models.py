@@ -1848,7 +1848,7 @@ class GP_model(BaseEstimator):
                 inducing_inputs=z_init
                 )
 
-                objective = gpx.objectives.VariationalELBO(negative=True)
+                objective = lambda model, data: -gpx.objectives.elbo(model, data)
 
                 key, subkey = jr.split(key)
                 optimiser = ox.chain(
@@ -1918,6 +1918,7 @@ class GP_model(BaseEstimator):
 
             # optimizing hyperparameters
             objective = lambda model, data: -gpx.objectives.heteroscedastic_elbo(model, data)
+
             self.opt_posterior, history = gpx.fit(
                 model=self.q,
                 objective=objective,
