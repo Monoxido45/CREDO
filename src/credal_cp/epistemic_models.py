@@ -1564,7 +1564,6 @@ class QuantileRegressionNN:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 optimizer.step()
-                train_loss_epoch += loss.item()
 
             # 3. Early Stopping Check
             self.model.eval()
