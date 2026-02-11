@@ -109,7 +109,6 @@ class MDN_model(BaseEstimator):
     """
     Mixture Density Network model.
     """
-
     def __init__(
         self,
         input_shape,
@@ -1459,12 +1458,12 @@ class DE_MDN_model(BaseEstimator):
 # Different output layer and loss function than MDN. 
 # The output layer has 2 neurons, one for the lower quantile and one for the upper quantile.
 # The loss function is the pinball loss.
+
 # Quantile regression architecture made by Rosselini et.al. 2024
 class QuantileRegressionNet(nn.Module):
     def __init__(self, input_size, output_size, hidden_size=100, p_dropout=0.2):
         super(QuantileRegressionNet, self).__init__()
         
-        # We use a fixed p_dropout for all layers
         self.p_dropout = p_dropout
         
         self.model = nn.Sequential(
@@ -1481,10 +1480,12 @@ class QuantileRegressionNet(nn.Module):
 
     def forward(self, x):
         return self.model(x)
-    
+
+# Quantile regression model with dropout and also compatible for deep ensembles
 class QuantileRegressionNN:
     def __init__(
         self,
+        alpha = 0.1,
         quantiles=[0.5],
         lr=1e-3,
         epochs=100,
@@ -1505,6 +1506,8 @@ class QuantileRegressionNN:
         running_batch_norm=False,
         train_first_batch_norm=False,
     ):
+        self.alpha = alpha
+        self.quantiles = [alpha/2, 1-alpha/2]
         self.quantiles = quantiles
         self.lr = lr
         self.epochs = epochs
@@ -1699,8 +1702,6 @@ class QuantileRegressionNN:
             return np.moveaxis(y_pred, [0, 1, 2], [2, 1, 0])
         else:
             return np.moveaxis(y_pred, [0], [1]).T
-
-
 
 ############### Classification using MC Dropout ###############
 # Neural Network Classifier Base Architecture
@@ -2116,7 +2117,7 @@ class GP_model(BaseEstimator):
                     trainable=gpx.parameters.Parameter,
                 )
 
-        elif self.heteroscedastic and activation_sigma == "lognormal":
+        elif self.heteroscedastic:
             if activation_sigma == "lognormal":
                 self.activation_sigma = "lognormal"
                 noise_transform = LogNormalTransform()
@@ -2237,7 +2238,6 @@ class GP_model(BaseEstimator):
             q_u = self.y_scaler.inverse_transform(q_u.flatten().reshape(-1, 1)).reshape(original_shape)
 
         return q_l, q_u
-
 
 ############### BART model ###############
 class BART_model(BaseEstimator):
