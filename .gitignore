@@ -4,3 +4,8 @@ src/credal_cp/__pycache__/
 experiments/__pycache__/
 /results
 /figures
+data/*.csv*
+data/data
+data/raw
+data/data_scripts/__pycache__/
+catboost_info/
