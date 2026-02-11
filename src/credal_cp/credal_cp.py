@@ -10,13 +10,13 @@ from sklearn.utils.validation import check_is_fitted
 from credal_cp.epistemic_models import (
     MDN_model,
     GP_model,
-    GPApprox_model,
     BART_model,
     DE_MDN_model,
 )
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import NearestNeighbors
+import jax.random as jr
 
 class CredalCPRegressor(BaseEstimator):
     """
@@ -82,6 +82,7 @@ class CredalCPRegressor(BaseEstimator):
     ):
         self.nc_type = nc_type
         self.base_model = base_model
+        self.is_fitted = is_fitted
 
         # metadata about the provided base_model
         # Simplify: require sklearn estimators to be instantiated (instances of BaseEstimator).
@@ -129,6 +130,7 @@ class CredalCPRegressor(BaseEstimator):
             random_seed_fit=1250,
             n_MCMC=2000,
             base_model_type = None,
+            activation_sigma = "softplus",
             **fit_params):
         self.nn_type = nn_type
         if self.base_is_sklearn and not self.base_is_fitted:
@@ -202,26 +204,7 @@ class CredalCPRegressor(BaseEstimator):
                     y,
                     scale = scale,
                     random_state=random_seed_fit,
-                )
-                self.base_is_fitted = True
-            
-            # Variational GP (faster for large datasets)
-            elif self.base_model == "GP_Approx":
-                print("Fitting Approximate Gaussian Process model")
-                self.base_model_type = "GP_Approx"
-                self.base_model = GPApprox_model(
-                   **fit_params
-                )
-
-                self.base_model.fit(
-                    X,
-                    y,
-                    proportion_train=proportion_train,
-                    batch_size=batch_size,
-                    patience=patience,
-                    verbose=verbose,
-                    random_seed_split=random_seed_split,
-                    random_seed_fit=random_seed_fit,
+                    activation_sigma = activation_sigma,
                 )
                 self.base_is_fitted = True
             
@@ -364,31 +347,26 @@ class CredalCPRegressor(BaseEstimator):
                     q=np.ceil((n + 1) * (1 - self.alpha)) / n
                     )
                 
-        elif self.base_model_type == "GP" or self.base_model_type == "GP_Approx":
+        elif self.base_model_type == "GP":
             if self.nc_type == "Quantile":
                 lower_q = self.alpha / 2
                 upper_q = 1 - self.alpha / 2
                 i = 0
-                
-                q_samples = self.base_model.sample_quantiles_from_posterior(
+
+                q_low_grid, q_upp_grid = self.base_model.predict_quantiles(
                     X_calib,
                     quantiles=[lower_q, upper_q],
-                    n_samples=N_samples_MC,
-                    random_seed=random_seed_calib,
+                    key=jr.PRNGKey(random_seed_calib),
+                    n_MC = N_samples_MC,
                 )
-
-                self.q_samples = q_samples
-
-                q_low_grid = q_samples[:, :, 0]
-                q_upp_grid = q_samples[:, :, 1]
 
                 # obtaining lower and upper quantiles for each x_calib
                 if self.adaptive_gamma:
-                    q_low_raw = np.array([np.quantile(q_low_grid[i, :], gamma_quantiles[i]/2) for i in range(len(X_calib))])
-                    q_upp_raw = np.array([np.quantile(q_upp_grid[i, :], 1 - gamma_quantiles[i]/2) for i in range(len(X_calib))])
+                    q_low_raw = np.array([np.quantile(q_low_grid[:, i], gamma_quantiles[i]/2) for i in range(len(X_calib))])
+                    q_upp_raw = np.array([np.quantile(q_upp_grid[:, i], 1 - gamma_quantiles[i]/2) for i in range(len(X_calib))])
                 else:
-                    q_low_raw = np.quantile(q_low_grid, self.gamma/2, axis=1)
-                    q_upp_raw = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=1)
+                    q_low_raw = np.quantile(q_low_grid, self.gamma/2, axis=0)
+                    q_upp_raw = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=0)
 
                 # with lower and upper quantiles, we can compute the modified nonconformity scores
                 self.nc_scores = np.maximum(q_low_raw - y_calib, y_calib - q_upp_raw)
@@ -470,6 +448,7 @@ class CredalCPRegressor(BaseEstimator):
             n_samples=300,
             conformalize = True,
             disentangle=False,
+            random_seed_test = 45
             ):
         """
         Interval prediction using the fitted base model.
@@ -600,28 +579,24 @@ class CredalCPRegressor(BaseEstimator):
                     return y_pred, aleatoric_unc, epistemic_unc
                 return y_pred
         
-        elif self.base_model_type == "GP" or self.base_model_type == "GP_Approx":
+        elif self.base_model_type == "GP":
             if self.nc_type == "Quantile":
-                q_samples = self.base_model.sample_quantiles_from_posterior(
+                q_low_grid, q_upp_grid = self.base_model.predict_quantiles(
                     X_test,
                     quantiles=[self.alpha / 2, 1 - self.alpha / 2],
-                    n_samples=n_samples,
-                    random_seed=None,
+                    key=jr.PRNGKey(random_seed_test),
                 )
 
-                q_low_grid = q_samples[:, :, 0]
-                q_upp_grid = q_samples[:, :, 1]
-
                 if disentangle:
-                    aleatoric_unc = np.mean(q_upp_grid - q_low_grid, axis=1)
+                    aleatoric_unc = np.mean(q_upp_grid - q_low_grid, axis=0)
 
                 # obtaining lower and upper quantiles for each x_calib
                 if self.adaptive_gamma:
-                    q_low_pred = np.array([np.quantile(q_low_grid[i, :], gamma_quantiles[i]/2) for i in range(len(X_test))])
-                    q_upp_pred = np.array([np.quantile(q_upp_grid[i, :], 1 - gamma_quantiles[i]/2) for i in range(len(X_test))])
+                    q_low_pred = np.array([np.quantile(q_low_grid[:, i], gamma_quantiles[i]/2) for i in range(len(X_test))])
+                    q_upp_pred = np.array([np.quantile(q_upp_grid[:, i], 1 - gamma_quantiles[i]/2) for i in range(len(X_test))])
                 else:
-                    q_low_pred = np.quantile(q_low_grid, self.gamma/2, axis=1)
-                    q_upp_pred = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=1)
+                    q_low_pred = np.quantile(q_low_grid, self.gamma/2, axis=0)
+                    q_upp_pred = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=0)
 
                 lower_cp = q_low_pred - self.cutoff
                 upper_cp = q_upp_pred + self.cutoff
