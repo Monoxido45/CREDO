@@ -379,10 +379,10 @@ class CredalCPRegressor(BaseEstimator):
             if self.nc_type == "Quantile":
                 lower_q = self.alpha / 2
                 upper_q = 1 - self.alpha / 2
-                q_low_grid, q_upp_grid = self.base_model.predict_quantiles(
+                q_low_grid, q_upp_grid = self.base_model.predict(
                     X_calib,
                     quantiles=[lower_q, upper_q],
-                    random_seed=random_seed_calib,
+                    n_mc = N_samples_MC,
                 )
 
                 if self.adaptive_gamma:
@@ -496,7 +496,7 @@ class CredalCPRegressor(BaseEstimator):
     def predict(
             self,
             X_test,
-            n_samples=300,
+            n_samples=500,
             conformalize = True,
             disentangle=False,
             random_seed_test = 45
@@ -632,10 +632,11 @@ class CredalCPRegressor(BaseEstimator):
         
         elif self.base_model_type == "QNN" and self.nn_type == "MC_Dropout":
                 if self.nc_type == "Quantile":
-                    q_low_grid, q_upp_grid = self.base_model.predict_quantiles(
+                    q_low_grid, q_upp_grid = self.base_model.predict(
                         X_test,
                         quantiles=[self.alpha / 2, 1 - self.alpha / 2],
                         random_seed=random_seed_test,
+                        n_mc = n_samples,
                     )
     
                     if disentangle:
