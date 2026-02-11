@@ -44,6 +44,7 @@ parser.add_argument("-dataset", "--dataset", type=str, default="airfoil", help="
 parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default="catboost", help="UACQR and CQR base models: 'rfqr' or 'catboost'")
 parser.add_argument("-outlier_analysis", "--outlier_analysis", type=bool, help="whether to perform outlier analysis using LOF and t-SNE")
 parser.add_argument("-n_cores", "--n_cores", type=int, default=4, help="number of cores to use for parallel processing")
+parser.add_argument("-m_bart", "--m_bart", type=int, default=100, help="number of trees used in CREDO-BART")
 args = parser.parse_args()
 
 alpha = args.alpha
@@ -56,6 +57,7 @@ dataset = args.dataset
 uacqr_model = args.uacqr_model
 outlier_analysis = args.outlier_analysis
 n_cores = args.n_cores
+m_bart = args.m_bart
 
 DATA_PATH = os.path.join(original_path , "data")
 RESULTS_PATH = os.path.join(original_path , "results")
@@ -227,6 +229,7 @@ def fit_methods(
         normalize_y=True,
         alpha_bart = alpha_bart,
         random_seed_fit=i,
+        m=m_bart,
     )
     credal_CP_bart_adaptive.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
 
@@ -910,7 +913,7 @@ def run_experiment_outlier(
                 X_train_calib, y_train_calib, test_size=1-prop_train, random_state=seed
             )
 
-            if dataset in ["superconductivity", "homes", "meps19", "protein"]:
+            if dataset in ["superconductivity"]:
                 scale_y = True
             else:
                 scale_y = False
@@ -949,7 +952,7 @@ def run_experiment_outlier(
                     }
                     chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
                     os.makedirs(chk_dir, exist_ok=True)
-                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
+                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
                     with open(filepath, "wb") as f:
                         pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
                 except Exception as e:
