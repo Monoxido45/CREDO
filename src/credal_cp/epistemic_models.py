@@ -1843,9 +1843,9 @@ class GP_model(BaseEstimator):
                 kmeans = KMeans(n_clusters=num_inducing, n_init='auto', random_state=random_state)
                 z_init = jnp.array(kmeans.fit(X).cluster_centers_)
 
-                self.q = gpx.VariationalFamily(
-                    posterior=posterior_model,
-                    inducing_inputs=z_init,
+                self.q = gpx.variational_families.VariationalGaussian(
+                posterior=posterior_model,
+                inducing_inputs=z_init
                 )
 
                 objective = gpx.objectives.VariationalELBO(negative=True)
