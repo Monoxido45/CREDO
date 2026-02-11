@@ -16,6 +16,7 @@ import torch
 # importing our package
 from credal_cp.credal_cp import CredalCPRegressor
 import numpy as np
+import copy
 
 # For reproducibility
 np.random.seed(125)
@@ -90,13 +91,33 @@ credal_CP_bart = CredalCPRegressor(
     nc_type = 'Quantile',
     base_model = "BART",
     alpha = 0.1,
+    gamma = 0.1,
 )
 
 credal_CP_gp = CredalCPRegressor(
     nc_type = 'Quantile',
-    base_model = "GP_Approx",
-    alpha = 0.1,
+    base_model = "GP",
+    alpha = 0.1, # for simplicity in this example
+    gamma = 0.1,
 )
+
+credal_CP_gp_hetero = copy.deepcopy(credal_CP_gp)
+
+# fitting GP-based credal CP
+credal_CP_gp.fit(
+    X_train,
+    Y_train,
+    scale = True,
+    heteroscedastic = False,
+)
+
+# fitting also the heteroscedastic version
+credal_CP_gp_hetero.fit(
+    X_train,
+    Y_train,
+    scale = True,
+    heteroscedastic = True,
+    )
 
 # starting fitting
 credal_CP_bart.fit(
@@ -108,23 +129,14 @@ credal_CP_bart.fit(
     alpha_bart = 0.98,
 )
 
-# fitting GP-based credal CP
-credal_CP_gp.fit(
-    X_train,
-    Y_train,
-    num_inducing_points = 100,
-    lr_variational = 0.01,
-    lr_hyperparams = 0.01,
-    n_epochs = 300,
-    batch_size=45,
-    patience = 50,
-)
-
 # calibration of the credal CPs
-bart_cutoff = credal_CP_bart.calibrate(X_cal, Y_cal, beta = 0.1,
+bart_cutoff = credal_CP_bart.calibrate(X_cal, Y_cal,
                                                N_samples_MC=1000)
 
-gp_cutoff = credal_CP_gp.calibrate(X_cal, Y_cal, beta = 0.1, 
+gp_cutoff = credal_CP_gp.calibrate(X_cal, Y_cal,
+                                             N_samples_MC=1000)
+
+gp_hetero_cutoff = credal_CP_gp_hetero.calibrate(X_cal, Y_cal,
                                              N_samples_MC=1000)
 
 
@@ -135,20 +147,24 @@ gp_cutoff = credal_CP_gp.calibrate(X_cal, Y_cal, beta = 0.1,
 X_test_grid = np.linspace(-1.0, 1.0, 500).astype(np.float32).reshape(-1, 1)
 pred_bart = credal_CP_bart.predict(X_test_grid)
 pred_gp = credal_CP_gp.predict(X_test_grid)
+pred_gp_hetero = credal_CP_gp_hetero.predict(X_test_grid)
 
 # Simple concise plotting assuming predict() returns (N,2) arrays [lower, upper]
 pred_bart = np.asarray(pred_bart)
 pred_gp  = np.asarray(pred_gp)
+pred_gp_hetero = np.asarray(pred_gp_hetero)
 
 lower_bart, upper_bart = pred_bart[:, 0], pred_bart[:, 1]
 lower_gp,  upper_gp  = pred_gp[:, 0],  pred_gp[:, 1]
+lower_gp_hetero, upper_gp_hetero = pred_gp_hetero[:, 0], pred_gp_hetero[:, 1]
 
 center_bart = 0.5 * (lower_bart + upper_bart)
 center_gp  = 0.5 * (lower_gp  + upper_gp)
+center_gp_hetero = 0.5 * (lower_gp_hetero + upper_gp_hetero)
 
 xx = X_test_grid.ravel()
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
 
 # BART plot (left)
 ax = axes[0]
@@ -161,13 +177,23 @@ ax.set_title("BART")
 ax.legend()
 ax.grid(True)
 
-# GP plot (right)
+# GP plot (middle)
 ax = axes[1]
 ax.scatter(X_test.ravel(), Y_test.ravel(), s=30, color="k", alpha=0.8, label="Test data", zorder=3)
 ax.fill_between(xx, lower_gp, upper_gp, color="C1", alpha=0.25, label="GP interval")
 ax.plot(xx, center_gp, color="C1", lw=1, label="GP center")
 ax.set_xlabel("x")
 ax.set_title("GP")
+ax.legend()
+ax.grid(True)
+
+# heteroscedastic GP plot (right)
+ax = axes[2]
+ax.scatter(X_test.ravel(), Y_test.ravel(), s=30, color="k", alpha=0.8, label="Test data", zorder=3)
+ax.fill_between(xx, lower_gp_hetero, upper_gp_hetero, color="C2", alpha=0.25, label="Het GP interval")
+ax.plot(xx, center_gp_hetero, color="C2", lw=1, label="Het GP center")
+ax.set_xlabel("x")
+ax.set_title("Heteroscedastic GP")
 ax.legend()
 ax.grid(True)
 

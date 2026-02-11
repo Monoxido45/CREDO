@@ -1,13 +1,10 @@
 ######## Code for Predictive models
-# used torch packages
+# used torch packages for neural networks and optimization
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-
-# variational gp package
-import gpytorch
 
 # BART package
 import pymc as pm
@@ -15,15 +12,27 @@ import pymc_bart as pmb
 from pymc_bart.split_rules import ContinuousSplitRule, OneHotSplitRule
 import arviz as az
 
-# numpy and sklearn based packages
+# dealing with multiprocessing and warnings
+import multiprocessing
+multiprocessing.set_start_method('spawn', force=True)
+
+# numpy, sklearn and scipy functions
 import numpy as np
 from sklearn.base import BaseEstimator
 from sklearn.model_selection import train_test_split
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+import scipy.stats as st
+from scipy.stats import norm, gamma
+from scipy.optimize import brentq
+
+# for plotting
+import matplotlib.pyplot as plt
+
+# tracking progress
+from tqdm import tqdm
 
 # importing jax and gpjax dependencies
-from jax.scipy.stats import norm
 from jaxtyping import install_import_hook
 with install_import_hook("gpjax", "beartype.beartype"):
     import gpjax as gpx
@@ -34,31 +43,18 @@ from gpjax.likelihoods import (
     LogNormalTransform,
     SoftplusTransform,
 )
-# for centroids in the data
-from sklearn.cluster import KMeans
 from gpjax.variational_families import (
     HeteroscedasticVariationalFamily,
     VariationalGaussianInit,
 )
+# for the optimization of the variational parameters
+from jax import config
+config.update("jax_enable_x64", True)
 import optax as ox
 
 
-
-import scipy.stats as st
-from scipy.stats import norm
-from scipy.stats import gamma
-from sklearn.preprocessing import StandardScaler
-
-import matplotlib.pyplot as plt
-
-from tqdm import tqdm
-import gpytorch
-from scipy.stats import norm, gamma
-from scipy.optimize import brentq
-
-
-#### Mixture density network models
-# General Base Mixture Density Network architecture
+############### MDN with dropout and deep ensembles ###############
+# General Base MDN architecture
 class MDN_base(nn.Module):
     def __init__(self, input_shape, num_components, hidden_layers, dropout_rate=0.4):
         """
@@ -93,11 +89,9 @@ class MDN_base(nn.Module):
         x = self.fc_out(x)
         return x
 
-
 # For gaussian Mixture Density
 def gaussian_pdf(y, mu, sigma):
     return torch.exp(-0.5 * ((y - mu) / sigma) ** 2) / (sigma * np.sqrt(2.0 * np.pi))
-
 
 # For gamma Mixture Density
 def gamma_pdf(y, mu, sigma):
@@ -108,8 +102,7 @@ def gamma_pdf(y, mu, sigma):
         torch.lgamma(alpha)
     )
 
-
-# Mixture Density Network general model:
+# MDN model class
 class MDN_model(BaseEstimator):
     """
     Mixture Density Network model.
@@ -978,8 +971,498 @@ class MDN_model(BaseEstimator):
 
         return quantiles
 
-  
-#### Neural Network Classifier Base Architecture
+# Deep Ensembles MDN class
+class DE_MDN_model(BaseEstimator):
+    """
+    Deep Ensembles MDN model for regression tasks.
+    """
+
+    def __init__(
+        self,
+        input_shape,
+        n_models=15,
+        num_components=3,
+        hidden_layers=[64],
+        dropout_rate=0.4,
+        base_model_type=None,
+        alpha=None,
+        normalize_y=False,
+        log_y=False,
+        type="gaussian",
+    ):
+        """
+        Input:
+            (i) n_models (int): Number of models in the ensemble.
+            (ii) n_epochs (int): Number of training epochs.
+            (iii) batch_size (int): Batch size for training.
+            (iv) learning_rate (float): Learning rate for the optimizer.
+            (v) scale_x (bool): Whether to standardize input features.
+            (vi) log_y (bool): Whether to apply log transformation to the target variable.
+            (vii) random_seed (int): Random seed for reproducibility.
+
+        Output:
+            (i) Initialized Deep_ensembles_model object.
+        """
+        self.input_shape = input_shape
+        self.n_models = n_models
+        self.num_components = num_components
+        self.hidden_layers = hidden_layers
+        self.dropout_rate = dropout_rate
+        # defining base model according to parameters
+        self.model = MDN_base(
+            self.input_shape, self.num_components, self.hidden_layers, self.dropout_rate
+        )
+        self.base_model_type = base_model_type
+        self.alpha = alpha
+        self.normalize_y = normalize_y
+        self.type = type
+        self.log_y = log_y
+    
+    @staticmethod
+    def mdn_loss(pi, mu, sigma, y_true, type="gaussian"):
+        y_true = y_true.view(-1,1).expand_as(mu)
+
+        if type == "gaussian":
+            result = -0.5 * ((y_true - mu) / sigma) ** 2 - torch.log(sigma * np.sqrt(2.0 * np.pi))
+            log_pi = torch.log(pi + 1e-8)  # numerical stability
+        elif type == "gamma":
+            result = torch.sum(pi * gamma_pdf(y_true, mu, sigma), dim=1)
+
+        log_prob = torch.logsumexp(log_pi + result, dim=1)
+        return -torch.mean(log_prob)
+    
+    # Mixture coeficient obtention
+    def get_mixture_coef(self, y_pred):
+        pi = F.softmax(y_pred[:, : self.num_components], dim=1)
+        # pi = pi / pi.sum(dim=1, keepdim=True)
+        if self.type == "gaussian":
+            mu = y_pred[:, self.num_components : 2 * self.num_components]
+            sigma = F.softplus(y_pred[:, 2 * self.num_components :])
+
+        elif self.type == "gamma":
+            mu = F.softplus(y_pred[:, self.num_components : 2 * self.num_components])
+            sigma = F.softplus(y_pred[:, 2 * self.num_components :])
+        # sigma = torch.exp(y_pred[:, 2 * num_components:])
+        return pi, mu, sigma
+    
+    def mixture_quantile(self, alphas, pi, mu, sigma, rng=0, N=1000):
+        """
+        Compute quantiles for each mixture component.
+
+        Input:
+            (i) alphas (list): List of quantiles (e.g., [0.1, 0.5, 0.9]).
+            (ii) pi (np.ndarray): Mixture weights of shape (n_samples, n_components).
+            (iii) mu (np.ndarray): Means of the components of shape (n_samples, n_components).
+            (iv) sigma (np.ndarray): Standard deviations of the components of shape (n_samples, n_components).
+            (v) rng: Fixed random Seed or generator. Default is 0.
+            (vi) N (int): Number of samples to generate per mixture.
+
+        Output:
+            (i) np.ndarray: Quantile matrix of shape (n_sample, len(alphas)).
+        """
+        # fixing seed if a number is passed
+        if rng == 0:
+            rng = np.random.default_rng() # Advance state naturally
+        else:
+            rng = np.random.default_rng(rng) # Use the explicit seed
+        pi = np.asarray(pi)
+        mu = np.asarray(mu)
+        sigma = np.asarray(sigma)
+
+        n_sample, _ = pi.shape
+        n_alphas = len(alphas)
+
+        # N samples from each mixture
+        samples = self.sample_from_mixture(pi, mu, sigma, N=N)
+
+        # Quantile computation
+        quantile_matrix = np.zeros((n_sample, n_alphas))
+        for j, alpha in enumerate(alphas):
+            quantile_matrix[:, j] = np.quantile(samples, alpha, axis=1)
+
+        return quantile_matrix
+    
+    def sample_from_mixture(self, pi, mu, sigma, rng=0, N=100):
+        """
+        Generates samples from the mixture network model for each observed sample x.
+
+        Input:
+            (i) pi (np.ndarray): Mixture weights of shape (n_samples, n_components).
+            (ii) mu (np.ndarray): Means of the components of shape (n_samples, n_components).
+            (iii) sigma (np.ndarray): Standard deviations of the components of shape (n_samples, n_components).
+            (iv) rng: Fixed random Seed or generator. Default is 0.
+            (v) N (int): Number of samples per mixture.
+
+        Output:
+            (i) np.ndarray: Generated samples, of shape (n_samples, N).
+        """
+        # fixing seed if a number is passed
+        if rng == 0:
+            rng = np.random.default_rng() # Advance state naturally
+        else:
+            rng = np.random.default_rng(rng) # Use the explicit seed
+
+        # Ensures that pi, mu, and sigma are numpy arrays
+        pi = np.asarray(pi)
+        mu = np.asarray(mu)
+        sigma = np.asarray(sigma)
+
+        n_samples, n_comp = pi.shape
+
+        # Normalize the weights to ensure they sum to 1
+        pi /= np.sum(pi, axis=1, keepdims=True)
+
+        # Repeat the weights for all samples
+        pi_cumsum = np.cumsum(pi, axis=1)  # Cumulative sum for sampling
+        random_vals = rng.random((n_samples, N))  # Random values between 0 and 1
+
+        # Determine the chosen components for each sample
+        components = (random_vals[..., None] < pi_cumsum[:, None, :]).argmax(axis=2)
+
+        # Select the means and standard deviations of the chosen components
+        chosen_mu = np.take_along_axis(mu, components, axis=1)
+        chosen_sigma = np.take_along_axis(sigma, components, axis=1)
+
+        if self.type == "gaussian":
+            # Generate normal samples
+            samples = rng.normal(loc=chosen_mu, scale=chosen_sigma)
+        elif self.type == "gamma":
+            alpha = (mu**2) / (sigma**2)
+            beta = mu / (sigma**2)
+            samples = rng.gamma(shape=alpha, scale=1 / beta)
+
+        return samples
+
+    def fit(
+        self,
+        X,
+        y,
+        n_epochs=500,
+        patience=15,
+        lr=1e-3,
+        weight_decay=1e-4,
+        proportion_train=0.7,
+        gamma=0.99,
+        batch_size=32,
+        step_size=3,
+        scale=False,
+        random_seed_split=0,
+        random_seed_fit=1250,
+    ):
+        """
+        Fit the Deep Ensembles MDN model.
+
+        Input:
+            (i) X_train: Training input data.
+            (ii) y_train: Training target data.
+            (iii) n_epochs (int): Number of training epochs. Default is 500.
+            (iv) patience (int): Number of epochs with no improvement to trigger early stopping. Default is 15.
+            (v) lr (float): Learning rate for the optimizer. Default is 1e-3.
+            (vi) weight_decay (float): Weight decay for the optimizer. Default is 1e-4.
+            (vii) proportion_train (float): Proportion of data to be used for training. Default is 0.7.
+            (viii) gamma (float): Learning rate decay factor. Default is 0.99.
+            (ix) batch_size (int): Batch size for training. Default is 32.
+            (x) step_size (int): Step size for learning rate scheduler. Default is 5.
+            (xi) scale (bool): Whether to standardize input features. Default is False.
+            (xii) init_seed (int or None): Initial random seed for reproducibility. Default is None.
+            (xiii) random_seed_split (int): Random seed for data splitting. Default is 0.
+            (xiv) random_seed_fit (int): Random seed for model fitting. Default is 1250.
+
+        Output:
+            (i) Trained Deep_ensembles_model object.
+        """
+        # Splitting data into train and validation
+        x_train, x_val, y_train, y_val = train_test_split(
+            X, 
+            y, 
+            test_size=1 - proportion_train, 
+            random_state=random_seed_split,
+        )
+
+        # checking if scaling is needed
+        if scale:
+            self.scaler = StandardScaler()
+            self.scaler.fit(x_train)
+            x_train = self.scaler.transform(x_train)
+            x_val = self.scaler.transform(x_val)
+            self.scale = True
+        else:
+            self.scale = False
+
+        # checking if scaling the response is needed
+        if self.normalize_y or self.log_y:
+            if self.log_y:
+                y_train, self.lmbda = st.boxcox(y_train)
+                y_val = st.boxcox(y_val, lmbda=self.lmbda)
+                if self.normalize_y:
+                    self.y_scaler = StandardScaler()
+                    self.y_scaler.fit(y_train.reshape(-1, 1))
+
+                    y_train = self.y_scaler.transform(y_train.reshape(-1, 1)).flatten()
+                    y_val = self.y_scaler.transform(y_val.reshape(-1, 1)).flatten()
+
+            elif self.normalize_y:
+                self.y_scaler = StandardScaler()
+                self.y_scaler.fit(y_train.reshape(-1, 1))
+                y_train = self.y_scaler.transform(y_train.reshape(-1, 1)).flatten()
+                y_val = self.y_scaler.transform(y_val.reshape(-1, 1)).flatten()
+
+        # checking if is an instance of numpy
+        if isinstance(X, np.ndarray) or isinstance(y, np.ndarray):
+            x_train, x_val = (
+                torch.tensor(x_train, dtype=torch.float32),
+                torch.tensor(x_val, dtype=torch.float32),
+            )
+            y_train, y_val = (
+                torch.tensor(y_train, dtype=torch.float32).view(-1, 1),
+                torch.tensor(y_val, dtype=torch.float32).view(-1, 1),
+            )
+
+        # Training and validation
+        train_dataset = TensorDataset(
+            x_train.clone().detach().float(),
+            (
+                y_train.clone().detach().float()
+                if isinstance(y_train, torch.Tensor)
+                else torch.tensor(y_train, dtype=torch.float32)
+            ),
+        )
+        val_dataset = TensorDataset(
+            x_val.clone().detach().float(),
+            (
+                y_val.clone().detach().float()
+                if isinstance(y_val, torch.Tensor)
+                else torch.tensor(y_val, dtype=torch.float32)
+            ),
+        )
+
+        # Setting batch size
+        batch_size_train = int(proportion_train * batch_size)
+        batch_size_val = int((1 - proportion_train) * batch_size)
+        val_loader = DataLoader(
+            val_dataset, 
+            batch_size=batch_size_val, 
+            shuffle=False,
+            )
+        
+        # bootstraping the dataloader for the current model
+        train_loader = DataLoader(
+        train_dataset, batch_size=batch_size_train, shuffle=True
+        )
+        
+        torch.manual_seed(random_seed_fit)
+        torch.cuda.manual_seed(random_seed_fit)
+        # Fitting each model in the ensemble
+        self.models = []
+        for i in tqdm(range(self.n_models), desc = "Fitting Deep Ensemble MDN models"):
+            model_i = self.fit_one_model(
+                train_loader,
+                val_loader,
+                patience,
+                n_epochs,
+                lr,
+                weight_decay,
+                step_size,
+                gamma,
+            )
+            self.models.append(model_i)
+
+        return self
+
+    def fit_one_model(
+            self,
+            train_loader,
+            val_loader,
+            patience,
+            n_epochs,
+            lr,
+            weight_decay,
+            step_size,
+            gamma,
+        ):
+        """
+        Fit a single MDN model.
+        Input:
+            (i) train_loader: DataLoader for training data.
+            (ii) val_loader: DataLoader for validation data.
+            (iii) patience (int): Number of epochs with no improvement to trigger early stopping.
+            (iv) n_epochs (int): Maximum number of training epochs.
+            (v) verbose (int): Verbosity level (0, 1, or 2).
+        Output:
+            (i) Trained MDN model.
+        """
+
+        model = MDN_base(
+            self.input_shape, 
+            self.num_components, 
+            self.hidden_layers, 
+            self.dropout_rate,
+        )
+
+        optimizer = optim.Adamax(
+            model.parameters(), lr=lr, weight_decay=weight_decay
+        )
+        scheduler = optim.lr_scheduler.StepLR(
+            optimizer, step_size=step_size, gamma=gamma
+        )
+
+        losses_train = []
+        losses_val = []
+
+        # early stopping
+        best_val_loss = float("inf")
+        counter = 0
+
+        # Training loop
+        for epoch in range(n_epochs):
+            model.train()
+            train_loss_epoch = 0
+
+            # Looping through batches
+            for x_batch, y_batch in train_loader:
+                optimizer.zero_grad()
+                output_train = model(x_batch)  # Network output
+                pi_train, mu_train, sigma_train = self.get_mixture_coef(output_train)
+                loss_train = self.mdn_loss(
+                    pi_train, 
+                    mu_train, 
+                    sigma_train, 
+                    y_batch,
+                    type=self.type,
+                )
+                loss_train.backward()
+                optimizer.step()
+                train_loss_epoch += loss_train.item()
+
+            # Computing validation loss
+            model.eval()
+            val_loss_epoch = 0
+            with torch.no_grad():
+                for x_batch, y_batch in val_loader:
+                    output_val = model(x_batch)  # Network output
+                    pi_val, mu_val, sigma_val = self.get_mixture_coef(output_val)
+                    loss_val = self.mdn_loss(
+                        pi_val, mu_val, sigma_val, y_batch, type=self.type
+                    )
+                    val_loss_epoch += loss_val.item()
+
+            # average loss by epoch
+            train_loss_epoch /= len(train_loader)
+            val_loss_epoch /= len(val_loader)
+            losses_train.append(train_loss_epoch)
+            losses_val.append(val_loss_epoch)
+
+            scheduler.step()
+
+            # Early stopping
+            if val_loss_epoch < best_val_loss:
+                best_val_loss = val_loss_epoch
+                counter = 0
+            else:
+                counter += 1
+                if counter >= patience:
+                    break
+            
+        return model
+
+    def predict_ensemble(
+            self,
+            X_test,
+    ):
+        """
+        Predict parameters from each model in the ensemble.
+
+        Input:
+            (i) X_test (array-like): Test input data.
+        Output:
+            (i) pi_ensemble (np.ndarray): Mixture weights from each model, shape (n_test_samples, n_models, n_components).
+            (ii) mu_ensemble (np.ndarray): Means from each model, shape (n_test_samples, n_models, n_components).
+            (iii) sigma_ensemble (np.ndarray): Standard deviations from each model, shape (n_test_samples, n_models, n_components).
+        """
+        if self.scale:
+            X_test_standardized = self.scaler.transform(X_test)
+        else:
+            X_test_standardized = X_test
+
+        n_test_samples = X_test_standardized.shape[0]
+        n_models = len(self.models)
+
+        # Arrays to hold mixture parameters from each model
+        pi_ensemble = np.zeros((n_models, n_test_samples, self.num_components))
+        mu_ensemble = np.zeros((n_models, n_test_samples, self.num_components))
+        sigma_ensemble = np.zeros((n_models, n_test_samples, self.num_components))
+
+        # Get predictions from each model in the ensemble
+        for i, model in enumerate(self.models):
+            model.eval()
+            with torch.no_grad():
+                X_tensor = torch.tensor(X_test_standardized, dtype=torch.float32)
+                y_pred = model(X_tensor)
+                pi, mu, sigma = self.get_mixture_coef(y_pred)
+                
+                pi_ensemble[i, :, :] = pi.numpy()
+                mu_ensemble[i, :, :] = mu.numpy()
+                sigma_ensemble[i, :, :] = sigma.numpy()
+
+        return pi_ensemble, mu_ensemble, sigma_ensemble
+
+    def predict(self,
+                X_test,
+                ):
+        """
+        Predict quantiles for the test data using the ensemble of MDN models.
+        Input:
+            (i) X_test (array-like): Test input data.
+        Output:
+            (i) quantiles_test (np.ndarray): Predicted quantiles for the test data, shape (n_test_samples, 2).
+        """ 
+        pi_ensemble, mu_ensemble, sigma_ensemble = self.predict_ensemble(X_test)
+        if self.base_model_type == "quantile":
+            alphas = [self.alpha / 2, 1 - (self.alpha / 2)]
+            low_quant_mod = np.zeros((X_test.shape[0], len(self.models)))
+            up_quant_mod = np.zeros((X_test.shape[0], len(self.models)))
+            for i in range(len(self.models)):
+                quantiles_mod = self.mixture_quantile(
+                    alphas, 
+                    pi_ensemble[i, :, :], 
+                    mu_ensemble[i, :, :], 
+                    sigma_ensemble[i, :, :],
+                    )
+                low_quant_mod[:, i] = quantiles_mod[:, 0]
+                up_quant_mod[:, i] = quantiles_mod[:, 1]
+                
+            # averaging over models
+            low_quantiles_test = np.mean(low_quant_mod, axis=1)
+            up_quantiles_test = np.mean(up_quant_mod, axis=1)
+            quantiles_test = np.column_stack((low_quantiles_test, up_quantiles_test))
+            return quantiles_test
+        else:
+            raise NotImplementedError("Only quantile base model prediction is implemented.")
+        # TODO: implement regression and density base model predictions
+    
+    def set_type_base_model(self, base_model_type, alpha=None):
+        """
+        Set the type of base model for MDN.
+
+        Input: (i) base_model_type (str): Type of base model to be set. Options are "regression", "quantile", or "density".
+               (ii) alpha (float): Significance level for quantile base model. Default is None.
+        """
+        self.base_model_type = base_model_type
+        if base_model_type == "quantile":
+            self.alpha = alpha
+        return self
+    
+############### Quantile neural network with dropout and deep ensembles ###############
+# Direct quantile regression for regression tasks using dropout and deep ensembles. 
+# Different output layer and loss function than MDN. 
+# The output layer has 2 neurons, one for the lower quantile and one for the upper quantile.
+# The loss function is the pinball loss.
+
+
+
+
+############### Classification using MC Dropout ###############
+# Neural Network Classifier Base Architecture
 class NN_base(nn.Module):
     def __init__(self, input_shape, num_classes, hidden_layers, dropout_rate=0.4):
         """
@@ -1013,8 +1496,7 @@ class NN_base(nn.Module):
         x = self.fc_out(x)
         return x
 
-
-#### MC Dropout Classifier
+# MC Dropout Classifier class
 class MC_classifier(BaseEstimator):
     """
     Monte Carlo Dropout Classifier.
@@ -1267,7 +1749,7 @@ class MC_classifier(BaseEstimator):
         return probs
 
 
-#### GP models
+############### basic and heteroscedastic GP models ###############
 # Using GPyjax
 class GP_model(BaseEstimator):
     """
@@ -1292,7 +1774,7 @@ class GP_model(BaseEstimator):
         (i) Initialized GP_model object.
         """
         if kernel is None:
-            self.kernel = gpx.kernels.Matern52() + gpx.kernels.RationalQuadratic()
+            self.kernel = gpx.kernels.RationalQuadratic()
         else:
             self.kernel = kernel
 
@@ -1464,13 +1946,14 @@ class GP_model(BaseEstimator):
         else:
             key, subkey_f = jr.split(key)
             # latent mean process
-            f_dist = self.opt_posterior.predict(x_jp, train_data=self.train_data)
-            f_samples = f_dist.sample(seed=subkey_f, sample_shape=(n_MC,))
+            f_dist, g_dist = self.opt_posterior.predict_latents(x_jp)
+
+            f_samples = f_dist.sample(subkey_f, sample_shape=(n_MC,))
 
             # latent noise process
             key, subkey_g = jr.split(key)
-            g_dist = self.q.latent_g.predict(x_jp, train_data=self.train_data)
-            g_samples = g_dist.sample(seed=subkey_g, sample_shape=(n_MC,))
+            g_dist = self.q.latent_g.predict(x_jp)
+            g_samples = g_dist.sample(subkey_g, sample_shape=(n_MC,))
 
             if self.activation_sigma == "lognormal":
                 sigma_samples = jnp.exp(g_samples / 2.0)
@@ -1494,7 +1977,7 @@ class GP_model(BaseEstimator):
         return q_l, q_u
 
 
-#### BART model
+############### BART model ###############
 class BART_model(BaseEstimator):
     """
     Bayesian Additive Regression Trees model.
@@ -2018,487 +2501,6 @@ class BART_model(BaseEstimator):
 
         return quantile_results
 
-# Deep Ensembles Mixture Density Network base
-class DE_MDN_model(BaseEstimator):
-    """
-    Deep Ensembles MDN model for regression tasks.
-    """
-
-    def __init__(
-        self,
-        input_shape,
-        n_models=15,
-        num_components=3,
-        hidden_layers=[64],
-        dropout_rate=0.4,
-        base_model_type=None,
-        alpha=None,
-        normalize_y=False,
-        log_y=False,
-        type="gaussian",
-    ):
-        """
-        Input:
-            (i) n_models (int): Number of models in the ensemble.
-            (ii) n_epochs (int): Number of training epochs.
-            (iii) batch_size (int): Batch size for training.
-            (iv) learning_rate (float): Learning rate for the optimizer.
-            (v) scale_x (bool): Whether to standardize input features.
-            (vi) log_y (bool): Whether to apply log transformation to the target variable.
-            (vii) random_seed (int): Random seed for reproducibility.
-
-        Output:
-            (i) Initialized Deep_ensembles_model object.
-        """
-        self.input_shape = input_shape
-        self.n_models = n_models
-        self.num_components = num_components
-        self.hidden_layers = hidden_layers
-        self.dropout_rate = dropout_rate
-        # defining base model according to parameters
-        self.model = MDN_base(
-            self.input_shape, self.num_components, self.hidden_layers, self.dropout_rate
-        )
-        self.base_model_type = base_model_type
-        self.alpha = alpha
-        self.normalize_y = normalize_y
-        self.type = type
-        self.log_y = log_y
-    
-    @staticmethod
-    def mdn_loss(pi, mu, sigma, y_true, type="gaussian"):
-        y_true = y_true.view(-1,1).expand_as(mu)
-
-        if type == "gaussian":
-            result = -0.5 * ((y_true - mu) / sigma) ** 2 - torch.log(sigma * np.sqrt(2.0 * np.pi))
-            log_pi = torch.log(pi + 1e-8)  # numerical stability
-        elif type == "gamma":
-            result = torch.sum(pi * gamma_pdf(y_true, mu, sigma), dim=1)
-
-        log_prob = torch.logsumexp(log_pi + result, dim=1)
-        return -torch.mean(log_prob)
-    
-    # Mixture coeficient obtention
-    def get_mixture_coef(self, y_pred):
-        pi = F.softmax(y_pred[:, : self.num_components], dim=1)
-        # pi = pi / pi.sum(dim=1, keepdim=True)
-        if self.type == "gaussian":
-            mu = y_pred[:, self.num_components : 2 * self.num_components]
-            sigma = F.softplus(y_pred[:, 2 * self.num_components :])
-
-        elif self.type == "gamma":
-            mu = F.softplus(y_pred[:, self.num_components : 2 * self.num_components])
-            sigma = F.softplus(y_pred[:, 2 * self.num_components :])
-        # sigma = torch.exp(y_pred[:, 2 * num_components:])
-        return pi, mu, sigma
-    
-    def mixture_quantile(self, alphas, pi, mu, sigma, rng=0, N=1000):
-        """
-        Compute quantiles for each mixture component.
-
-        Input:
-            (i) alphas (list): List of quantiles (e.g., [0.1, 0.5, 0.9]).
-            (ii) pi (np.ndarray): Mixture weights of shape (n_samples, n_components).
-            (iii) mu (np.ndarray): Means of the components of shape (n_samples, n_components).
-            (iv) sigma (np.ndarray): Standard deviations of the components of shape (n_samples, n_components).
-            (v) rng: Fixed random Seed or generator. Default is 0.
-            (vi) N (int): Number of samples to generate per mixture.
-
-        Output:
-            (i) np.ndarray: Quantile matrix of shape (n_sample, len(alphas)).
-        """
-        # fixing seed if a number is passed
-        if rng == 0:
-            rng = np.random.default_rng() # Advance state naturally
-        else:
-            rng = np.random.default_rng(rng) # Use the explicit seed
-        pi = np.asarray(pi)
-        mu = np.asarray(mu)
-        sigma = np.asarray(sigma)
-
-        n_sample, _ = pi.shape
-        n_alphas = len(alphas)
-
-        # N samples from each mixture
-        samples = self.sample_from_mixture(pi, mu, sigma, N=N)
-
-        # Quantile computation
-        quantile_matrix = np.zeros((n_sample, n_alphas))
-        for j, alpha in enumerate(alphas):
-            quantile_matrix[:, j] = np.quantile(samples, alpha, axis=1)
-
-        return quantile_matrix
-    
-    def sample_from_mixture(self, pi, mu, sigma, rng=0, N=100):
-        """
-        Generates samples from the mixture network model for each observed sample x.
-
-        Input:
-            (i) pi (np.ndarray): Mixture weights of shape (n_samples, n_components).
-            (ii) mu (np.ndarray): Means of the components of shape (n_samples, n_components).
-            (iii) sigma (np.ndarray): Standard deviations of the components of shape (n_samples, n_components).
-            (iv) rng: Fixed random Seed or generator. Default is 0.
-            (v) N (int): Number of samples per mixture.
-
-        Output:
-            (i) np.ndarray: Generated samples, of shape (n_samples, N).
-        """
-        # fixing seed if a number is passed
-        if rng == 0:
-            rng = np.random.default_rng() # Advance state naturally
-        else:
-            rng = np.random.default_rng(rng) # Use the explicit seed
-
-        # Ensures that pi, mu, and sigma are numpy arrays
-        pi = np.asarray(pi)
-        mu = np.asarray(mu)
-        sigma = np.asarray(sigma)
-
-        n_samples, n_comp = pi.shape
-
-        # Normalize the weights to ensure they sum to 1
-        pi /= np.sum(pi, axis=1, keepdims=True)
-
-        # Repeat the weights for all samples
-        pi_cumsum = np.cumsum(pi, axis=1)  # Cumulative sum for sampling
-        random_vals = rng.random((n_samples, N))  # Random values between 0 and 1
-
-        # Determine the chosen components for each sample
-        components = (random_vals[..., None] < pi_cumsum[:, None, :]).argmax(axis=2)
-
-        # Select the means and standard deviations of the chosen components
-        chosen_mu = np.take_along_axis(mu, components, axis=1)
-        chosen_sigma = np.take_along_axis(sigma, components, axis=1)
-
-        if self.type == "gaussian":
-            # Generate normal samples
-            samples = rng.normal(loc=chosen_mu, scale=chosen_sigma)
-        elif self.type == "gamma":
-            alpha = (mu**2) / (sigma**2)
-            beta = mu / (sigma**2)
-            samples = rng.gamma(shape=alpha, scale=1 / beta)
-
-        return samples
-
-    def fit(
-        self,
-        X,
-        y,
-        n_epochs=500,
-        patience=15,
-        lr=1e-3,
-        weight_decay=1e-4,
-        proportion_train=0.7,
-        gamma=0.99,
-        batch_size=32,
-        step_size=3,
-        scale=False,
-        random_seed_split=0,
-        random_seed_fit=1250,
-    ):
-        """
-        Fit the Deep Ensembles MDN model.
-
-        Input:
-            (i) X_train: Training input data.
-            (ii) y_train: Training target data.
-            (iii) n_epochs (int): Number of training epochs. Default is 500.
-            (iv) patience (int): Number of epochs with no improvement to trigger early stopping. Default is 15.
-            (v) lr (float): Learning rate for the optimizer. Default is 1e-3.
-            (vi) weight_decay (float): Weight decay for the optimizer. Default is 1e-4.
-            (vii) proportion_train (float): Proportion of data to be used for training. Default is 0.7.
-            (viii) gamma (float): Learning rate decay factor. Default is 0.99.
-            (ix) batch_size (int): Batch size for training. Default is 32.
-            (x) step_size (int): Step size for learning rate scheduler. Default is 5.
-            (xi) scale (bool): Whether to standardize input features. Default is False.
-            (xii) init_seed (int or None): Initial random seed for reproducibility. Default is None.
-            (xiii) random_seed_split (int): Random seed for data splitting. Default is 0.
-            (xiv) random_seed_fit (int): Random seed for model fitting. Default is 1250.
-
-        Output:
-            (i) Trained Deep_ensembles_model object.
-        """
-        # Splitting data into train and validation
-        x_train, x_val, y_train, y_val = train_test_split(
-            X, 
-            y, 
-            test_size=1 - proportion_train, 
-            random_state=random_seed_split,
-        )
-
-        # checking if scaling is needed
-        if scale:
-            self.scaler = StandardScaler()
-            self.scaler.fit(x_train)
-            x_train = self.scaler.transform(x_train)
-            x_val = self.scaler.transform(x_val)
-            self.scale = True
-        else:
-            self.scale = False
-
-        # checking if scaling the response is needed
-        if self.normalize_y or self.log_y:
-            if self.log_y:
-                y_train, self.lmbda = st.boxcox(y_train)
-                y_val = st.boxcox(y_val, lmbda=self.lmbda)
-                if self.normalize_y:
-                    self.y_scaler = StandardScaler()
-                    self.y_scaler.fit(y_train.reshape(-1, 1))
-
-                    y_train = self.y_scaler.transform(y_train.reshape(-1, 1)).flatten()
-                    y_val = self.y_scaler.transform(y_val.reshape(-1, 1)).flatten()
-
-            elif self.normalize_y:
-                self.y_scaler = StandardScaler()
-                self.y_scaler.fit(y_train.reshape(-1, 1))
-                y_train = self.y_scaler.transform(y_train.reshape(-1, 1)).flatten()
-                y_val = self.y_scaler.transform(y_val.reshape(-1, 1)).flatten()
-
-        # checking if is an instance of numpy
-        if isinstance(X, np.ndarray) or isinstance(y, np.ndarray):
-            x_train, x_val = (
-                torch.tensor(x_train, dtype=torch.float32),
-                torch.tensor(x_val, dtype=torch.float32),
-            )
-            y_train, y_val = (
-                torch.tensor(y_train, dtype=torch.float32).view(-1, 1),
-                torch.tensor(y_val, dtype=torch.float32).view(-1, 1),
-            )
-
-        # Training and validation
-        train_dataset = TensorDataset(
-            x_train.clone().detach().float(),
-            (
-                y_train.clone().detach().float()
-                if isinstance(y_train, torch.Tensor)
-                else torch.tensor(y_train, dtype=torch.float32)
-            ),
-        )
-        val_dataset = TensorDataset(
-            x_val.clone().detach().float(),
-            (
-                y_val.clone().detach().float()
-                if isinstance(y_val, torch.Tensor)
-                else torch.tensor(y_val, dtype=torch.float32)
-            ),
-        )
-
-        # Setting batch size
-        batch_size_train = int(proportion_train * batch_size)
-        batch_size_val = int((1 - proportion_train) * batch_size)
-        val_loader = DataLoader(
-            val_dataset, 
-            batch_size=batch_size_val, 
-            shuffle=False,
-            )
-        
-        # bootstraping the dataloader for the current model
-        train_loader = DataLoader(
-        train_dataset, batch_size=batch_size_train, shuffle=True
-        )
-        
-        torch.manual_seed(random_seed_fit)
-        torch.cuda.manual_seed(random_seed_fit)
-        # Fitting each model in the ensemble
-        self.models = []
-        for i in tqdm(range(self.n_models), desc = "Fitting Deep Ensemble MDN models"):
-            model_i = self.fit_one_model(
-                train_loader,
-                val_loader,
-                patience,
-                n_epochs,
-                lr,
-                weight_decay,
-                step_size,
-                gamma,
-            )
-            self.models.append(model_i)
-
-        return self
-
-    def fit_one_model(
-            self,
-            train_loader,
-            val_loader,
-            patience,
-            n_epochs,
-            lr,
-            weight_decay,
-            step_size,
-            gamma,
-        ):
-        """
-        Fit a single MDN model.
-        Input:
-            (i) train_loader: DataLoader for training data.
-            (ii) val_loader: DataLoader for validation data.
-            (iii) patience (int): Number of epochs with no improvement to trigger early stopping.
-            (iv) n_epochs (int): Maximum number of training epochs.
-            (v) verbose (int): Verbosity level (0, 1, or 2).
-        Output:
-            (i) Trained MDN model.
-        """
-
-        model = MDN_base(
-            self.input_shape, 
-            self.num_components, 
-            self.hidden_layers, 
-            self.dropout_rate,
-        )
-
-        optimizer = optim.Adamax(
-            model.parameters(), lr=lr, weight_decay=weight_decay
-        )
-        scheduler = optim.lr_scheduler.StepLR(
-            optimizer, step_size=step_size, gamma=gamma
-        )
-
-        losses_train = []
-        losses_val = []
-
-        # early stopping
-        best_val_loss = float("inf")
-        counter = 0
-
-        # Training loop
-        for epoch in range(n_epochs):
-            model.train()
-            train_loss_epoch = 0
-
-            # Looping through batches
-            for x_batch, y_batch in train_loader:
-                optimizer.zero_grad()
-                output_train = model(x_batch)  # Network output
-                pi_train, mu_train, sigma_train = self.get_mixture_coef(output_train)
-                loss_train = self.mdn_loss(
-                    pi_train, 
-                    mu_train, 
-                    sigma_train, 
-                    y_batch,
-                    type=self.type,
-                )
-                loss_train.backward()
-                optimizer.step()
-                train_loss_epoch += loss_train.item()
-
-            # Computing validation loss
-            model.eval()
-            val_loss_epoch = 0
-            with torch.no_grad():
-                for x_batch, y_batch in val_loader:
-                    output_val = model(x_batch)  # Network output
-                    pi_val, mu_val, sigma_val = self.get_mixture_coef(output_val)
-                    loss_val = self.mdn_loss(
-                        pi_val, mu_val, sigma_val, y_batch, type=self.type
-                    )
-                    val_loss_epoch += loss_val.item()
-
-            # average loss by epoch
-            train_loss_epoch /= len(train_loader)
-            val_loss_epoch /= len(val_loader)
-            losses_train.append(train_loss_epoch)
-            losses_val.append(val_loss_epoch)
-
-            scheduler.step()
-
-            # Early stopping
-            if val_loss_epoch < best_val_loss:
-                best_val_loss = val_loss_epoch
-                counter = 0
-            else:
-                counter += 1
-                if counter >= patience:
-                    break
-            
-        return model
-
-    def predict_ensemble(
-            self,
-            X_test,
-    ):
-        """
-        Predict parameters from each model in the ensemble.
-
-        Input:
-            (i) X_test (array-like): Test input data.
-        Output:
-            (i) pi_ensemble (np.ndarray): Mixture weights from each model, shape (n_test_samples, n_models, n_components).
-            (ii) mu_ensemble (np.ndarray): Means from each model, shape (n_test_samples, n_models, n_components).
-            (iii) sigma_ensemble (np.ndarray): Standard deviations from each model, shape (n_test_samples, n_models, n_components).
-        """
-        if self.scale:
-            X_test_standardized = self.scaler.transform(X_test)
-        else:
-            X_test_standardized = X_test
-
-        n_test_samples = X_test_standardized.shape[0]
-        n_models = len(self.models)
-
-        # Arrays to hold mixture parameters from each model
-        pi_ensemble = np.zeros((n_models, n_test_samples, self.num_components))
-        mu_ensemble = np.zeros((n_models, n_test_samples, self.num_components))
-        sigma_ensemble = np.zeros((n_models, n_test_samples, self.num_components))
-
-        # Get predictions from each model in the ensemble
-        for i, model in enumerate(self.models):
-            model.eval()
-            with torch.no_grad():
-                X_tensor = torch.tensor(X_test_standardized, dtype=torch.float32)
-                y_pred = model(X_tensor)
-                pi, mu, sigma = self.get_mixture_coef(y_pred)
-                
-                pi_ensemble[i, :, :] = pi.numpy()
-                mu_ensemble[i, :, :] = mu.numpy()
-                sigma_ensemble[i, :, :] = sigma.numpy()
-
-        return pi_ensemble, mu_ensemble, sigma_ensemble
-
-    def predict(self,
-                X_test,
-                ):
-        """
-        Predict quantiles for the test data using the ensemble of MDN models.
-        Input:
-            (i) X_test (array-like): Test input data.
-        Output:
-            (i) quantiles_test (np.ndarray): Predicted quantiles for the test data, shape (n_test_samples, 2).
-        """ 
-        pi_ensemble, mu_ensemble, sigma_ensemble = self.predict_ensemble(X_test)
-        if self.base_model_type == "quantile":
-            alphas = [self.alpha / 2, 1 - (self.alpha / 2)]
-            low_quant_mod = np.zeros((X_test.shape[0], len(self.models)))
-            up_quant_mod = np.zeros((X_test.shape[0], len(self.models)))
-            for i in range(len(self.models)):
-                quantiles_mod = self.mixture_quantile(
-                    alphas, 
-                    pi_ensemble[i, :, :], 
-                    mu_ensemble[i, :, :], 
-                    sigma_ensemble[i, :, :],
-                    )
-                low_quant_mod[:, i] = quantiles_mod[:, 0]
-                up_quant_mod[:, i] = quantiles_mod[:, 1]
-                
-            # averaging over models
-            low_quantiles_test = np.mean(low_quant_mod, axis=1)
-            up_quantiles_test = np.mean(up_quant_mod, axis=1)
-            quantiles_test = np.column_stack((low_quantiles_test, up_quantiles_test))
-            return quantiles_test
-        else:
-            raise NotImplementedError("Only quantile base model prediction is implemented.")
-        # TODO: implement regression and density base model predictions
-    
-    def set_type_base_model(self, base_model_type, alpha=None):
-        """
-        Set the type of base model for MDN.
-
-        Input: (i) base_model_type (str): Type of base model to be set. Options are "regression", "quantile", or "density".
-               (ii) alpha (float): Significance level for quantile base model. Default is None.
-        """
-        self.base_model_type = base_model_type
-        if base_model_type == "quantile":
-            self.alpha = alpha
-        return self
-    
 
 
 
