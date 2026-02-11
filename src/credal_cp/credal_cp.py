@@ -198,6 +198,7 @@ class CredalCPRegressor(BaseEstimator):
                 self.base_model_type = "QNN"
                 self.base_model = QuantileRegressionNN(
                     input_shape = X.shape[1],
+                    alpha = self.alpha,
                    **fit_params
                 )
 
@@ -216,7 +217,6 @@ class CredalCPRegressor(BaseEstimator):
                     fit_random_state=random_seed_fit,
                 )
                 self.base_is_fitted = True
-
                 
             # Analytic GP (slow for large datasets)
             elif self.base_model == "GP":
@@ -377,11 +377,8 @@ class CredalCPRegressor(BaseEstimator):
         
         elif self.base_model_type == "QNN" and self.nn_type == "MC_Dropout":
             if self.nc_type == "Quantile":
-                lower_q = self.alpha / 2
-                upper_q = 1 - self.alpha / 2
                 q_low_grid, q_upp_grid = self.base_model.predict(
                     X_calib,
-                    quantiles=[lower_q, upper_q],
                     n_mc = N_samples_MC,
                 )
 
