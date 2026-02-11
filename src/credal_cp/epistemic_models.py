@@ -38,6 +38,7 @@ with install_import_hook("gpjax", "beartype.beartype"):
     import gpjax as gpx
 import jax.numpy as jnp
 import jax.random as jr
+from jax import jit
 from gpjax.likelihoods import (
     HeteroscedasticGaussian,
     LogNormalTransform,
@@ -45,7 +46,6 @@ from gpjax.likelihoods import (
 )
 from gpjax.variational_families import (
     HeteroscedasticVariationalFamily,
-    VariationalGaussianInit,
 )
 from copy import deepcopy
 
@@ -1460,95 +1460,95 @@ class DE_MDN_model(BaseEstimator):
 # The loss function is the pinball loss.
 
 # Quantile regression architecture made by Rosselini et.al. 2024
+
 class QuantileRegressionNet(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size=100, p_dropout=0.2):
+    def __init__(self, input_size, output_size, hidden_layers, p_dropout=0.2):
         super(QuantileRegressionNet, self).__init__()
+        self.layers = nn.ModuleList()
+        self.dropouts = nn.ModuleList()
         
         self.p_dropout = p_dropout
+
+        prev_units = input_size
+        for units in hidden_layers:
+            self.layers.append(nn.Linear(prev_units, units))
+            self.dropouts.append(nn.Dropout(p_dropout))
+            prev_units = units
         
-        self.model = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
-            nn.ReLU(),
-            nn.Dropout(p=self.p_dropout),
-            
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Dropout(p=self.p_dropout),
-            
-            nn.Linear(hidden_size, output_size)
-        )
+        self.fc_out = nn.Linear(prev_units, output_size)
 
     def forward(self, x):
-        return self.model(x)
+        for layer, dropout in zip(self.layers, self.dropouts):
+            x = F.relu(layer(x))
+            x = dropout(x)
+        x = self.fc_out(x)
+        return x
 
 # Quantile regression model with dropout and also compatible for deep ensembles
 class QuantileRegressionNN:
     def __init__(
         self,
         alpha = 0.1,
-        quantiles=[0.5],
-        lr=1e-3,
-        epochs=100,
-        batch_size=32,
-        dropout=0,
+        dropout=0.3,
         normalize=True,
-        weight_decay=0,
-        hidden_size=100,
-        batch_norm=True,
-        gamma=0.999,
-        step_size=10,
-        random_state=None,
-        epoch_model_tracking=False,
+        hidden_layers=[64],
         verbose=False,
         use_gpu=True,
         undo_quantile_crossing=False,
-        drop_last=False,
-        running_batch_norm=False,
-        train_first_batch_norm=False,
     ):
         self.alpha = alpha
         self.quantiles = [alpha/2, 1-alpha/2]
-        self.quantiles = quantiles
-        self.lr = lr
-        self.epochs = epochs
-        self.batch_size = batch_size
         self.x_min = None
         self.x_max = None
         self.y_min = None
         self.y_max = None
         self.normalize = normalize
         self.dropout = dropout
-        self.weight_decay = weight_decay
-        self.hidden_size = hidden_size
-        self.random_state = random_state
-        self.batch_norm = batch_norm
+        self.hidden_layers = hidden_layers
         self.gamma = gamma
-        self.step_size = step_size
-        self.epoch_model_tracking = epoch_model_tracking
         self.verbose = verbose
         self.use_gpu = use_gpu
         self.undo_quantile_crossing = undo_quantile_crossing
-        self.drop_last = drop_last
-        self.running_batch_norm = running_batch_norm
-        self.train_first_batch_norm = train_first_batch_norm
-        if random_state:
-            torch.manual_seed(random_state)
 
-    def fit(self, X, y, X_val=None, y_val=None):
+    def fit(
+            self, 
+            X, 
+            y,
+            n_epochs=300,
+            proportion_train=0.7,
+            random_seed_split=0,
+            random_seed_fit=1250,
+            lr=1e-3,
+            weight_decay=0,
+            batch_size=32,
+            gamma=0.999,
+            step_size=10,
+            epoch_model_tracking=False,
+): 
+        torch.manual_seed(random_seed_fit)
+        torch.cuda.manual_seed(random_seed_fit)
         X = np.array(X)
         y = np.array(y)
+
+        # Splitting data into train and validation
+        x_train, x_val, y_train, y_val = train_test_split(
+            X, y, test_size=1 - proportion_train, random_state=random_seed_split
+        )
+
         if self.normalize:
-            self.x_min = X.min(axis=0)
-            self.x_max = X.max(axis=0)
+            self.x_min = x_train.min(axis=0)
+            self.x_max = x_train.max(axis=0)
             self.x_range = self.x_max - self.x_min
             self.x_range[self.x_range == 0] = 1
-            self.y_min = y.min()
-            self.y_max = y.max()
+            self.y_min = y_train.min()
+            self.y_max = y_train.max()
+            x_train = (x_train - self.x_min) / self.x_range
+            y_train = (y_train - self.y_min) / (self.y_max - self.y_min)
+            x_val = (x_val - self.x_min) / self.x_range
+            y_val = (y_val - self.y_min) / (self.y_max - self.y_min)
             X = (X - self.x_min) / self.x_range
             y = (y - self.y_min) / (self.y_max - self.y_min)
 
-            if y_val is not None:
-                y_val = (y_val - self.y_min) / (self.y_max - self.y_min)
         if self.use_gpu:
             self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         else:
@@ -1558,31 +1558,56 @@ class QuantileRegressionNN:
             input_size=X.shape[1],
             output_size=len(self.quantiles),
             dropout=self.dropout,
-            hidden_size=self.hidden_size,
-            batch_norm=self.batch_norm,
+            hidden_layers=self.hidden_layers,
         )
-
         self.net.to(self.device)
 
         self.criterion = nn.SmoothL1Loss()
         self.optimizer = optim.Adam(
-            self.net.parameters(), lr=self.lr, weight_decay=self.weight_decay
+            self.net.parameters(), 
+            lr=lr, 
+            weight_decay=weight_decay
         )
         self.scheduler = optim.lr_scheduler.StepLR(
-            self.optimizer, step_size=self.step_size, gamma=self.gamma
+            self.optimizer, 
+            step_size=step_size, 
+            gamma=gamma
         )
 
-        X = torch.tensor(X, dtype=torch.float32).to(self.device)
-        y = torch.tensor(y, dtype=torch.float32).to(self.device)
+        X_train = torch.tensor(x_train, dtype=torch.float32).to(self.device)
+        y_train = torch.tensor(y_train, dtype=torch.float32).to(self.device)
+        X_val = torch.tensor(x_val, dtype=torch.float32).to(self.device)
+        y_val = torch.tensor(y_val, dtype=torch.float32).to(self.device)
 
-        dataset = torch.utils.data.TensorDataset(X, y)
-        loader = torch.utils.data.DataLoader(
-            dataset, batch_size=self.batch_size, shuffle=True, drop_last=self.drop_last
+        train_dataset = TensorDataset(
+            X_train.clone().detach().float(),
+            (
+                y_train.clone().detach().float()
+                if isinstance(y_train, torch.Tensor)
+                else torch.tensor(y_train, dtype=torch.float32)
+            ),
+            shuffle=True,
         )
+        val_dataset = TensorDataset(
+            X_val.clone().detach().float(),
+            (
+                y_val.clone().detach().float()
+                if isinstance(y_val, torch.Tensor)
+                else torch.tensor(y_val, dtype=torch.float32)
+            ),
+        )
+
+        # Setting batch size
+        batch_size_train = int(proportion_train * batch_size)
+        batch_size_val = int((1 - proportion_train) * batch_size)
+        train_loader = DataLoader(
+            train_dataset, batch_size=batch_size_train, shuffle=True
+        )
+        val_loader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=False)
 
         y_pred_val_across_epochs = []
         self.saved_models = []
-        for epoch in range(self.epochs):
+        for epoch in range(n_epochs):
             epoch_losses = []
             if self.running_batch_norm and not (self.train_first_batch_norm):
                 for m in self.net.modules():
@@ -1593,7 +1618,7 @@ class QuantileRegressionNN:
                     if isinstance(m, nn.BatchNorm1d):
                         m.eval()
 
-            for X_batch, y_batch in loader:
+            for X_batch, y_batch in train_loader:
                 self.optimizer.zero_grad()
                 y_pred = self.net(X_batch)
                 loss = 0.0
@@ -2081,7 +2106,7 @@ class GP_model(BaseEstimator):
             posterior_model = prior * likelihood
 
             if self.variational:
-                num_inducing = min(50, self.train_data.n) 
+                num_inducing = min(25, self.train_data.n) 
                 kmeans = KMeans(n_clusters=num_inducing, n_init='auto', random_state=random_state)
                 z_init = jnp.array(kmeans.fit(X).cluster_centers_)
 
@@ -2089,9 +2114,6 @@ class GP_model(BaseEstimator):
                 posterior=posterior_model,
                 inducing_inputs=z_init
                 )
-
-                objective = lambda model, data: -gpx.objectives.elbo(model, data)
-
                 key, subkey = jr.split(key)
                 optimiser = ox.chain(
                     ox.clip_by_global_norm(1.0), # Prevents massive gradient updates
@@ -2099,13 +2121,16 @@ class GP_model(BaseEstimator):
                     ox.zero_nans()
                 )
 
+                objective = lambda model, data: -gpx.objectives.elbo(model, data)
+                jitted_objective = jit(objective)
+
                 # optimizing hyperparameters
                 self.opt_posterior, history = gpx.fit(
                     model=self.q,
-                    objective=objective,
+                    objective=jitted_objective,
                     train_data=self.train_data,
                     optim=optimiser,
-                    num_iters=2000,
+                    num_iters=1000,
                     key=subkey,
                     verbose = False,
                 )
@@ -2141,7 +2166,7 @@ class GP_model(BaseEstimator):
             posterior = signal_prior * likelihood
 
             # inducing points
-            num_inducing = min(50, self.train_data.n) 
+            num_inducing = min(25, self.train_data.n) 
             kmeans = KMeans(n_clusters=num_inducing, n_init='auto', random_state=random_state)
             z_init = jnp.array(kmeans.fit(X).cluster_centers_)
 
@@ -2160,13 +2185,14 @@ class GP_model(BaseEstimator):
 
             # optimizing hyperparameters
             objective = lambda model, data: -gpx.objectives.heteroscedastic_elbo(model, data)
+            jitted_objective = jit(objective)
 
             self.opt_posterior, history = gpx.fit(
                 model=self.q,
-                objective=objective,
+                objective=jitted_objective,
                 train_data=self.train_data,
                 optim=optimiser,
-                num_iters=2000,
+                num_iters=1000,
                 key=subkey,
                 verbose = False,
             )
