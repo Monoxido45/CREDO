@@ -631,7 +631,6 @@ class CredalCPRegressor(BaseEstimator):
                 if self.nc_type == "Quantile":
                     q_low_grid, q_upp_grid = self.base_model.predict(
                         X_test,
-                        quantiles=[self.alpha / 2, 1 - self.alpha / 2],
                         random_seed=random_seed_test,
                         n_mc = n_samples,
                     )
