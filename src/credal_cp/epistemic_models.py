@@ -1952,7 +1952,6 @@ class GP_model(BaseEstimator):
 
             # latent noise process
             key, subkey_g = jr.split(key)
-            g_dist = self.q.latent_g.predict(x_jp)
             g_samples = g_dist.sample(subkey_g, sample_shape=(n_MC,))
 
             if self.activation_sigma == "lognormal":

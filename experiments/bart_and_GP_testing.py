@@ -1,7 +1,6 @@
 # Repeating code from credal sets testing but for 
 # BART and GP
 # First starting by first example
-
 # ============================================
 # 0. Imports & data generation
 # ============================================
