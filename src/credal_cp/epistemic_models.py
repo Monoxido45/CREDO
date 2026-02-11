@@ -1488,245 +1488,151 @@ class QuantileRegressionNet(nn.Module):
 class QuantileRegressionNN:
     def __init__(
         self,
+        input_size,
         alpha = 0.1,
         dropout=0.3,
-        normalize=True,
-        hidden_layers=[64],
-        verbose=False,
+        hidden_layers=[64, 64],
         use_gpu=True,
-        undo_quantile_crossing=False,
     ):
         self.alpha = alpha
         self.quantiles = [alpha/2, 1-alpha/2]
-        self.x_min = None
-        self.x_max = None
-        self.y_min = None
-        self.y_max = None
-        self.normalize = normalize
-        self.dropout = dropout
-        self.hidden_layers = hidden_layers
-        self.gamma = gamma
-        self.verbose = verbose
-        self.use_gpu = use_gpu
-        self.undo_quantile_crossing = undo_quantile_crossing
+        self.device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
 
+        self.model = QuantileRegressionNet(
+            input_size=input_size, 
+            output_size=len(self.quantiles), 
+            hidden_layers=hidden_layers, 
+            p_dropout=dropout
+        ).to(self.device)
+
+        self.scaler_x = StandardScaler()
+        self.scaler_y = StandardScaler()
+
+    @staticmethod
+    def quantile_loss(y_pred, y_true, quantiles):
+        loss = 0
+        for i, q in enumerate(quantiles):
+            error = y_true - y_pred[:, i:i+1]
+            loss += torch.max((q - 1) * error, q * error).mean()
+        return loss
+    
     def fit(
             self, 
             X, 
             y,
-            n_epochs=300,
-            proportion_train=0.7,
-            random_seed_split=0,
-            random_seed_fit=1250,
-            lr=1e-3,
             weight_decay=0,
-            batch_size=32,
-            gamma=0.999,
-            step_size=10,
-            epoch_model_tracking=False,
-): 
-        torch.manual_seed(random_seed_fit)
-        torch.cuda.manual_seed(random_seed_fit)
-        X = np.array(X)
-        y = np.array(y)
+            scheduler_step=20,
+            scheduler_gamma=0.99,
+            epochs=500, 
+            lr=1e-3, 
+            batch_size=32, 
+            patience=30, 
+            verbose=1, 
+            split_random_state=42,
+            fit_random_state=1250,
+            ):
+        # 1. Preprocessing
+        x_train, x_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=split_random_state)
 
-        # Splitting data into train and validation
-        x_train, x_val, y_train, y_val = train_test_split(
-            X, y, test_size=1 - proportion_train, random_state=random_seed_split
+        torch.manual_seed(fit_random_state)
+        torch.cuda.manual_seed(fit_random_state)
+        
+        x_train = torch.tensor(self.scaler_x.fit_transform(x_train), dtype=torch.float32).to(self.device)
+        y_train = torch.tensor(self.scaler_y.fit_transform(y_train.reshape(-1, 1)), dtype=torch.float32).to(self.device)
+        x_val = torch.tensor(self.scaler_x.transform(x_val), dtype=torch.float32).to(self.device)
+        y_val = torch.tensor(self.scaler_y.transform(y_val.reshape(-1, 1)), dtype=torch.float32).to(self.device)
+
+        train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True)
+        
+        optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+        scheduler = optim.lr_scheduler.StepLR(
+            optimizer, 
+            step_size=scheduler_step, 
+            gamma=scheduler_gamma
         )
 
-        if self.normalize:
-            self.x_min = x_train.min(axis=0)
-            self.x_max = x_train.max(axis=0)
-            self.x_range = self.x_max - self.x_min
-            self.x_range[self.x_range == 0] = 1
-            self.y_min = y_train.min()
-            self.y_max = y_train.max()
-            x_train = (x_train - self.x_min) / self.x_range
-            y_train = (y_train - self.y_min) / (self.y_max - self.y_min)
-            x_val = (x_val - self.x_min) / self.x_range
-            y_val = (y_val - self.y_min) / (self.y_max - self.y_min)
-            X = (X - self.x_min) / self.x_range
-            y = (y - self.y_min) / (self.y_max - self.y_min)
+        best_val_loss = float('inf')
+        best_model_state = None
+        counter = 0
 
-        if self.use_gpu:
-            self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device("cpu")
-
-        self.net = QuantileRegressionNet(
-            input_size=X.shape[1],
-            output_size=len(self.quantiles),
-            dropout=self.dropout,
-            hidden_layers=self.hidden_layers,
-        )
-        self.net.to(self.device)
-
-        self.criterion = nn.SmoothL1Loss()
-        self.optimizer = optim.Adam(
-            self.net.parameters(), 
-            lr=lr, 
-            weight_decay=weight_decay
-        )
-        self.scheduler = optim.lr_scheduler.StepLR(
-            self.optimizer, 
-            step_size=step_size, 
-            gamma=gamma
-        )
-
-        X_train = torch.tensor(x_train, dtype=torch.float32).to(self.device)
-        y_train = torch.tensor(y_train, dtype=torch.float32).to(self.device)
-        X_val = torch.tensor(x_val, dtype=torch.float32).to(self.device)
-        y_val = torch.tensor(y_val, dtype=torch.float32).to(self.device)
-
-        train_dataset = TensorDataset(
-            X_train.clone().detach().float(),
-            (
-                y_train.clone().detach().float()
-                if isinstance(y_train, torch.Tensor)
-                else torch.tensor(y_train, dtype=torch.float32)
-            ),
-            shuffle=True,
-        )
-        val_dataset = TensorDataset(
-            X_val.clone().detach().float(),
-            (
-                y_val.clone().detach().float()
-                if isinstance(y_val, torch.Tensor)
-                else torch.tensor(y_val, dtype=torch.float32)
-            ),
-        )
-
-        # Setting batch size
-        batch_size_train = int(proportion_train * batch_size)
-        batch_size_val = int((1 - proportion_train) * batch_size)
-        train_loader = DataLoader(
-            train_dataset, batch_size=batch_size_train, shuffle=True
-        )
-        val_loader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=False)
-
-        y_pred_val_across_epochs = []
-        self.saved_models = []
-        for epoch in range(n_epochs):
-            epoch_losses = []
-            if self.running_batch_norm and not (self.train_first_batch_norm):
-                for m in self.net.modules():
-                    if isinstance(m, nn.BatchNorm1d):
-                        m.eval()
-            elif self.running_batch_norm and epoch > 0:
-                for m in self.net.modules():
-                    if isinstance(m, nn.BatchNorm1d):
-                        m.eval()
-
-            for X_batch, y_batch in train_loader:
-                self.optimizer.zero_grad()
-                y_pred = self.net(X_batch)
-                loss = 0.0
-                for i, q in enumerate(self.quantiles):
-                    error = y_batch - y_pred[:, i]
-                    if q == "mean":
-                        loss += torch.square(error).mean()
-                    else:
-                        loss += torch.max((q - 1) * error, q * error).mean()
-                with torch.no_grad():
-                    epoch_losses.append(loss.detach().cpu().numpy())
+        for epoch in tqdm(range(epochs), disable=(verbose==0)):
+            self.model.train()
+            for bx, by in train_loader:
+                optimizer.zero_grad()
+                pred = self.model(bx)
+                loss = self.quantile_loss(pred, by, self.quantiles)
                 loss.backward()
-                self.optimizer.step()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                optimizer.step()
+                train_loss_epoch += loss.item()
 
-            if X_val is not None and y_val is not None:
-                preds = self.predict(X_val, use_seed=False, undo_normalization=False)
-                loss_val = 0.0
-                for i, q in enumerate(self.quantiles):
-                    error = y_val - preds[i]
-                    if q == "mean":
-                        loss_val += np.square(error).mean()
-                    else:
-                        loss_val += np.maximum((q - 1) * error, q * error).mean()
-                if self.verbose:
-                    print(
-                        f"Epoch: {epoch} \t Train Loss: {np.mean(epoch_losses)} Validation Loss: {loss_val}"
-                    )
-                y_pred_val_across_epochs.append(preds)
-
-            self.scheduler.step()
-            if self.epoch_model_tracking:
-                self.saved_models.append(deepcopy(self.net.state_dict()))
-
-        if y_pred_val_across_epochs != []:
-
-            self.y_pred_val_across_epochs = np.stack(y_pred_val_across_epochs)
-
-            # self.net.train()
-
-    def predict(self, X, ensembling=None, use_seed=True, undo_normalization=True):
-        if use_seed and self.random_state:
-            torch.manual_seed(self.random_state)
-        X = np.asarray(X, dtype=np.float32)
-        if self.x_min is not None and self.x_max is not None:
-            X = (X - self.x_min) / self.x_range
-        X = torch.tensor(X, dtype=torch.float32).to(self.device)
-
-        if ensembling and not (self.epoch_model_tracking):
-            self.net.train()
-            for m in self.net.modules():
-                if isinstance(m, nn.BatchNorm1d):
-                    m.eval()
-
-            y_pred = list()
-
+            # 3. Early Stopping Check
+            self.model.eval()
             with torch.no_grad():
-                for t in range(ensembling):
-                    X_out = self.net(X)
-                    y_pred.append(X_out.cpu().squeeze())
+                val_pred = self.model(x_val)
+                val_loss = self.quantile_loss(val_pred, y_val, self.quantiles).item()
 
-            y_pred = torch.stack(y_pred)
+            scheduler.step()
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_model_state = deepcopy(self.model.state_dict())
+                counter = 0
+            else:
+                counter += 1
+            
+            if counter >= patience:
+                if verbose: print(f"Early stopping at epoch {epoch}")
+                break
 
-        elif ensembling and self.epoch_model_tracking:
-            y_pred = list()
-            for state_dict in self.saved_models[-ensembling:]:
-                self.net.load_state_dict(state_dict)
-                self.net.eval()
-                with torch.no_grad():
-                    X_out = self.net(X)
-                    y_pred.append(X_out.cpu().squeeze())
-
-            y_pred = torch.stack(y_pred)
-
+        if best_model_state:
+            self.model.load_state_dict(best_model_state)
+    
+    def predict(self, X, n_mc=500, use_mcdropout=True):
+        """
+        Predict quantiles.
+        Args:
+            X: Input data.
+            n_mc: Number of Monte Carlo samples.
+            use_mcdropout: If True, keeps dropout active during inference.
+        """
+        self.model.eval()
+        
+        if use_mcdropout:
+            # Force dropout layers to stay active
+            for m in self.model.modules():
+                if isinstance(m, nn.Dropout):
+                    m.train()
         else:
-            self.net.eval()
+            n_mc = 1 # Just one forward pass if not using MC Dropout
 
-            with torch.no_grad():
-                y_pred = self.net(X)
+        X_scaled = torch.tensor(self.scaler_x.transform(X), dtype=torch.float32).to(self.device)
+        all_samples = np.zeros((n_mc, X.shape[0], len(self.quantiles)))
+        with torch.no_grad():
+            for i in range(n_mc):
+                pred = self.model(X_scaled).cpu().numpy()
+                
+                # Correct crossing for THIS specific sample
+                if self.undo_crossing:
+                    pred = self._apply_crossing_fix(pred)
+                
+                # Inverse scale immediately so the values are in original units
+                all_samples[i] = self.scaler_y.inverse_transform(pred)
+        
+        all_samples = np.transpose(all_samples, (1, 0, 2))
+        
+        q_low = all_samples[:, :, 0]   # (N, n_mc)
+        q_high = all_samples[:, :, 1]  # (N, n_mc)
 
-        y_pred = y_pred.detach().cpu().numpy()
-        if self.y_min is not None and self.y_max is not None and undo_normalization:
-            y_pred = y_pred * (self.y_max - self.y_min) + self.y_min
+        self.model.train()
 
-        if self.undo_quantile_crossing and ensembling:
-            y_pred[:, :, 0][y_pred[:, :, 0] > y_pred[:, :, -1]] = (
-                0.5 * y_pred[:, :, -1][y_pred[:, :, 0] > y_pred[:, :, -1]]
-                + 0.5 * y_pred[:, :, 0][y_pred[:, :, 0] > y_pred[:, :, -1]]
-            )
-            y_pred[:, :, -1][y_pred[:, :, 0] > y_pred[:, :, -1]] = (
-                0.5 * y_pred[:, :, -1][y_pred[:, :, 0] > y_pred[:, :, -1]]
-                + 0.5 * y_pred[:, :, 0][y_pred[:, :, 0] > y_pred[:, :, -1]]
-            )
-        elif self.undo_quantile_crossing:
-            y_pred[:, 0][y_pred[:, 0] > y_pred[:, -1]] = (
-                0.5 * y_pred[:, -1][y_pred[:, 0] > y_pred[:, -1]]
-                + 0.5 * y_pred[:, 0][y_pred[:, 0] > y_pred[:, -1]]
-            )
-            y_pred[:, -1][y_pred[:, 0] > y_pred[:, -1]] = (
-                0.5 * y_pred[:, -1][y_pred[:, 0] > y_pred[:, -1]]
-                + 0.5 * y_pred[:, 0][y_pred[:, 0] > y_pred[:, -1]]
-            )
+        return q_low, q_high
 
-        self.net.train()
-
-        if ensembling:
-            return np.moveaxis(y_pred, [0, 1, 2], [2, 1, 0])
-        else:
-            return np.moveaxis(y_pred, [0], [1]).T
+    def _apply_crossing_fix(self, y_pred):
+        """
+        Fixes quantile crossing using sorting (Isotone Regression).
+        Ensures q_low <= q_high without destroying the predictive width.
+        """
+        return np.sort(y_pred, axis=1)
 
 ############### Classification using MC Dropout ###############
 # Neural Network Classifier Base Architecture

@@ -12,6 +12,7 @@ from credal_cp.epistemic_models import (
     GP_model,
     BART_model,
     DE_MDN_model,
+    QuantileRegressionNN
 )
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
@@ -192,6 +193,31 @@ class CredalCPRegressor(BaseEstimator):
                     random_seed_fit=random_seed_fit,
                 )
 
+            elif self.base_model == "QNN" and self.nn_type == "MC_Dropout":
+                print("Fitting MC Dropout Quantile Neural Network model")
+                self.base_model_type = "QNN"
+                self.base_model = QuantileRegressionNN(
+                    input_shape = X.shape[1],
+                   **fit_params
+                )
+
+                self.base_model.fit(
+                    X,
+                    y,
+                    epochs=epochs,
+                    lr=lr,
+                    scheduler_gamma=gamma,
+                    batch_size=batch_size,
+                    scheduler_step=step_size,
+                    weight_decay=weight_decay,
+                    verbose=verbose,
+                    patience=patience,
+                    split_random_state=random_seed_split,
+                    fit_random_state=random_seed_fit,
+                )
+                self.base_is_fitted = True
+
+                
             # Analytic GP (slow for large datasets)
             elif self.base_model == "GP":
                 print("Fitting Gaussian Process model")
@@ -348,7 +374,30 @@ class CredalCPRegressor(BaseEstimator):
                     self.nc_scores,
                     q=np.ceil((n + 1) * (1 - self.alpha)) / n
                     )
-                
+        
+        elif self.base_model_type == "QNN" and self.nn_type == "MC_Dropout":
+            if self.nc_type == "Quantile":
+                lower_q = self.alpha / 2
+                upper_q = 1 - self.alpha / 2
+                q_low_grid, q_upp_grid = self.base_model.predict_quantiles(
+                    X_calib,
+                    quantiles=[lower_q, upper_q],
+                    random_seed=random_seed_calib,
+                )
+
+                if self.adaptive_gamma:
+                    q_low_raw = np.array([np.quantile(q_low_grid[i, :], gamma_quantiles[i]/2) for i in range(len(X_calib))])
+                    q_upp_raw = np.array([np.quantile(q_upp_grid[i, :], 1 - gamma_quantiles[i]/2) for i in range(len(X_calib))])
+                else:
+                    q_low_raw = np.quantile(q_low_grid, self.gamma/2, axis=1)
+                    q_upp_raw = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=1)
+
+                # with lower and upper quantiles, we can compute the modified nonconformity scores
+                self.nc_scores = np.maximum(q_low_raw - y_calib, y_calib - q_upp_raw)
+                n = len(self.nc_scores)
+                self.cutoff = np.quantile(self.nc_scores, 
+                                          q=np.ceil((n + 1) * (1 - self.alpha)) / n)
+
         elif self.base_model_type == "GP":
             if self.nc_type == "Quantile":
                 lower_q = self.alpha / 2
@@ -581,6 +630,36 @@ class CredalCPRegressor(BaseEstimator):
                     return y_pred, aleatoric_unc, epistemic_unc
                 return y_pred
         
+        elif self.base_model_type == "QNN" and self.nn_type == "MC_Dropout":
+                if self.nc_type == "Quantile":
+                    q_low_grid, q_upp_grid = self.base_model.predict_quantiles(
+                        X_test,
+                        quantiles=[self.alpha / 2, 1 - self.alpha / 2],
+                        random_seed=random_seed_test,
+                    )
+    
+                    if disentangle:
+                        aleatoric_unc = np.mean(q_upp_grid - q_low_grid, axis=1)
+    
+                    # obtaining lower and upper quantiles for each x_calib
+                    if self.adaptive_gamma:
+                        q_low_pred = np.array([np.quantile(q_low_grid[i, :], gamma_quantiles[i]/2) for i in range(len(X_test))])
+                        q_upp_pred = np.array([np.quantile(q_upp_grid[i, :], 1 - gamma_quantiles[i]/2) for i in range(len(X_test))])
+                    else:
+                        q_low_pred = np.quantile(q_low_grid, self.gamma/2, axis=1)
+                        q_upp_pred = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=1)
+    
+                    lower_cp = q_low_pred - self.cutoff
+                    upper_cp = q_upp_pred + self.cutoff
+    
+                    y_pred = np.column_stack((lower_cp, upper_cp))
+                    if disentangle:
+                        total_unc = q_upp_pred - q_low_pred
+                        aleatoric_unc = np.array(aleatoric_unc)
+                        epistemic_unc = total_unc - aleatoric_unc
+                        return y_pred, aleatoric_unc, epistemic_unc
+                    return y_pred
+
         elif self.base_model_type == "GP":
             if self.nc_type == "Quantile":
                 q_low_grid, q_upp_grid = self.base_model.predict_quantiles(
