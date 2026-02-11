@@ -197,7 +197,7 @@ class CredalCPRegressor(BaseEstimator):
                 print("Fitting MC Dropout Quantile Neural Network model")
                 self.base_model_type = "QNN"
                 self.base_model = QuantileRegressionNN(
-                    input_shape = X.shape[1],
+                    input_size = X.shape[1],
                     alpha = self.alpha,
                    **fit_params
                 )
