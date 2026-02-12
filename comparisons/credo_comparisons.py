@@ -2252,6 +2252,7 @@ if __name__ == "__main__":
             print(f"Failed to delete checkpoint {chk_file}: {e}")
     
     elif outlier_analysis and outlier_same_time:
+        print("Running main experiment with outlier analysis at the same time")
         cover, isl, IL, pcorr, cover_out, isl_out, ratio_out = run_experiment(
             dataset = dataset, 
             n_rep = n_rep, 
