@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
 # BART package
 import pymc as pm
@@ -1533,7 +1533,7 @@ class QuantileRegressionNN:
             split_random_state=42,
             fit_random_state=1250,
             ):
-        # 1. Preprocessing
+        # Preprocessing
         x_train, x_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=split_random_state)
 
         torch.manual_seed(fit_random_state)
@@ -1635,6 +1635,198 @@ class QuantileRegressionNN:
         """
         return np.sort(y_pred, axis=1)
 
+
+class QuantileRegressionNNEnsemble:
+    def __init__(
+        self,
+        input_size,
+        n_models = 15,
+        alpha = 0.1,
+        dropout=0,
+        hidden_layers=[64, 64],
+        use_gpu=True,
+        undo_crossing=True,
+    ):
+        self.alpha = alpha
+        self.quantiles = [alpha/2, 1-alpha/2]
+        self.device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
+        self.input_size = input_size
+        self.output_size = len(self.quantiles)
+        self.hidden_layers = hidden_layers
+        self.p_dropout = dropout
+
+        self.undo_crossing = undo_crossing
+        self.n_models = n_models
+
+        self.scaler_x = StandardScaler()
+        self.scaler_y = StandardScaler()
+    
+    @staticmethod
+    def quantile_loss(y_pred, y_true, quantiles):
+        loss = 0
+        for i, q in enumerate(quantiles):
+            error = y_true - y_pred[:, i:i+1]
+            loss += torch.max((q - 1) * error, q * error).mean()
+        return loss
+    
+    def fit(
+            self, 
+            X, 
+            y,
+            weight_decay=0,
+            scheduler_step=20,
+            scheduler_gamma=0.99,
+            epochs=500, 
+            lr=1e-3, 
+            batch_size=32, 
+            patience=30, 
+            verbose=1, 
+            split_random_state=42,
+            fit_random_state=1250,
+            bootstrap=True,
+    ):
+        x_train, x_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=split_random_state)
+        
+        x_train = torch.tensor(self.scaler_x.fit_transform(x_train), dtype=torch.float32).to(self.device)
+        y_train = torch.tensor(self.scaler_y.fit_transform(y_train.reshape(-1, 1)), dtype=torch.float32).to(self.device)
+        x_val = torch.tensor(self.scaler_x.transform(x_val), dtype=torch.float32).to(self.device)
+        y_val = torch.tensor(self.scaler_y.transform(y_val.reshape(-1, 1)), dtype=torch.float32).to(self.device)
+        self.models = []
+
+        for i in tqdm(range(self.n_models), desc="Fitting Quantile Regression Ensemble Models", disable=(verbose==0)):
+            torch.manual_seed(fit_random_state + i)
+            torch.cuda.manual_seed(fit_random_state + i)
+
+            n_train = x_train.shape[0]
+            if bootstrap:
+                # 1. Create a Bootstrap Sampler
+                # We use uniform weights but allow replacement
+                sampler = WeightedRandomSampler(
+                    weights=torch.ones(n_train),
+                    num_samples=n_train,
+                    replacement=True
+                )
+                # Note: shuffle must be False when using a sampler
+                train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, sampler=sampler)
+            else:
+                train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True)
+                
+
+            model = QuantileRegressionNet(
+            input_size=self.input_size, 
+            output_size=self.output_size, 
+            hidden_layers=self.hidden_layers, 
+            p_dropout=self.p_dropout
+           ).to(self.device)
+            
+            train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True)
+            
+            model = self.fit_one_model(
+                model,
+                train_loader, 
+                x_val, 
+                y_val, 
+                patience, 
+                epochs, 
+                lr,
+                weight_decay, 
+                scheduler_step, 
+                scheduler_gamma,
+                )
+            
+            self.models.append(model)
+        
+        return self
+
+    def fit_one_model(
+            self,
+            model,
+            train_loader, 
+            x_val,
+            y_val,
+            patience, 
+            epochs, 
+            lr, 
+            weight_decay, 
+            scheduler_step, 
+            scheduler_gamma,
+    ):
+        optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+        scheduler = optim.lr_scheduler.StepLR(
+            optimizer, 
+            step_size=scheduler_step, 
+            gamma=scheduler_gamma
+        )
+
+        best_val_loss = float('inf')
+        best_model_state = None
+        counter = 0
+
+        for epoch in range(epochs):
+            model.train()
+            for bx, by in train_loader:
+                optimizer.zero_grad()
+                pred = model(bx)
+                loss = self.quantile_loss(pred, by, self.quantiles)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                optimizer.step()
+
+            # 3. Early Stopping Check
+            self.model.eval()
+            with torch.no_grad():
+                val_pred = model(x_val)
+                val_loss = self.quantile_loss(val_pred, y_val, self.quantiles).item()
+
+            scheduler.step()
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_model_state = deepcopy(self.model.state_dict())
+                counter = 0
+            else:
+                counter += 1
+            
+            if counter >= patience:
+                break
+
+        if best_model_state:
+            model.load_state_dict(best_model_state)
+        
+        return model
+    
+    def predict_ensemble(self, X_test):
+        X_scaled = torch.tensor(self.scaler_x.transform(X_test), dtype=torch.float32).to(self.device)
+        all_samples = np.zeros((len(self.models), X_test.shape[0], len(self.quantiles)))
+        i = 0
+        for model in self.models: 
+            model.eval()
+
+            with torch.no_grad():
+                pred = model(X_scaled).cpu().numpy()
+
+                # Correct crossing for THIS specific sample
+                if self.undo_crossing:
+                    pred = self._apply_crossing_fix(pred)
+                
+                # Inverse scale immediately so the values are in original units
+                all_samples[i] = self.scaler_y.inverse_transform(pred)
+            model.train()
+            i += 1
+        
+        all_samples = np.transpose(all_samples, (1, 0, 2))
+        q_low = all_samples[:, :, 0]
+        q_high = all_samples[:, :, 1]
+
+        return q_low, q_high
+    
+    def _apply_crossing_fix(self, y_pred):
+        """
+        Fixes quantile crossing using sorting (Isotone Regression).
+        Ensures q_low <= q_high without destroying the predictive width.
+        """
+        return np.sort(y_pred, axis=1)
+
+      
 ############### Classification using MC Dropout ###############
 # Neural Network Classifier Base Architecture
 class NN_base(nn.Module):
