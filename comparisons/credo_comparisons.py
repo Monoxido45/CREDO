@@ -43,7 +43,8 @@ parser.add_argument("-gamma","--gamma", type=float, default=0.1, help="adaptive 
 parser.add_argument("-n_rep", "--n_rep", type=int, default=30, help="number of repetitions for the experiment")
 parser.add_argument("-n_MCMC", "--n_MCMC", type=int, default=1000, help="number of MCMC samples for BART")
 parser.add_argument("-alpha_bart", "--alpha_bart", type=float, default=0.95, help="alpha parameter for BART prior")
-parser.add_argument("-seed_initial", "--seed_initial", type=int, default=125, help="initial seed for random generator to create seeds for repetitions")
+parser.add_argument("-seed_initial", "--seed_initial", type=int, default=125,
+                     help="initial seed for random generator to create seeds for repetitions")
 parser.add_argument("-dataset", "--dataset", type=str, default="airfoil", help="dataset to use for the experiment")
 parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default="catboost", help="UACQR and CQR base models: 'rfqr' or 'catboost'")
 parser.add_argument("-outlier_analysis", "--outlier_analysis", type=bool, help="whether to perform outlier analysis using LOF and t-SNE")
@@ -53,8 +54,11 @@ parser.add_argument("-kernel", "--kernel", type=str, default="RBF + Matern52",
                     help="kernel to use for Gaussian Process regression in CREDO: 'RBF', 'Matern32', 'Matern52' or 'RationalQuadratic'")
 parser.add_argument("-kernel_noise", "--kernel_noise", type=str, default="RBF", 
                     help="kernel to use for Gaussian Process noise in CREDO: 'RBF', 'Matern32', 'Matern52' or 'RationalQuadratic'")
-parser.add_argument("-activation_noise", "--activation_noise", type=str, default="softplus", help="activation function for noise in Gaussian Process")
+parser.add_argument("-activation_noise", "--activation_noise", type=str, default="softplus", 
+                    help="activation function for noise in Gaussian Process")
 parser.add_argument("-n_models", "--n_models", type=int, default=15, help="number of models in the ensemble for CREDO-DE")
+parser.add_argument("-outliers_same_time", "--outliers_same_time", type=bool, default=False, 
+                    help="whether to analyze outliers at the same time as fitting the models or as a separate step after fitting")
 args = parser.parse_args()
 
 alpha = args.alpha
@@ -72,6 +76,7 @@ kernel = args.kernel
 kernel_noise = args.kernel_noise
 activation_noise = args.activation_noise
 n_models = args.n_models
+outliers_same_time = args.outliers_same_time
 
 def generate_seeds(seed_initial, n_rep):
     np.random.seed(seed_initial)
@@ -88,6 +93,12 @@ def fit_methods(
         mdn_params,
         i,
         scale_y = False,
+        outliers_same_time = False,
+        inlier_size = 0.2,
+        n_neighbors = 15,
+        contamination = 0.05,
+        tsne_random_state=120,
+        n_components = 2,
 ): 
     if scale_y:
         y_scaler = StandardScaler().set_output(transform="pandas")
@@ -642,6 +653,373 @@ def fit_methods(
         pcorr_uacqrp,
         pcorr_epic_mdn,
     ])
+
+    if outliers_same_time and outlier_analysis:
+        # Detecting outliers using t-SNE and Local Outlier Factor
+        print(f"Performing outlier detection with t-SNE and Local Outlier Factor")
+        tsne = TSNE(n_components=n_components, random_state=tsne_random_state)
+        X_tsne_test = tsne.fit_transform(X_test)
+
+        # Standardize the features
+        scaler = StandardScaler()
+        X_test_scaled = scaler.fit_transform(X_tsne_test)
+        # Use Local Outlier Factor for anomaly detection on scaled data
+        lof = LocalOutlierFactor(
+            n_neighbors=n_neighbors,
+            contamination=contamination,
+        )
+        out_pred = lof.fit_predict(X_test_scaled)
+
+        outlier_obs = y_test[out_pred == -1]
+        outlier_indexes = np.where(out_pred == -1)[0]
+        # selecting 15% top inliers
+        inlier_indexes = np.setdiff1d(np.arange(len(y_test)), outlier_indexes)
+        inlier_scores = lof.negative_outlier_factor_[inlier_indexes]
+        # computing inlier scores
+        size = int((y_test.shape[0] - outlier_obs.shape[0]) * inlier_size)
+        most_inlier_idxs = inlier_indexes[np.argsort(inlier_scores)[::-1][:size]]
+
+        # selecting prediction intervals for inliers and outliers
+        credo_gp_outliers = credo_CP_gp_pred[outlier_indexes]
+        credo_qnn_outliers = credo_CP_qnn_pred[outlier_indexes]
+        credo_adapt_outliers = credo_adaptive_int[outlier_indexes]
+        credo_fixed_outliers = credo_fixed_int[outlier_indexes]
+        credo_gp_fixed_outliers = credo_CP_gp_fixed_pred[outlier_indexes]
+        credo_qnn_fixed_outliers = credo_CP_qnn_fixed_pred[outlier_indexes]
+        credo_qnn_ens_outliers = credo_CP_qnn_pred_ens[outlier_indexes]
+        credo_qnn_ens_fixed_outliers = credo_CP_qnn_ens_fixed_pred[outlier_indexes]
+        cqr_outliers = cqr_int[outlier_indexes]
+        cqrr_outliers = cqrr_int[outlier_indexes]
+        uacqrs_outliers = uacqrs_int[outlier_indexes]
+        uacqrp_outliers = uacqrp_int[outlier_indexes]
+        epic_mdn_outliers = pred_epic_mdn_test[outlier_indexes]
+        y_test_out = y_test[outlier_indexes]
+
+        credo_gp_inliers = credo_CP_gp_pred[most_inlier_idxs]
+        credo_qnn_inliers = credo_CP_qnn_pred[most_inlier_idxs]
+        credo_adapt_inliers = credo_adaptive_int[most_inlier_idxs]
+        credo_fixed_inliers = credo_fixed_int[most_inlier_idxs]
+        credo_gp_fixed_inliers = credo_CP_gp_fixed_pred[most_inlier_idxs]
+        credo_qnn_fixed_inliers = credo_CP_qnn_fixed_pred[most_inlier_idxs]
+        credo_qnn_ens_inliers = credo_CP_qnn_pred_ens[most_inlier_idxs]
+        credo_qnn_ens_fixed_inliers = credo_CP_qnn_ens_fixed_pred[most_inlier_idxs]
+        cqr_inliers = cqr_int[most_inlier_idxs]
+        cqrr_inliers = cqrr_int[most_inlier_idxs]
+        uacqrs_inliers = uacqrs_int[most_inlier_idxs]
+        uacqrp_inliers = uacqrp_int[most_inlier_idxs]
+        epic_mdn_inliers = pred_epic_mdn_test[most_inlier_idxs]
+        y_test_in = y_test[most_inlier_idxs]
+
+
+        # checking if there are any infinite bounds in UACQR-S or UACQR-P and removing 
+        # those indices from all methods to ensure fair comparison
+        # check finite bounds but only for the selected outlier + inlier indices
+        lower_s = np.asarray(uacqr_pred_test["UACQR-S"]["lower"])
+        upper_s = np.asarray(uacqr_pred_test["UACQR-S"]["upper"])
+        finite_s = np.isfinite(lower_s) & np.isfinite(upper_s)
+
+        lower_p = np.asarray(uacqr_pred_test["UACQR-P"]["lower"])
+        upper_p = np.asarray(uacqr_pred_test["UACQR-P"]["upper"])
+        finite_p = np.isfinite(lower_p) & np.isfinite(upper_p)
+
+        # combined indices of interest (outliers + selected inliers)
+        combined_idxs = np.concatenate([outlier_indexes, most_inlier_idxs])
+        finite_s_combined = finite_s[combined_idxs]
+        finite_p_combined = finite_p[combined_idxs]
+        good_combined_mask = finite_s_combined & finite_p_combined
+
+        n_total_combined = combined_idxs.shape[0]
+        n_removed_combined = int((~good_combined_mask).sum())
+        print(f"Combined removal: excluding {n_removed_combined} of {n_total_combined} selected points with infinite bounds in either UACQR-S or UACQR-P")
+
+        # valid combined indices (in the original test-set indexing)
+        valid_combined_idxs = combined_idxs[good_combined_mask]
+
+        # filter the previously sliced outlier / inlier arrays to keep only valid entries
+        outlier_keep_pos = np.isin(outlier_indexes, valid_combined_idxs)
+        inlier_keep_pos = np.isin(most_inlier_idxs, valid_combined_idxs)
+
+        uacqrs_outliers = uacqrs_outliers[outlier_keep_pos]
+        uacqrp_outliers = uacqrp_outliers[outlier_keep_pos]
+        y_test_out_uacqr = y_test_out[outlier_keep_pos]
+
+        uacqrs_inliers = uacqrs_inliers[inlier_keep_pos]
+        uacqrp_inliers = uacqrp_inliers[inlier_keep_pos]
+        y_test_in_uacqr = y_test_in[inlier_keep_pos]
+        del uacqr_results
+        gc.collect()
+        
+        # evaluating metrics of interest
+        # coverage for outliers
+        cover_credo_gp_out = average_coverage(
+            credo_CP_gp_pred[outlier_indexes][:, 1], 
+            credo_CP_gp_pred[outlier_indexes][:, 0], 
+            y_test_out
+        )
+        cover_credo_qnn_out = average_coverage(
+            credo_CP_qnn_pred[outlier_indexes][:, 1], 
+            credo_CP_qnn_pred[outlier_indexes][:, 0], 
+            y_test_out
+        )
+        cover_credo_adap_out = average_coverage(
+            credo_adapt_outliers[:, 1], credo_adapt_outliers[:, 0], y_test_out
+        )
+        cover_credo_fixed_out = average_coverage(
+            credo_fixed_outliers[:, 1], credo_fixed_outliers[:, 0], y_test_out
+        )
+        cover_credo_gp_fixed_out = average_coverage(
+        credo_gp_fixed_outliers[:, 1], credo_gp_fixed_outliers[:, 0], y_test_out 
+        ) 
+        cover_credo_qnn_fixed_out = average_coverage(
+        credo_qnn_fixed_outliers[:, 1], credo_qnn_fixed_outliers[:, 0], y_test_out
+        ) 
+        cover_credo_qnn_ens_out = average_coverage(
+        credo_qnn_ens_outliers[:, 1], credo_qnn_ens_outliers[:, 0], y_test_out
+        ) 
+        cover_credo_qnn_ens_fixed_out = average_coverage(
+        credo_qnn_ens_fixed_outliers[:, 1], credo_qnn_ens_fixed_outliers[:, 0], y_test_out
+        )
+        cover_cqr_out = average_coverage(
+            cqr_outliers[:, 1], cqr_outliers[:, 0], y_test_out
+        )
+        cover_cqrr_out = average_coverage(
+            cqrr_outliers[:, 1], cqrr_outliers[:, 0], y_test_out
+        )
+        cover_uacqrs_out = average_coverage(
+            uacqrs_outliers[:, 1], uacqrs_outliers[:, 0],
+            y_test_out_uacqr
+        )
+        cover_uacqrp_out = average_coverage(
+            uacqrp_outliers[:, 1], uacqrp_outliers[:, 0],
+            y_test_out_uacqr
+        )
+        cover_epic_mdn_out = average_coverage(
+            epic_mdn_outliers[:, 1], epic_mdn_outliers[:, 0],
+            y_test_out
+        )
+
+        # ISL on outliers
+        isl_credo_gp_out = average_interval_score_loss(
+            credo_CP_gp_pred[outlier_indexes][:, 1], 
+            credo_CP_gp_pred[outlier_indexes][:, 0], 
+            y_test_out, alpha
+        )
+        isl_credo_qnn_out = average_interval_score_loss(
+            credo_CP_qnn_pred[outlier_indexes][:, 1], 
+            credo_CP_qnn_pred[outlier_indexes][:, 0], 
+            y_test_out, alpha
+        )
+        isl_credo_adap_out = average_interval_score_loss(
+            credo_adapt_outliers[:, 1], credo_adapt_outliers[:, 0], y_test_out, alpha
+        )
+        isl_credo_fixed_out = average_interval_score_loss(
+            credo_fixed_outliers[:, 1], credo_fixed_outliers[:, 0], y_test_out, alpha
+        )
+        isl_credo_gp_fixed_out = average_interval_score_loss(
+            credo_gp_fixed_outliers[:, 1], credo_gp_fixed_outliers[:, 0], y_test_out, alpha ) 
+        isl_credo_qnn_fixed_out = average_interval_score_loss(
+            credo_qnn_fixed_outliers[:, 1], credo_qnn_fixed_outliers[:, 0], y_test_out, alpha
+            ) 
+        isl_credo_qnn_ens_out = average_interval_score_loss(
+            credo_qnn_ens_outliers[:, 1], credo_qnn_ens_outliers[:, 0], y_test_out, alpha
+            ) 
+        isl_credo_qnn_ens_fixed_out = average_interval_score_loss(
+            credo_qnn_ens_fixed_outliers[:, 1], credo_qnn_ens_fixed_outliers[:, 0], y_test_out, alpha
+            )
+        isl_cqr_out = average_interval_score_loss(
+            cqr_outliers[:, 1], cqr_outliers[:, 0], y_test_out, alpha
+        )
+        isl_cqrr_out = average_interval_score_loss(
+            cqrr_outliers[:, 1], cqrr_outliers[:, 0], y_test_out, alpha
+        )
+        isl_uacqrs_out = average_interval_score_loss(
+            uacqrs_outliers[:, 1], uacqrs_outliers[:, 0],
+            y_test_out_uacqr, alpha
+        )
+        isl_uacqrp_out = average_interval_score_loss(
+            uacqrp_outliers[:, 1], uacqrp_outliers[:, 0],
+            y_test_out_uacqr, alpha
+        )
+        isl_epic_mdn_out = average_interval_score_loss(
+            epic_mdn_outliers[:, 1], epic_mdn_outliers[:, 0],
+            y_test_out, alpha
+        )
+
+        # Interval length ratio
+        credo_gp_ratio = np.mean(
+                compute_interval_length(
+                    credo_gp_outliers[:, 1],
+                    credo_gp_outliers[:, 0]
+                )
+            ) / np.mean(
+                compute_interval_length(
+                    credo_gp_inliers[:, 1],
+                    credo_gp_inliers[:, 0]
+                )
+            )
+        credo_qnn_ratio = np.mean(
+                compute_interval_length(
+                    credo_qnn_outliers[:, 1],
+                    credo_qnn_outliers[:, 0]
+                )
+            ) / np.mean(
+                compute_interval_length(
+                    credo_qnn_inliers[:, 1],
+                    credo_qnn_inliers[:, 0]
+                )
+            )
+        credo_adap_ratio = np.mean(
+                compute_interval_length(
+                    credo_adapt_outliers[:, 1], credo_adapt_outliers[:, 0]
+                )
+            ) / np.mean(
+                compute_interval_length(
+                    credo_adapt_inliers[:, 1], credo_adapt_inliers[:, 0]
+                )
+            )
+        credo_fixed_ratio = np.mean(
+                compute_interval_length(
+                    credo_fixed_outliers[:, 1], credo_fixed_outliers[:, 0]
+                )
+            ) / np.mean(
+                compute_interval_length(
+                    credo_fixed_inliers[:, 1], credo_fixed_inliers[:, 0]
+                )
+            )
+        credo_gp_fixed_ratio = np.mean(
+                compute_interval_length(
+                    credo_gp_fixed_outliers[:, 1], credo_gp_fixed_outliers[:, 0] 
+                    )
+            ) / np.mean(
+                compute_interval_length(
+                    credo_gp_fixed_inliers[:, 1], credo_gp_fixed_inliers[:, 0] 
+                )
+            ) 
+        credo_qnn_fixed_ratio = np.mean(
+                compute_interval_length(
+                    credo_qnn_fixed_outliers[:, 1], credo_qnn_fixed_outliers[:, 0]
+                    )
+            ) / np.mean(
+                compute_interval_length(
+                    credo_qnn_fixed_inliers[:, 1], credo_qnn_fixed_inliers[:, 0]
+                    )
+            ) 
+        credo_qnn_ens_ratio = np.mean( 
+            compute_interval_length(
+                credo_qnn_ens_outliers[:, 1], credo_qnn_ens_outliers[:, 0]
+                )
+            ) / np.mean(
+            compute_interval_length(
+                credo_qnn_ens_inliers[:, 1], credo_qnn_ens_inliers[:, 0]
+                )
+            )
+        credo_qnn_ens_fixed_ratio = np.mean(
+            compute_interval_length(
+                credo_qnn_ens_fixed_outliers[:, 1], credo_qnn_ens_fixed_outliers[:, 0]
+                )
+            ) / np.mean(
+            compute_interval_length(
+                credo_qnn_ens_fixed_inliers[:, 1], credo_qnn_ens_fixed_inliers[:, 0]
+                )
+            )
+        cqr_ratio = np.mean(
+                compute_interval_length(
+                    cqr_outliers[:, 1], cqr_outliers[:, 0]
+                )
+            ) / np.mean(
+                compute_interval_length(
+                    cqr_inliers[:, 1], cqr_inliers[:, 0]
+                )
+            )
+        cqrr_ratio = np.mean(
+                compute_interval_length(
+                    cqrr_outliers[:, 1], cqrr_outliers[:, 0]
+                )
+            ) / np.mean(
+                compute_interval_length(
+                    cqrr_inliers[:, 1], cqrr_inliers[:, 0]
+                )
+            )
+        epic_mdn_ratio = np.mean(
+                compute_interval_length(
+                    epic_mdn_outliers[:, 1], epic_mdn_outliers[:, 0]
+                )
+            ) / np.mean(
+                compute_interval_length(
+                    epic_mdn_inliers[:, 1], epic_mdn_inliers[:, 0]
+                )
+            )
+        if not (n_removed_combined == n_total_combined):
+            uacqrs_ratio = np.mean(
+                    compute_interval_length(
+                        uacqrs_outliers[:, 1], uacqrs_outliers[:, 0]
+                    )
+                ) / np.mean(
+                    compute_interval_length(
+                        uacqrs_inliers[:, 1], uacqrs_inliers[:, 0]
+                    )
+                )
+            uacqrp_ratio = np.mean(
+                    compute_interval_length(
+                        uacqrp_outliers[:, 1], uacqrp_outliers[:, 0]
+                    )
+                ) / np.mean(
+                    compute_interval_length(
+                        uacqrp_inliers[:, 1], uacqrp_inliers[:, 0]
+                    )
+                )
+        if n_removed_combined == n_total_combined:
+            cover_uacqrs_out, cover_uacqrp_out = np.nan, np.nan
+            isl_uacqrs_out, isl_uacqrp_out = np.nan, np.nan
+            uacqrs_ratio, uacqrp_ratio = np.nan, np.nan
+        
+        isl_outlier_array = np.array([
+            isl_credo_gp_out,
+            isl_credo_qnn_out,
+            isl_credo_adap_out,
+            isl_credo_fixed_out,
+            isl_credo_gp_fixed_out,
+            isl_credo_qnn_fixed_out,
+            isl_credo_qnn_ens_out,
+            isl_credo_qnn_ens_fixed_out,
+            isl_cqr_out,
+            isl_cqrr_out,
+            isl_uacqrs_out,
+            isl_uacqrp_out,
+            isl_epic_mdn_out,
+        ])
+        cover_outlier_array = np.array([
+            cover_credo_gp_out,
+            cover_credo_qnn_out,
+            cover_credo_adap_out,
+            cover_credo_fixed_out,
+            cover_credo_gp_fixed_out,
+            cover_credo_qnn_fixed_out,
+            cover_credo_qnn_ens_out,
+            cover_credo_qnn_ens_fixed_out,
+            cover_cqr_out,
+            cover_cqrr_out,
+            cover_uacqrs_out,
+            cover_uacqrp_out,
+            cover_epic_mdn_out,
+        ])
+        ratio_array = np.array([
+            credo_gp_ratio,
+            credo_qnn_ratio,
+            credo_adap_ratio,
+            credo_fixed_ratio,
+            credo_gp_fixed_ratio,
+            credo_qnn_fixed_ratio,
+            credo_qnn_ens_ratio,
+            credo_qnn_ens_fixed_ratio,
+            cqr_ratio,
+            cqrr_ratio,
+            uacqrs_ratio,
+            uacqrp_ratio,
+            epic_mdn_ratio,
+        ])
+
+        return cover_array, isl_array, IL_array, pcorr_array, cover_outlier_array, isl_outlier_array, ratio_array
 
     return cover_array, isl_array, IL_array, pcorr_array
 
@@ -1509,6 +1887,8 @@ def run_experiment(dataset,
                    prop_test = 0.2,
                    checkpoint_flag = False,
                    checkpoint_data = None,
+                   checkpoint_data_outlier = None,
+                   outlier_same_time = False,
 ):
     data = pd.read_csv(os.path.join(DATA_PATH, f"{dataset}.csv"))
 
@@ -1540,6 +1920,14 @@ def run_experiment(dataset,
         pcorr_results = checkpoint_data.get("pcorr_results", [])
         seeds = checkpoint_data.get("seeds", None)
         print(f"Resuming from iteration {resume_from}. Loaded {len(cover_results)} results so far.")
+        if outliers_same_time and outlier_analysis:
+            resume_from = int(checkpoint_data_outlier.get("iteration", -1)) + 1
+            ratio_results = checkpoint_data.get("ratio_results", [])
+            coverage_outlier_results = checkpoint_data.get("coverage_results", [])
+            isl_outlier_results = checkpoint_data.get("isl_results", [])
+            seeds = checkpoint_data.get("seeds", None)
+            print(f"Resuming from iteration {resume_from}. Loaded {len(coverage_outlier_results)} results so far.")
+
     else:
         resume_from = 0
         seeds = generate_seeds(seed_initial, n_rep)
@@ -1547,6 +1935,10 @@ def run_experiment(dataset,
         isl_results = []
         IL_results = []
         pcorr_results = []
+        if outlier_same_time and outlier_analysis:
+            ratio_results = []
+            coverage_outlier_results = []
+            isl_outlier_results = []
 
     for i in tqdm(range(resume_from, n_rep), desc = f"Running methods for dataset: {dataset}"):
         print(f"Repetition {i+1}/{n_rep}")
@@ -1570,45 +1962,106 @@ def run_experiment(dataset,
         else:
             scale_y = False
 
-        cover_array, isl_array, IL_array, pcorr_array = fit_methods(
+        if not outlier_same_time:
+            cover_array, isl_array, IL_array, pcorr_array = fit_methods(
+                X_train,
+                y_train,
+                X_calib,
+                y_calib,
+                X_test,
+                y_test,
+                mdn_params,
+                i,
+                scale_y = scale_y,
+            )
+            cover_results.append(cover_array)
+            isl_results.append(isl_array)
+            IL_results.append(IL_array)
+            pcorr_results.append(pcorr_array)
+
+            def save_checkpoint(iteration, seeds):
+                try:
+                    checkpoint = {
+                        "cover_results": cover_results,
+                        "isl_results": isl_results,
+                        "IL_results": IL_results,
+                        "pcorr_results": pcorr_results,
+                        "iteration": iteration,
+                        "seeds": seeds,
+                        "alpha": alpha,
+                        "gamma": gamma,
+                        "dataset": dataset,
+                    }
+                    chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
+                    os.makedirs(chk_dir, exist_ok=True)
+                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
+                    with open(filepath, "wb") as f:
+                        pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
+                except Exception as e:
+                    print(f"Failed saving checkpoint at iter {iteration+1}: {e}")
+
+            # save checkpoint after each repetition
+            save_checkpoint(i, seeds)
+        elif outlier_same_time and outlier_analysis:
+            cover_array, isl_array, IL_array, pcorr_array, cover_outlier_array, isl_outlier_array, ratio_array = fit_methods(
             X_train,
-            y_train,
-            X_calib,
-            y_calib,
-            X_test,
+            y_train, 
+            X_calib, 
+            y_calib, 
+            X_test, 
             y_test,
-            mdn_params,
-            i,
+            mdn_params, 
+            i, 
             scale_y = scale_y,
-        )
-        cover_results.append(cover_array)
-        isl_results.append(isl_array)
-        IL_results.append(IL_array)
-        pcorr_results.append(pcorr_array)
+            outlier_same_time = outlier_same_time, 
+            )
+            cover_results.append(cover_array)
+            isl_results.append(isl_array)
+            IL_results.append(IL_array)
+            pcorr_results.append(pcorr_array)
+            coverage_outlier_results.append(cover_outlier_array)
+            isl_outlier_results.append(isl_outlier_array)
+            ratio_results.append(ratio_array)
 
-        def save_checkpoint(iteration, seeds):
-            try:
-                checkpoint = {
-                    "cover_results": cover_results,
-                    "isl_results": isl_results,
-                    "IL_results": IL_results,
-                    "pcorr_results": pcorr_results,
-                    "iteration": iteration,
-                    "seeds": seeds,
-                    "alpha": alpha,
-                    "gamma": gamma,
-                    "dataset": dataset,
-                }
-                chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
-                os.makedirs(chk_dir, exist_ok=True)
-                filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
-                with open(filepath, "wb") as f:
-                    pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
-            except Exception as e:
-                print(f"Failed saving checkpoint at iter {iteration+1}: {e}")
+            def save_checkpoint(iteration, seeds):
+                try:
+                    checkpoint = {
+                        "cover_results": cover_results,
+                        "isl_results": isl_results,
+                        "IL_results": IL_results,
+                        "pcorr_results": pcorr_results,
+                        "iteration": iteration,
+                        "seeds": seeds,
+                        "alpha": alpha,
+                        "gamma": gamma,
+                        "dataset": dataset,
+                    }
+                    chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
+                    os.makedirs(chk_dir, exist_ok=True)
+                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
+                    with open(filepath, "wb") as f:
+                        pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
+               
+                    checkpoint_outlier = {
+                        "coverage_results": coverage_outlier_results,
+                        "isl_results": isl_outlier_results,
+                        "ratio_results": ratio_results,
+                        "iteration": iteration,
+                        "seeds": seeds,
+                        "alpha": alpha,
+                        "gamma": gamma,
+                        "dataset": dataset,
+                    }
+                    chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
+                    os.makedirs(chk_dir, exist_ok=True)
+                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
+                    with open(filepath, "wb") as f:
+                        pickle.dump(checkpoint_outlier, f, protocol=pickle.HIGHEST_PROTOCOL)
+                        
+                except Exception as e:
+                    print(f"Failed saving checkpoint at iter {iteration+1}: {e}")
+            save_checkpoint(i, seeds)
 
-        # save checkpoint after each repetition
-        save_checkpoint(i, seeds)
     
     # summarize results: convert lists to arrays and compute mean and sd (sample sd if n_rep>1)
     cover_results = np.array(cover_results)
@@ -1654,6 +2107,26 @@ def run_experiment(dataset,
     df_isl.to_csv(os.path.join(data_dir, f"{dataset}_isl_summary.csv"))
     df_IL.to_csv(os.path.join(data_dir, f"{dataset}_IL_summary.csv"))
     df_pcorr.to_csv(os.path.join(data_dir, f"{dataset}_pcorr_summary.csv"))
+
+    if outlier_same_time and outlier_analysis:
+        cover_mean_outlier, cover_sd_outlier = mean_sd(coverage_outlier_results)
+        isl_mean_outlier, isl_sd_outlier = mean_sd(isl_outlier_results)
+        ratio_mean_outlier, ratio_sd_outlier = mean_sd(ratio_results)
+
+        df_cover_out = pd.DataFrame({"methods": methods ,"mean": cover_mean_outlier, "sd": cover_sd_outlier})
+        df_isl_out = pd.DataFrame({"methods": methods ,"mean": isl_mean_outlier, "sd": isl_sd_outlier})
+        df_ratio_out = pd.DataFrame({"methods": methods ,"mean": ratio_mean_outlier, "sd": ratio_sd_outlier})
+
+        df_cover_out.to_csv(os.path.join(data_dir, f"{dataset}_coverage_outlier_summary.csv"))
+        df_isl_out.to_csv(os.path.join(data_dir, f"{dataset}_isl_outlier_summary.csv"))
+        df_ratio_out.to_csv(os.path.join(data_dir, f"{dataset}_ratio_outlier_summary.csv"))
+
+
+        return np.array(cover_results), np.array(isl_results), \
+            np.array(IL_results), np.array(pcorr_results), \
+                np.array(coverage_outlier_results), np.array(isl_outlier_results), \
+                np.array(ratio_results)
+
     return np.array(cover_results), np.array(isl_results), np.array(IL_results), np.array(pcorr_results)
 
 
@@ -1695,7 +2168,10 @@ if __name__ == "__main__":
     chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
     if outlier_analysis:
         chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
-    else:    
+    elif outliers_same_time and outlier_analysis:    
+        chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
+        chk_file_outlier = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
+    else:
         chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
     resume_from = 0
     checkpoint_data = None
@@ -1712,17 +2188,32 @@ if __name__ == "__main__":
             print(f"Failed to load checkpoint '{chk_file}': {e}")
             checkpoint_data = None
             checkpoint_flag = False
+        if outliers_same_time and outlier_analysis:
+            try:
+                with open(chk_file_outlier, "rb") as f:
+                    checkpoint_data_outlier = pickle.load(f)
+                checkpoint_flag = True
+                print(f"Found outlier checkpoint for dataset '{dataset}'. Resuming from iteration {resume_from}.")
+            except Exception as e: 
+                print(f"Failed to load outlier checkpoint '{chk_file_outlier}': {e}") 
+                checkpoint_data_outlier = None 
+                checkpoint_flag = False
+        else:
+            checkpoint_data_outlier = None
+            1
     else:
         print(f"No checkpoint found at '{chk_file}'. Starting a new run.")
         checkpoint_flag = False
 
-    if not outlier_analysis:
+    if not outlier_analysis or (outliers_same_time and outlier_analysis):
         cover, isl, IL, pcorr = run_experiment(
             dataset = dataset, 
             n_rep = n_rep, 
             target_column = "target",
             checkpoint_flag = checkpoint_flag,
-            checkpoint_data = checkpoint_data
+            checkpoint_data = checkpoint_data,
+            checkpoint_data_outlier=checkpoint_data_outlier,
+            outlier_same_time=outliers_same_time,
             )
     
         raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}")
@@ -1744,6 +2235,53 @@ if __name__ == "__main__":
                     os.rmdir(chk_dir)
         except Exception as e:
             print(f"Failed to delete checkpoint {chk_file}: {e}")
+    
+    elif outliers_same_time and outlier_analysis:
+        cover, isl, IL, pcorr, cover_out, isl_out, ratio_out = run_experiment(
+            dataset = dataset, 
+            n_rep = n_rep, 
+            target_column = "target", 
+            checkpoint_flag = checkpoint_flag, 
+            checkpoint_data = checkpoint_data, 
+            checkpoint_data_outlier=checkpoint_data_outlier, 
+            outlier_same_time=outliers_same_time, 
+            )
+        raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}")
+        os.makedirs(raw_dir, exist_ok=True)
+        to_save = {"cover": cover, 
+                   "isl": isl, 
+                   "IL": IL, 
+                   "pcorr": pcorr,
+                   "cover_out": cover_out,
+                   "isl_out": isl_out,
+                   "ratio_out": ratio_out
+                   }
+        for name, arr in to_save.items(): 
+            filepath = os.path.join(
+                raw_dir, f"{dataset}_{name}_{uacqr_model}_raw.pkl")
+            with open(filepath, "wb") as f:
+                pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
+        
+        chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{uacqr_model}.pkl")
+        chk_file_out = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
+        try:
+            if os.path.exists(chk_file):
+                os.remove(chk_file)
+                chk_dir = os.path.dirname(chk_file)
+                if os.path.isdir(chk_dir) and not os.listdir(chk_dir):
+                    os.rmdir(chk_dir)
+        except Exception as e:
+            print(f"Failed to delete checkpoint {chk_file}: {e}")
+        
+        try:
+            if os.path.exists(chk_file_out): 
+                os.remove(chk_file_out)
+                chk_dir = os.path.dirname(chk_file_out)
+            if os.path.isdir(chk_dir) and not os.listdir(chk_dir):
+                os.rmdir(chk_dir) 
+        except Exception as e: 
+            print(f"Failed to delete checkpoint {chk_file_out}: {e}")
+            
     else:
         cover_out, isl_out, ratio_out = run_experiment_outlier(
             dataset = dataset, 
