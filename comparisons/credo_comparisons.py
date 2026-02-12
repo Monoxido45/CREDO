@@ -140,6 +140,7 @@ def fit_methods(
                 "random_strength": 1,
                 "random_strength": 1,
                 "bagging_temperature": 1,
+                "thread_count": n_cores,
                 # auto-tuned learning rate
         }
 
