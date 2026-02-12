@@ -709,47 +709,97 @@ def fit_methods(
         y_test_in = y_test[most_inlier_idxs]
         
         if not n_removed == n_total:
-          uacqrs_outliers = uacqrs_int[outlier_indexes]
-          uacqrp_outliers = uacqrp_int[outlier_indexes]
-          
-          uacqrs_inliers = uacqrs_int[most_inlier_idxs]
-          uacqrp_inliers = uacqrp_int[most_inlier_idxs]
+            uacqrs_outliers = uacqrs_int[outlier_indexes]
+            uacqrp_outliers = uacqrp_int[outlier_indexes]
+            
+            uacqrs_inliers = uacqrs_int[most_inlier_idxs]
+            uacqrp_inliers = uacqrp_int[most_inlier_idxs]
 
-          # checking if there are any infinite bounds in UACQR-S or UACQR-P and removing 
-          # those indices from all methods to ensure fair comparison
-          # check finite bounds but only for the selected outlier + inlier indices
-          lower_s = np.asarray(uacqr_pred_test["UACQR-S"]["lower"])
-          upper_s = np.asarray(uacqr_pred_test["UACQR-S"]["upper"])
-          finite_s = np.isfinite(lower_s) & np.isfinite(upper_s)
-  
-          lower_p = np.asarray(uacqr_pred_test["UACQR-P"]["lower"])
-          upper_p = np.asarray(uacqr_pred_test["UACQR-P"]["upper"])
-          finite_p = np.isfinite(lower_p) & np.isfinite(upper_p)
+            # checking if there are any infinite bounds in UACQR-S or UACQR-P and removing 
+            # those indices from all methods to ensure fair comparison
+            # check finite bounds but only for the selected outlier + inlier indices
+            lower_s = np.asarray(uacqr_pred_test["UACQR-S"]["lower"])
+            upper_s = np.asarray(uacqr_pred_test["UACQR-S"]["upper"])
+            finite_s = np.isfinite(lower_s) & np.isfinite(upper_s)
+    
+            lower_p = np.asarray(uacqr_pred_test["UACQR-P"]["lower"])
+            upper_p = np.asarray(uacqr_pred_test["UACQR-P"]["upper"])
+            finite_p = np.isfinite(lower_p) & np.isfinite(upper_p)
 
-          # combined indices of interest (outliers + selected inliers)
-          combined_idxs = np.concatenate([outlier_indexes, most_inlier_idxs])
-          finite_s_combined = finite_s[combined_idxs]
-          finite_p_combined = finite_p[combined_idxs]
-          good_combined_mask = finite_s_combined & finite_p_combined
-  
-          n_total_combined = combined_idxs.shape[0]
-          n_removed_combined = int((~good_combined_mask).sum())
-          print(f"Combined removal: excluding {n_removed_combined} of {n_total_combined} selected points with infinite bounds in either UACQR-S or UACQR-P")
+            # combined indices of interest (outliers + selected inliers)
+            combined_idxs = np.concatenate([outlier_indexes, most_inlier_idxs])
+            finite_s_combined = finite_s[combined_idxs]
+            finite_p_combined = finite_p[combined_idxs]
+            good_combined_mask = finite_s_combined & finite_p_combined
+    
+            n_total_combined = combined_idxs.shape[0]
+            n_removed_combined = int((~good_combined_mask).sum())
+            print(f"Combined removal: excluding {n_removed_combined} of {n_total_combined} selected points with infinite bounds in either UACQR-S or UACQR-P")
 
-          # valid combined indices (in the original test-set indexing)
-          valid_combined_idxs = combined_idxs[good_combined_mask]
-  
-          # filter the previously sliced outlier / inlier arrays to keep only valid entries
-          outlier_keep_pos = np.isin(outlier_indexes, valid_combined_idxs)
-          inlier_keep_pos = np.isin(most_inlier_idxs, valid_combined_idxs)
-  
-          uacqrs_outliers = uacqrs_outliers[outlier_keep_pos]
-          uacqrp_outliers = uacqrp_outliers[outlier_keep_pos]
-          y_test_out_uacqr = y_test_out[outlier_keep_pos]
-  
-          uacqrs_inliers = uacqrs_inliers[inlier_keep_pos]
-          uacqrp_inliers = uacqrp_inliers[inlier_keep_pos]
-          y_test_in_uacqr = y_test_in[inlier_keep_pos]
+            # valid combined indices (in the original test-set indexing)
+            valid_combined_idxs = combined_idxs[good_combined_mask]
+    
+            # filter the previously sliced outlier / inlier arrays to keep only valid entries
+            outlier_keep_pos = np.isin(outlier_indexes, valid_combined_idxs)
+            inlier_keep_pos = np.isin(most_inlier_idxs, valid_combined_idxs)
+    
+            uacqrs_outliers = uacqrs_outliers[outlier_keep_pos]
+            uacqrp_outliers = uacqrp_outliers[outlier_keep_pos]
+            y_test_out_uacqr = y_test_out[outlier_keep_pos]
+    
+            uacqrs_inliers = uacqrs_inliers[inlier_keep_pos]
+            uacqrp_inliers = uacqrp_inliers[inlier_keep_pos]
+            y_test_in_uacqr = y_test_in[inlier_keep_pos]
+
+            if not (n_removed_combined == n_total_combined):
+                cover_uacqrs_out = average_coverage(
+                uacqrs_outliers[:, 1], uacqrs_outliers[:, 0],
+                y_test_out_uacqr
+                )
+                cover_uacqrp_out = average_coverage(
+                uacqrp_outliers[:, 1], uacqrp_outliers[:, 0],
+                y_test_out_uacqr
+                )
+
+            if not (n_removed_combined == n_total_combined):
+                isl_uacqrs_out = average_interval_score_loss(
+                uacqrs_outliers[:, 1], uacqrs_outliers[:, 0],
+                y_test_out_uacqr, alpha
+            )
+                isl_uacqrp_out = average_interval_score_loss(
+                uacqrp_outliers[:, 1], uacqrp_outliers[:, 0],
+                y_test_out_uacqr, alpha
+            )
+                
+            if not (n_removed_combined == n_total_combined):
+                uacqrs_ratio = np.mean(
+                        compute_interval_length(
+                            uacqrs_outliers[:, 1], uacqrs_outliers[:, 0]
+                        )
+                    ) / np.mean(
+                        compute_interval_length(
+                            uacqrs_inliers[:, 1], uacqrs_inliers[:, 0]
+                        )
+                    )
+                uacqrp_ratio = np.mean(
+                        compute_interval_length(
+                            uacqrp_outliers[:, 1], uacqrp_outliers[:, 0]
+                        )
+                    ) / np.mean(
+                        compute_interval_length(
+                            uacqrp_inliers[:, 1], uacqrp_inliers[:, 0]
+                        )
+                    )
+            
+            if n_removed_combined == n_total_combined:
+                cover_uacqrs_out, cover_uacqrp_out = np.nan, np.nan
+                isl_uacqrs_out, isl_uacqrp_out = np.nan, np.nan
+                uacqrs_ratio, uacqrp_ratio = np.nan, np.nan
+        else:
+            cover_uacqrs_out, cover_uacqrp_out = np.nan, np.nan
+            isl_uacqrs_out, isl_uacqrp_out = np.nan, np.nan
+            uacqrs_ratio, uacqrp_ratio = np.nan, np.nan
+    
           
         del uacqr_results
         gc.collect()
@@ -794,16 +844,6 @@ def fit_methods(
             epic_mdn_outliers[:, 1], epic_mdn_outliers[:, 0],
             y_test_out
         )
-        
-        if not (n_removed_combined == n_total_combined):
-            cover_uacqrs_out = average_coverage(
-            uacqrs_outliers[:, 1], uacqrs_outliers[:, 0],
-            y_test_out_uacqr
-            )
-            cover_uacqrp_out = average_coverage(
-            uacqrp_outliers[:, 1], uacqrp_outliers[:, 0],
-            y_test_out_uacqr
-            )
 
         # ISL on outliers
         isl_credo_gp_out = average_interval_score_loss(
@@ -842,16 +882,6 @@ def fit_methods(
         isl_epic_mdn_out = average_interval_score_loss(
             epic_mdn_outliers[:, 1], epic_mdn_outliers[:, 0],
             y_test_out, alpha
-        )
-        
-        if not (n_removed_combined == n_total_combined):
-            isl_uacqrs_out = average_interval_score_loss(
-            uacqrs_outliers[:, 1], uacqrs_outliers[:, 0],
-            y_test_out_uacqr, alpha
-        )
-            isl_uacqrp_out = average_interval_score_loss(
-            uacqrp_outliers[:, 1], uacqrp_outliers[:, 0],
-            y_test_out_uacqr, alpha
         )
         
         # Interval length ratio
@@ -958,29 +988,6 @@ def fit_methods(
                     epic_mdn_inliers[:, 1], epic_mdn_inliers[:, 0]
                 )
             )
-        if not (n_removed_combined == n_total_combined):
-            uacqrs_ratio = np.mean(
-                    compute_interval_length(
-                        uacqrs_outliers[:, 1], uacqrs_outliers[:, 0]
-                    )
-                ) / np.mean(
-                    compute_interval_length(
-                        uacqrs_inliers[:, 1], uacqrs_inliers[:, 0]
-                    )
-                )
-            uacqrp_ratio = np.mean(
-                    compute_interval_length(
-                        uacqrp_outliers[:, 1], uacqrp_outliers[:, 0]
-                    )
-                ) / np.mean(
-                    compute_interval_length(
-                        uacqrp_inliers[:, 1], uacqrp_inliers[:, 0]
-                    )
-                )
-        if n_removed_combined == n_total_combined:
-            cover_uacqrs_out, cover_uacqrp_out = np.nan, np.nan
-            isl_uacqrs_out, isl_uacqrp_out = np.nan, np.nan
-            uacqrs_ratio, uacqrp_ratio = np.nan, np.nan
           
         
         isl_outlier_array = np.array([
