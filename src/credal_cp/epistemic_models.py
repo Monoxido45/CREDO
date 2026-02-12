@@ -1639,7 +1639,6 @@ class QuantileRegressionNN(BaseEstimator):
         """
         return np.sort(y_pred, axis=1)
 
-
 class QuantileRegressionNNEnsemble(BaseEstimator):
     def __init__(
         self,
@@ -1773,11 +1772,11 @@ class QuantileRegressionNNEnsemble(BaseEstimator):
                 pred = model(bx)
                 loss = self.quantile_loss(pred, by, self.quantiles)
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
 
             # 3. Early Stopping Check
-            self.model.eval()
+            model.eval()
             with torch.no_grad():
                 val_pred = model(x_val)
                 val_loss = self.quantile_loss(val_pred, y_val, self.quantiles).item()
@@ -1785,7 +1784,7 @@ class QuantileRegressionNNEnsemble(BaseEstimator):
             scheduler.step()
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                best_model_state = deepcopy(self.model.state_dict())
+                best_model_state = deepcopy(model.state_dict())
                 counter = 0
             else:
                 counter += 1
