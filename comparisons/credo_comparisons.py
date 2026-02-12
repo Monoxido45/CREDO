@@ -437,8 +437,9 @@ def fit_methods(
     uacqrs_int = uacqrs_int[good_mask]
     uacqrp_int = uacqrp_int[good_mask]
 
-    del uacqr_results
-    gc.collect()
+    if not outliers_same_time:
+        del uacqr_results
+        gc.collect()
     
     # evaluating metrics of interest
     # marginal coverage
@@ -2212,8 +2213,6 @@ if __name__ == "__main__":
             target_column = "target",
             checkpoint_flag = checkpoint_flag,
             checkpoint_data = checkpoint_data,
-            checkpoint_data_outlier=checkpoint_data_outlier,
-            outlier_same_time=outliers_same_time,
             )
     
         raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}")
