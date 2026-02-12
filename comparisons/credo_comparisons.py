@@ -36,7 +36,6 @@ from sklearn.neighbors import LocalOutlierFactor
 from sklearn.manifold import TSNE
 
 os.chdir(original_path)
-print(original_path)
 
 parser = ArgumentParser()
 parser.add_argument("-alpha", "--alpha",type=float, default=0.1, help="miscoverage level for conformal prediction")
@@ -71,65 +70,6 @@ m_bart = args.m_bart
 kernel = args.kernel
 kernel_noise = args.kernel_noise
 activation_noise = args.activation_noise
-
-if kernel == "RBF":
-    kernel_gp = gpx.kernels.RBF()
-elif kernel == "Matern32":
-    kernel_gp = gpx.kernels.Matern32()
-elif kernel == "Matern52":
-    kernel_gp = gpx.kernels.Matern52()
-elif kernel == "RationalQuadratic":
-    kernel_gp = gpx.kernels.RationalQuadratic()
-elif kernel == "RBF + Matern52":
-    kernel_gp = gpx.kernels.RBF() + gpx.kernels.Matern52()
-else:
-    kernel = (
-    gpx.kernels.RBF() + 
-    gpx.kernels.Matern32()+
-    gpx.kernels.Matern52(lengthscale=0.12)
-)
-
-if kernel_noise == "RBF":
-    kernel_noise_gp = gpx.kernels.RBF()
-elif kernel_noise == "Matern32":
-    kernel_noise_gp = gpx.kernels.Matern32()
-else:
-    kernel_noise_gp = gpx.kernels.RationalQuadratic()
-
-DATA_PATH = os.path.join(original_path , "data")
-RESULTS_PATH = os.path.join(original_path , "results")
-os.makedirs(RESULTS_PATH, exist_ok=True)
-
-# fixing random generator and torch seeds
-rng = np.random.default_rng(seed_initial)
-torch.manual_seed(seed_initial)
-torch.cuda.manual_seed(seed_initial)
-
-# Check for an existing checkpoint to optionally resume the experiment
-chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
-if outlier_analysis:
-    chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
-else:    
-    chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
-resume_from = 0
-checkpoint_data = None
-loaded_cover = loaded_isl = loaded_IL = loaded_pcorr = None
-loaded_seeds_so_far = None
-
-if os.path.exists(chk_file):
-    try:
-        with open(chk_file, "rb") as f:
-            checkpoint_data = pickle.load(f)
-        checkpoint_flag = True
-        print(f"Found checkpoint for dataset '{dataset}'. Resuming from iteration {resume_from}.")
-    except Exception as e:
-        print(f"Failed to load checkpoint '{chk_file}': {e}")
-        checkpoint_data = None
-        checkpoint_flag = False
-else:
-    print(f"No checkpoint found at '{chk_file}'. Starting a new run.")
-    checkpoint_flag = False
-
 
 def generate_seeds(seed_initial, n_rep):
     np.random.seed(seed_initial)
@@ -287,10 +227,10 @@ def fit_methods(
         weight_decay=1e-6,
         step_size=10,
         gamma=0.99,
-        hidden_layers=[128, 64],
+        hidden_layers=[64, 64],
         dropout=0.3,
-        epochs=1000,
-        patience=30,
+        epochs=2000,
+        patience=50,
         lr=1e-3, 
         batch_size=mdn_params["batch_size"],
         verbose=1,
@@ -1360,59 +1300,119 @@ def run_experiment(dataset,
     df_pcorr.to_csv(os.path.join(data_dir, f"{dataset}_pcorr_summary.csv"))
     return np.array(cover_results), np.array(isl_results), np.array(IL_results), np.array(pcorr_results)
 
-if not outlier_analysis:
-    cover, isl, IL, pcorr = run_experiment(
-        dataset = dataset, 
-        n_rep = n_rep, 
-        target_column = "target",
-        checkpoint_flag = checkpoint_flag,
-        checkpoint_data = checkpoint_data
-        )
 
-    raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}")
-    os.makedirs(raw_dir, exist_ok=True)
-
-    to_save = {"cover": cover, "isl": isl, "IL": IL, "pcorr": pcorr}
-    for name, arr in to_save.items():
-        filepath = os.path.join(raw_dir, f"{dataset}_{name}_{uacqr_model}_raw.pkl")
-        with open(filepath, "wb") as f:
-            pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-
-    chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{uacqr_model}.pkl")
-    try:
-        if os.path.exists(chk_file):
-            os.remove(chk_file)
-            chk_dir = os.path.dirname(chk_file)
-            if os.path.isdir(chk_dir) and not os.listdir(chk_dir):
-                os.rmdir(chk_dir)
-    except Exception as e:
-        print(f"Failed to delete checkpoint {chk_file}: {e}")
-else:
-    cover_out, isl_out, ratio_out = run_experiment_outlier(
-        dataset = dataset, 
-        n_rep = n_rep, 
-        target_column = "target",
-        checkpoint_flag = checkpoint_flag,
-        checkpoint_data = checkpoint_data
+if __name__ == "__main__":
+    if kernel == "RBF":
+        kernel_gp = gpx.kernels.RBF()
+    elif kernel == "Matern32":
+        kernel_gp = gpx.kernels.Matern32()
+    elif kernel == "Matern52":
+        kernel_gp = gpx.kernels.Matern52()
+    elif kernel == "RationalQuadratic":
+        kernel_gp = gpx.kernels.RationalQuadratic()
+    elif kernel == "RBF + Matern52":
+        kernel_gp = gpx.kernels.RBF() + gpx.kernels.Matern52()
+    else:
+        kernel = (
+        gpx.kernels.RBF() + 
+        gpx.kernels.Matern32()+
+        gpx.kernels.Matern52(lengthscale=0.12)
     )
+    
+    if kernel_noise == "RBF":
+        kernel_noise_gp = gpx.kernels.RBF()
+    elif kernel_noise == "Matern32":
+        kernel_noise_gp = gpx.kernels.Matern32()
+    else:
+        kernel_noise_gp = gpx.kernels.RationalQuadratic()
+    
+    DATA_PATH = os.path.join(original_path , "data")
+    RESULTS_PATH = os.path.join(original_path , "results")
+    os.makedirs(RESULTS_PATH, exist_ok=True)
+    
+    # fixing random generator and torch seeds
+    rng = np.random.default_rng(seed_initial)
+    torch.manual_seed(seed_initial)
+    torch.cuda.manual_seed(seed_initial)
+    
+    # Check for an existing checkpoint to optionally resume the experiment
+    chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
+    if outlier_analysis:
+        chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
+    else:    
+        chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
+    resume_from = 0
+    checkpoint_data = None
+    loaded_cover = loaded_isl = loaded_IL = loaded_pcorr = None
+    loaded_seeds_so_far = None
+    
+    if os.path.exists(chk_file):
+        try:
+            with open(chk_file, "rb") as f:
+                checkpoint_data = pickle.load(f)
+            checkpoint_flag = True
+            print(f"Found checkpoint for dataset '{dataset}'. Resuming from iteration {resume_from}.")
+        except Exception as e:
+            print(f"Failed to load checkpoint '{chk_file}': {e}")
+            checkpoint_data = None
+            checkpoint_flag = False
+    else:
+        print(f"No checkpoint found at '{chk_file}'. Starting a new run.")
+        checkpoint_flag = False
 
-    raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}_outlier")
-    os.makedirs(raw_dir, exist_ok=True)
-
-    to_save = {"cover_out": cover_out, "isl_out": isl_out, "ratio_out": ratio_out}
-    for name, arr in to_save.items():
-        filepath = os.path.join(raw_dir, f"{dataset}_{name}_{uacqr_model}_raw.pkl")
-        with open(filepath, "wb") as f:
-            pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
-    try:
-        if os.path.exists(chk_file):
-            os.remove(chk_file)
-            chk_dir = os.path.dirname(chk_file)
-            if os.path.isdir(chk_dir) and not os.listdir(chk_dir):
-                os.rmdir(chk_dir)
-    except Exception as e:
-        print(f"Failed to delete checkpoint {chk_file}: {e}")
+    if not outlier_analysis:
+        cover, isl, IL, pcorr = run_experiment(
+            dataset = dataset, 
+            n_rep = n_rep, 
+            target_column = "target",
+            checkpoint_flag = checkpoint_flag,
+            checkpoint_data = checkpoint_data
+            )
+    
+        raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}")
+        os.makedirs(raw_dir, exist_ok=True)
+    
+        to_save = {"cover": cover, "isl": isl, "IL": IL, "pcorr": pcorr}
+        for name, arr in to_save.items():
+            filepath = os.path.join(raw_dir, f"{dataset}_{name}_{uacqr_model}_raw.pkl")
+            with open(filepath, "wb") as f:
+                pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
+    
+    
+        chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{uacqr_model}.pkl")
+        try:
+            if os.path.exists(chk_file):
+                os.remove(chk_file)
+                chk_dir = os.path.dirname(chk_file)
+                if os.path.isdir(chk_dir) and not os.listdir(chk_dir):
+                    os.rmdir(chk_dir)
+        except Exception as e:
+            print(f"Failed to delete checkpoint {chk_file}: {e}")
+    else:
+        cover_out, isl_out, ratio_out = run_experiment_outlier(
+            dataset = dataset, 
+            n_rep = n_rep, 
+            target_column = "target",
+            checkpoint_flag = checkpoint_flag,
+            checkpoint_data = checkpoint_data
+        )
+    
+        raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}_outlier")
+        os.makedirs(raw_dir, exist_ok=True)
+    
+        to_save = {"cover_out": cover_out, "isl_out": isl_out, "ratio_out": ratio_out}
+        for name, arr in to_save.items():
+            filepath = os.path.join(raw_dir, f"{dataset}_{name}_{uacqr_model}_raw.pkl")
+            with open(filepath, "wb") as f:
+                pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
+    
+        chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
+        try:
+            if os.path.exists(chk_file):
+                os.remove(chk_file)
+                chk_dir = os.path.dirname(chk_file)
+                if os.path.isdir(chk_dir) and not os.listdir(chk_dir):
+                    os.rmdir(chk_dir)
+        except Exception as e:
+            print(f"Failed to delete checkpoint {chk_file}: {e}")
 
