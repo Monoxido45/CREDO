@@ -12,7 +12,8 @@ from credal_cp.epistemic_models import (
     GP_model,
     BART_model,
     DE_MDN_model,
-    QuantileRegressionNN
+    QuantileRegressionNN,
+    QuantileRegressionNNEnsemble
 )
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
@@ -222,7 +223,7 @@ class CredalCPRegressor(BaseEstimator):
                 print("Fitting Ensemble Quantile Neural Network model")
                 self.base_model_type = "QNN"
 
-                self.base_model = QuantileRegressionNN(
+                self.base_model = QuantileRegressionNNEnsemble(
                     input_size = X.shape[1],
                     alpha = self.alpha,
                     n_models = n_models,
