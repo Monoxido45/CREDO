@@ -1485,7 +1485,7 @@ class QuantileRegressionNet(nn.Module):
         return x
 
 # Quantile regression model with dropout and also compatible for deep ensembles
-class QuantileRegressionNN:
+class QuantileRegressionNN(BaseEstimator):
     def __init__(
         self,
         input_size,
@@ -1498,6 +1498,12 @@ class QuantileRegressionNN:
         self.alpha = alpha
         self.quantiles = [alpha/2, 1-alpha/2]
         self.device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
+        self.input_size = input_size
+        self.hidden_layers = hidden_layers
+        self.undo_crossing = undo_crossing
+        self.use_gpu = use_gpu
+        self.undo_crossing = undo_crossing
+
 
         self.model = QuantileRegressionNet(
             input_size=input_size, 
@@ -1505,8 +1511,6 @@ class QuantileRegressionNN:
             hidden_layers=hidden_layers, 
             p_dropout=dropout
         ).to(self.device)
-        self.undo_crossing = undo_crossing
-
         self.scaler_x = StandardScaler()
         self.scaler_y = StandardScaler()
 
@@ -1636,7 +1640,7 @@ class QuantileRegressionNN:
         return np.sort(y_pred, axis=1)
 
 
-class QuantileRegressionNNEnsemble:
+class QuantileRegressionNNEnsemble(BaseEstimator):
     def __init__(
         self,
         input_size,
@@ -1654,7 +1658,7 @@ class QuantileRegressionNNEnsemble:
         self.output_size = len(self.quantiles)
         self.hidden_layers = hidden_layers
         self.p_dropout = dropout
-
+        self.use_gpu = use_gpu
         self.undo_crossing = undo_crossing
         self.n_models = n_models
 
