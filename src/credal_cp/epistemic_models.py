@@ -1710,7 +1710,7 @@ class QuantileRegressionNNEnsemble:
                 train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, sampler=sampler)
             else:
                 train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=batch_size, shuffle=True)
-                
+
 
             model = QuantileRegressionNet(
             input_size=self.input_size, 
@@ -2382,7 +2382,7 @@ class BART_model(BaseEstimator):
         separate_trees=False,
         n_cores=3,
         n_chains=4,
-        normalize_y=False,
+        normalize_y=True,
         progressbar=False,
     ):
         """
