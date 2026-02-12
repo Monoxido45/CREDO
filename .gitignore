@@ -9,3 +9,4 @@ data/data
 data/raw
 data/data_scripts/__pycache__/
 catboost_info/
+comparisons/__pycache__/
