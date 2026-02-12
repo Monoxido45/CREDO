@@ -2183,7 +2183,7 @@ if __name__ == "__main__":
     
     # Check for an existing checkpoint to optionally resume the experiment
     chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
-    if outlier_analysis:
+    if outlier_analysis and not(outlier_same_time):
         chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
     elif outlier_same_time and outlier_analysis:    
         chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
