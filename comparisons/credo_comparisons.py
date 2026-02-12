@@ -1906,6 +1906,7 @@ def run_experiment(dataset,
                    checkpoint_data = None,
                    checkpoint_data_outlier = None,
                    outlier_same_time = False,
+                   outlier_analysis = False,
 ):
     data = pd.read_csv(os.path.join(DATA_PATH, f"{dataset}.csv"))
 
@@ -1939,10 +1940,10 @@ def run_experiment(dataset,
         print(f"Resuming from iteration {resume_from}. Loaded {len(cover_results)} results so far.")
         if outlier_same_time and outlier_analysis:
             resume_from = int(checkpoint_data_outlier.get("iteration", -1)) + 1
-            ratio_results = checkpoint_data.get("ratio_results", [])
-            coverage_outlier_results = checkpoint_data.get("coverage_results", [])
-            isl_outlier_results = checkpoint_data.get("isl_results", [])
-            seeds = checkpoint_data.get("seeds", None)
+            ratio_results = checkpoint_data_outlier.get("ratio_results", [])
+            coverage_outlier_results = checkpoint_data_outlier.get("coverage_results", [])
+            isl_outlier_results = checkpoint_data_outlier.get("isl_results", [])
+            seeds = checkpoint_data_outlier.get("seeds", None)
             print(f"Resuming from iteration {resume_from}. Loaded {len(coverage_outlier_results)} results so far.")
 
     else:
@@ -2069,8 +2070,6 @@ def run_experiment(dataset,
                         "gamma": gamma,
                         "dataset": dataset,
                     }
-                    chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
-                    os.makedirs(chk_dir, exist_ok=True)
                     filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
                     with open(filepath, "wb") as f:
                         pickle.dump(checkpoint_outlier, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -2261,6 +2260,7 @@ if __name__ == "__main__":
             checkpoint_data = checkpoint_data, 
             checkpoint_data_outlier=checkpoint_data_outlier, 
             outlier_same_time=outlier_same_time, 
+            outlier_analysis=outlier_analysis,
             )
             
         raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}")
@@ -2305,7 +2305,8 @@ if __name__ == "__main__":
             n_rep = n_rep, 
             target_column = "target",
             checkpoint_flag = checkpoint_flag,
-            checkpoint_data = checkpoint_data
+            checkpoint_data = checkpoint_data,
+            outlier_analysis= outlier_analysis,
         )
     
         raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}_outlier")
