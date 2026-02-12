@@ -1222,7 +1222,7 @@ def run_experiment(dataset,
             X_train_calib, y_train_calib, test_size=1-prop_train, random_state=seed
         )
 
-        if dataset in ["superconductivity", "homes", "protein"]:
+        if dataset in ["superconductivity"]:
             scale_y = True
         else:
             scale_y = False
