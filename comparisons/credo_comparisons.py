@@ -2125,6 +2125,11 @@ def run_experiment(dataset,
     df_pcorr.to_csv(os.path.join(data_dir, f"{dataset}_pcorr_summary.csv"))
 
     if outlier_same_time and outlier_analysis:
+        coverage_outlier_results = np.array(coverage_outlier_results)
+        isl_outlier_results = np.array(isl_outlier_results)
+        ratio_results = np.array(ratio_results)
+        
+        print("Saving outliers df")
         cover_mean_outlier, cover_sd_outlier = mean_sd(coverage_outlier_results)
         isl_mean_outlier, isl_sd_outlier = mean_sd(isl_outlier_results)
         ratio_mean_outlier, ratio_sd_outlier = mean_sd(ratio_results)
