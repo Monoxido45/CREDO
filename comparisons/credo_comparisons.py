@@ -1773,7 +1773,7 @@ def run_experiment_outlier(
     }
 
     if data.shape[0] > 10000:
-        mdn_params["batch_size"] = 125
+        mdn_params["batch_size"] = 130
     if dataset == "WEC":
         mdn_params["batch_size"] = 250
 
@@ -1807,11 +1807,6 @@ def run_experiment_outlier(
             X_train, X_calib, y_train, y_calib = train_test_split(
                 X_train_calib, y_train_calib, test_size=1-prop_train, random_state=seed
             )
-
-            if dataset in ["superconductivity"]:
-                scale_y = True
-            else:
-                scale_y = False
 
             cover_array, isl_array, ratio_array = fit_methods_outlier(
                 X_train,
@@ -1926,7 +1921,7 @@ def run_experiment(dataset,
     }
 
     if data.shape[0] > 10000:
-        mdn_params["batch_size"] = 125
+        mdn_params["batch_size"] = 120
     if dataset == "WEC":
         mdn_params["batch_size"] = 250
 
@@ -1975,7 +1970,7 @@ def run_experiment(dataset,
             X_train_calib, y_train_calib, test_size=1-prop_train, random_state=seed
         )
 
-        if dataset in ["superconductivity"]:
+        if dataset in ["blog"]:
             scale_y = True
         else:
             scale_y = False
@@ -2125,6 +2120,11 @@ def run_experiment(dataset,
     df_pcorr.to_csv(os.path.join(data_dir, f"{dataset}_pcorr_summary.csv"))
 
     if outlier_same_time and outlier_analysis:
+        coverage_outlier_results = np.array(coverage_outlier_results)
+        isl_outlier_results = np.array(isl_outlier_results)
+        ratio_results = np.array(ratio_results)
+        
+        print("Saving outliers df")
         cover_mean_outlier, cover_sd_outlier = mean_sd(coverage_outlier_results)
         isl_mean_outlier, isl_sd_outlier = mean_sd(isl_outlier_results)
         ratio_mean_outlier, ratio_sd_outlier = mean_sd(ratio_results)
