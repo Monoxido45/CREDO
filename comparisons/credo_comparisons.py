@@ -1754,6 +1754,7 @@ def run_experiment_outlier(
     seed_initial=145,
     checkpoint_flag = False,
     checkpoint_data = None,
+    scale_y = True,
 ):
     data = pd.read_csv(os.path.join(DATA_PATH, f"{dataset}.csv"))
 
