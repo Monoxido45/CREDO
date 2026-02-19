@@ -40,22 +40,19 @@ parser = ArgumentParser()
 parser.add_argument("-alpha", "--alpha",type=float, default=0.1, help="miscoverage level for conformal prediction")
 parser.add_argument("-gamma","--gamma", type=float, default=0.1, help="adaptive gamma parameter")
 parser.add_argument("-n_rep", "--n_rep", type=int, default=30, help="number of repetitions for the experiment")
-parser.add_argument("-n_MCMC", "--n_MCMC", type=int, default=1000, help="number of MCMC samples for BART")
-parser.add_argument("-alpha_bart", "--alpha_bart", type=float, default=0.95, help="alpha parameter for BART prior")
+parser.add_argument("-n_MCMC", "--n_MCMC", type=int, default=1000, help="number of MCMC samples")
 parser.add_argument("-seed_initial", "--seed_initial", type=int, default=125,
                      help="initial seed for random generator to create seeds for repetitions")
 parser.add_argument("-dataset", "--dataset", type=str, default="airfoil", help="dataset to use for the experiment")
 parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default="catboost", help="UACQR and CQR base models: 'rfqr' or 'catboost'")
 parser.add_argument("-outlier_analysis", "--outlier_analysis", type=bool, help="whether to perform outlier analysis using LOF and t-SNE")
 parser.add_argument("-n_cores", "--n_cores", type=int, default=4, help="number of cores to use for parallel processing")
-parser.add_argument("-m_bart", "--m_bart", type=int, default=100, help="number of trees used in CREDO-BART")
 parser.add_argument("-kernel", "--kernel", type=str, default="RBF + Matern52", 
                     help="kernel to use for Gaussian Process regression in CREDO: 'RBF', 'Matern32', 'Matern52' or 'RationalQuadratic'")
 parser.add_argument("-kernel_noise", "--kernel_noise", type=str, default="RBF", 
                     help="kernel to use for Gaussian Process noise in CREDO: 'RBF', 'Matern32', 'Matern52' or 'RationalQuadratic'")
 parser.add_argument("-activation_noise", "--activation_noise", type=str, default="softplus", 
                     help="activation function for noise in Gaussian Process")
-parser.add_argument("-n_models", "--n_models", type=int, default=15, help="number of models in the ensemble for CREDO-DE")
 parser.add_argument("-outlier_same_time", "--outlier_same_time", type=bool, default=False, 
                     help="whether to analyze outliers at the same time as fitting the models or as a separate step after fitting")
 args = parser.parse_args()
@@ -64,17 +61,14 @@ alpha = args.alpha
 gamma = args.gamma
 n_rep = args.n_rep
 n_MCMC = args.n_MCMC
-alpha_bart = args.alpha_bart
 seed_initial = args.seed_initial
 dataset = args.dataset
 uacqr_model = args.uacqr_model
 outlier_analysis = args.outlier_analysis
 n_cores = args.n_cores
-m_bart = args.m_bart
 kernel = args.kernel
 kernel_noise = args.kernel_noise
 activation_noise = args.activation_noise
-n_models = args.n_models
 outlier_same_time = args.outlier_same_time
 
 def generate_seeds(seed_initial, n_rep):
@@ -201,12 +195,12 @@ def fit_methods(
     gc.collect()
 
     # Fitting CREDO with GP
-    print(f"Fitting CREDO with GP")
+    print(f"Fitting CREDO vanilla with GP")
     credal_CP_gp = CredalCPRegressor(
         nc_type = 'Quantile',
         base_model = "GP",
         alpha = alpha,
-        adaptive_gamma = True,
+        adaptive_gamma = False,
         gamma = gamma,
     )
 
@@ -221,34 +215,16 @@ def fit_methods(
     credal_CP_gp.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
     credo_CP_gp_pred = credal_CP_gp.predict(X_test)
 
-    print(f"Fitting CREDO with GP fixed gamma")
-    credal_CP_gp_fixed = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = credal_CP_gp.base_model,
-    alpha = alpha,
-    adaptive_gamma = False,
-    gamma = gamma,
-    is_fitted = True,
-)
-    credal_CP_gp_fixed.fit(
-        X_train,
-        y_train,
-        base_model_type = "GP",
-    )
-    credal_CP_gp_fixed.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
-    credo_CP_gp_fixed_pred = credal_CP_gp.predict(X_test)
-
     del credal_CP_gp
-    del credal_CP_gp_fixed
     gc.collect()
 
-    print(f"Fitting CREDO with QNN")
+    print(f"Fitting CREDO vanilla with QNN")
     # Fitting CREDO with QNN
     credal_CP_qnn = CredalCPRegressor(
         nc_type = 'Quantile',
         base_model = "QNN",
         alpha = alpha,
-        adaptive_gamma = True,
+        adaptive_gamma = False,
         gamma = gamma,
         )
     
@@ -271,133 +247,7 @@ def fit_methods(
     credal_CP_qnn.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
     credo_CP_qnn_pred = credal_CP_qnn.predict(X_test)
 
-    print(f"Fitting CREDO with QNN fixed gamma")
-    credal_CP_qnn_fixed = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = credal_CP_qnn.base_model,
-    alpha = alpha,
-    adaptive_gamma = False,
-    gamma = gamma,
-    is_fitted = True,
-    )
-
-    credal_CP_qnn_fixed.fit(
-        X_train,
-        y_train,
-        base_model_type = "QNN",
-    )
-    credal_CP_qnn_fixed.calibrate(X_calib, 
-                                  y_calib,
-                                  N_samples_MC=n_MCMC, 
-                                  )
-    credo_CP_qnn_fixed_pred = credal_CP_qnn_fixed.predict(X_test)
-
     del credal_CP_qnn
-    del credal_CP_qnn_fixed
-    gc.collect()
-
-    print(f"Fitting CREDO with QNN Ensemble")
-    # Fitting CREDO with QNN
-    credal_CP_qnn_ens = CredalCPRegressor(
-        nc_type = 'Quantile',
-        base_model = "QNN",
-        alpha = alpha,
-        adaptive_gamma = True,
-        gamma = gamma,
-        )
-    
-    credal_CP_qnn_ens.fit(
-        X_train, 
-        y_train,
-        nn_type = "Ensemble",
-        n_models = n_models,
-        weight_decay=1e-6,
-        step_size=20,
-        gamma=0.985,
-        hidden_layers=[64, 64],
-        dropout=0.3,
-        epochs=1000,
-        patience=30,
-        lr=1e-3, 
-        batch_size=mdn_params["batch_size"],
-        verbose=1,
-        random_seed_fit=i,
-    )
-
-    credal_CP_qnn_ens.calibrate(X_calib, y_calib)
-    credo_CP_qnn_pred_ens = credal_CP_qnn_ens.predict(X_test)
-
-    print(f"Fitting CREDO with QNN Ensemble fixed gamma")
-    credal_CP_qnn_ens_fixed = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = credal_CP_qnn_ens.base_model,
-    alpha = alpha,
-    adaptive_gamma = False,
-    gamma = gamma,
-    is_fitted = True,
-    )
-
-    credal_CP_qnn_ens_fixed.fit(
-        X_train,
-        y_train,
-        base_model_type = "QNN",
-        nn_type = "Ensemble",
-    )
-    credal_CP_qnn_ens_fixed.calibrate(X_calib, 
-                                  y_calib,
-                                  )
-    credo_CP_qnn_ens_fixed_pred = credal_CP_qnn_ens_fixed.predict(X_test)
-
-    del credal_CP_qnn_ens
-    del credal_CP_qnn_ens_fixed
-    gc.collect()
-
-    # Fitting CREDO with BART
-    print(f"Fitting CREDO with BART")
-    credal_CP_bart_adaptive = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = "BART",
-    alpha = alpha,
-    adaptive_gamma = True,
-    gamma = gamma,
-    )
-    
-    credal_CP_bart_adaptive.fit(
-        X_train, 
-        y_train,
-        progressbar = True,
-        n_cores = n_cores,
-        n_MCMC = n_MCMC,
-        normalize_y=True,
-        alpha_bart = alpha_bart,
-        random_seed_fit=i,
-        m=m_bart,
-    )
-    credal_CP_bart_adaptive.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
-
-    credal_CP_bart_fixed = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = credal_CP_bart_adaptive.base_model,
-    alpha = alpha,
-    adaptive_gamma = False,
-    gamma = gamma,
-    is_fitted = True,
-    )
-
-    credal_CP_bart_fixed.fit(
-        X_train, 
-        y_train,
-        base_model_type ="BART",
-    )
-    
-    credal_CP_bart_fixed.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
-
-    credo_adaptive_int = credal_CP_bart_adaptive.predict(X_test)
-    credo_fixed_int = credal_CP_bart_fixed.predict(X_test)
-
-    # deleting CREDO models to free memory
-    del credal_CP_bart_adaptive
-    del credal_CP_bart_fixed
     gc.collect()
 
     lower_cqr = uacqr_pred_test["CQR"]["lower"]
@@ -443,29 +293,11 @@ def fit_methods(
     
     # evaluating metrics of interest
     # marginal coverage
-    cover_credo_adap = average_coverage(
-        credo_adaptive_int[:, 1], credo_adaptive_int[:, 0], y_test
-    )
-    cover_credo_fixed = average_coverage(
-        credo_fixed_int[:, 1], credo_fixed_int[:, 0], y_test
-    )
     cover_credo_gp = average_coverage(
         credo_CP_gp_pred[:, 1], credo_CP_gp_pred[:, 0], y_test
     )
     cover_credo_qnn = average_coverage(
         credo_CP_qnn_pred[:, 1], credo_CP_qnn_pred[:, 0], y_test
-    )
-    cover_credo_qnn_ens = average_coverage(
-    credo_CP_qnn_pred_ens[:, 1], credo_CP_qnn_pred_ens[:, 0], y_test 
-    )
-    cover_credo_qnn_ens_fixed = average_coverage(
-    credo_CP_qnn_ens_fixed_pred[:, 1], credo_CP_qnn_ens_fixed_pred[:, 0], y_test
-    )
-    cover_CP_qnn_fixed = average_coverage(
-    credo_CP_qnn_fixed_pred[:, 1], credo_CP_qnn_fixed_pred[:, 0], y_test
-    )
-    cover_CP_gp_fixed = average_coverage(
-    credo_CP_gp_fixed_pred[:, 1], credo_CP_gp_fixed_pred[:, 0], y_test
     )
     cover_cqr = average_coverage(
         cqr_int[:, 1], cqr_int[:, 0], y_test
@@ -487,30 +319,12 @@ def fit_methods(
     )
 
     # ISL
-    isl_credo_adap = average_interval_score_loss(
-        credo_adaptive_int[:, 1], credo_adaptive_int[:, 0], y_test, alpha
-    )
-    isl_credo_fixed = average_interval_score_loss(
-        credo_fixed_int[:, 1], credo_fixed_int[:, 0], y_test, alpha
-    )
     isl_credo_gp = average_interval_score_loss(
         credo_CP_gp_pred[:, 1], credo_CP_gp_pred[:, 0], y_test, alpha
     )
     isl_credo_qnn = average_interval_score_loss(
         credo_CP_qnn_pred[:, 1], credo_CP_qnn_pred[:, 0], y_test, alpha
     )
-    isl_credo_qnn_ens = average_interval_score_loss(
-    credo_CP_qnn_pred_ens[:, 1], credo_CP_qnn_pred_ens[:, 0], y_test, alpha
-    ) 
-    isl_credo_qnn_ens_fixed = average_interval_score_loss(
-    credo_CP_qnn_ens_fixed_pred[:, 1], credo_CP_qnn_ens_fixed_pred[:, 0], y_test, alpha
-        ) 
-    isl_CP_qnn_fixed = average_interval_score_loss(
-    credo_CP_qnn_fixed_pred[:, 1], credo_CP_qnn_fixed_pred[:, 0], y_test, alpha
-        ) 
-    isl_CP_gp_fixed = average_interval_score_loss(
-    credo_CP_gp_fixed_pred[:, 1], credo_CP_gp_fixed_pred[:, 0], y_test, alpha
-        )
     isl_cqr = average_interval_score_loss(
         cqr_int[:, 1], cqr_int[:, 0], y_test, alpha
     )
@@ -533,12 +347,6 @@ def fit_methods(
     # IL
     IL_credo_gp = np.mean(compute_interval_length(credo_CP_gp_pred[:, 1], credo_CP_gp_pred[:, 0]))
     IL_credo_qnn = np.mean(compute_interval_length(credo_CP_qnn_pred[:, 1], credo_CP_qnn_pred[:, 0]))
-    IL_credo_adap = np.mean(compute_interval_length(credo_adaptive_int[:, 1], credo_adaptive_int[:, 0]))
-    IL_credo_fixed = np.mean(compute_interval_length(credo_fixed_int[:, 1], credo_fixed_int[:, 0]))
-    IL_credo_qnn_ens = np.mean(compute_interval_length(credo_CP_qnn_pred_ens[:, 1], credo_CP_qnn_pred_ens[:, 0]))
-    IL_credo_qnn_ens_fixed = np.mean(compute_interval_length(credo_CP_qnn_ens_fixed_pred[:, 1], credo_CP_qnn_ens_fixed_pred[:, 0]))
-    IL_CP_qnn_fixed = np.mean(compute_interval_length(credo_CP_qnn_fixed_pred[:, 1], credo_CP_qnn_fixed_pred[:, 0]))
-    IL_CP_gp_fixed = np.mean(compute_interval_length(credo_CP_gp_fixed_pred[:, 1], credo_CP_gp_fixed_pred[:, 0]))
     IL_cqr = np.mean(compute_interval_length(cqr_int[:, 1], cqr_int[:, 0]))
     IL_cqrr = np.mean(compute_interval_length(cqrr_int[:, 1], cqrr_int[:, 0]))
     IL_uacqrs = np.mean(compute_interval_length(uacqrs_int[:, 1], uacqrs_int[:, 0]))
@@ -551,22 +359,6 @@ def fit_methods(
     )
     pcorr_credo_qnn = corr_coverage_widths(
         credo_CP_qnn_pred[:, 1], credo_CP_qnn_pred[:, 0], y_test
-    )
-    pcorr_credo_adap = corr_coverage_widths(
-        credo_adaptive_int[:, 1], credo_adaptive_int[:, 0], y_test
-    )
-    pcorr_credo_fixed = corr_coverage_widths(
-        credo_fixed_int[:, 1], credo_fixed_int[:, 0], y_test
-    )
-    pcorr_credo_qnn_ens = corr_coverage_widths(
-    credo_CP_qnn_pred_ens[:, 1], credo_CP_qnn_pred_ens[:, 0], y_test
-    ) 
-    pcorr_credo_qnn_ens_fixed = corr_coverage_widths(
-        credo_CP_qnn_ens_fixed_pred[:, 1], credo_CP_qnn_ens_fixed_pred[:, 0], y_test
-    ) 
-    pcorr_CP_qnn_fixed = corr_coverage_widths(credo_CP_qnn_fixed_pred[:, 1], credo_CP_qnn_fixed_pred[:, 0], y_test
-    ) 
-    pcorr_CP_gp_fixed = corr_coverage_widths(credo_CP_gp_fixed_pred[:, 1], credo_CP_gp_fixed_pred[:, 0], y_test
     )
     pcorr_cqr = corr_coverage_widths(
         cqr_int[:, 1], cqr_int[:, 0], y_test
@@ -597,12 +389,6 @@ def fit_methods(
     IL_array = np.array([
         IL_credo_gp,
         IL_credo_qnn,
-        IL_credo_adap,
-        IL_credo_fixed,
-        IL_credo_qnn_ens,
-        IL_credo_qnn_ens_fixed,
-        IL_CP_qnn_fixed,
-        IL_CP_gp_fixed,
         IL_cqr,
         IL_cqrr,
         IL_uacqrs,
@@ -612,12 +398,6 @@ def fit_methods(
     isl_array = np.array([
         isl_credo_gp,
         isl_credo_qnn,
-        isl_credo_adap,
-        isl_credo_fixed,
-        isl_credo_qnn_ens,
-        isl_credo_qnn_ens_fixed, 
-        isl_CP_qnn_fixed, 
-        isl_CP_gp_fixed,
         isl_cqr,
         isl_cqrr,
         isl_uacqrs,
@@ -627,12 +407,6 @@ def fit_methods(
     cover_array = np.array([
         cover_credo_gp,
         cover_credo_qnn,
-        cover_credo_adap,
-        cover_credo_fixed,
-        cover_credo_qnn_ens, 
-        cover_credo_qnn_ens_fixed, 
-        cover_CP_qnn_fixed, 
-        cover_CP_gp_fixed,
         cover_cqr,
         cover_cqrr,
         cover_uacqrs,
@@ -641,24 +415,13 @@ def fit_methods(
     ])
     pcorr_array = np.array([
         pcorr_credo_gp,
-        pcorr_credo_qnn,
-        pcorr_credo_adap,
-        pcorr_credo_fixed,
-        pcorr_credo_qnn_ens, 
-        pcorr_credo_qnn_ens_fixed, 
-        pcorr_CP_qnn_fixed, 
-        pcorr_CP_gp_fixed,
+        pcorr_credo_qnn, 
         pcorr_cqr,
         pcorr_cqrr,
         pcorr_uacqrs,
         pcorr_uacqrp,
         pcorr_epic_mdn,
     ])
-
-    # killing all multiprocessing threads in the case of BART to avoid memory leaks and issues in the next iterations of the loop
-    childs = mp.active_children()
-    for child in childs:
-        child.kill()
 
     if outlier_same_time and outlier_analysis:
         # Detecting outliers using t-SNE and Local Outlier Factor
@@ -688,12 +451,6 @@ def fit_methods(
         # selecting prediction intervals for inliers and outliers
         credo_gp_outliers = credo_CP_gp_pred[outlier_indexes]
         credo_qnn_outliers = credo_CP_qnn_pred[outlier_indexes]
-        credo_adapt_outliers = credo_adaptive_int[outlier_indexes]
-        credo_fixed_outliers = credo_fixed_int[outlier_indexes]
-        credo_gp_fixed_outliers = credo_CP_gp_fixed_pred[outlier_indexes]
-        credo_qnn_fixed_outliers = credo_CP_qnn_fixed_pred[outlier_indexes]
-        credo_qnn_ens_outliers = credo_CP_qnn_pred_ens[outlier_indexes]
-        credo_qnn_ens_fixed_outliers = credo_CP_qnn_ens_fixed_pred[outlier_indexes]
         cqr_outliers = cqr_int[outlier_indexes]
         cqrr_outliers = cqrr_int[outlier_indexes]
         epic_mdn_outliers = pred_epic_mdn_test[outlier_indexes]
@@ -701,12 +458,6 @@ def fit_methods(
 
         credo_gp_inliers = credo_CP_gp_pred[most_inlier_idxs]
         credo_qnn_inliers = credo_CP_qnn_pred[most_inlier_idxs]
-        credo_adapt_inliers = credo_adaptive_int[most_inlier_idxs]
-        credo_fixed_inliers = credo_fixed_int[most_inlier_idxs]
-        credo_gp_fixed_inliers = credo_CP_gp_fixed_pred[most_inlier_idxs]
-        credo_qnn_fixed_inliers = credo_CP_qnn_fixed_pred[most_inlier_idxs]
-        credo_qnn_ens_inliers = credo_CP_qnn_pred_ens[most_inlier_idxs]
-        credo_qnn_ens_fixed_inliers = credo_CP_qnn_ens_fixed_pred[most_inlier_idxs]
         cqr_inliers = cqr_int[most_inlier_idxs]
         cqrr_inliers = cqrr_int[most_inlier_idxs]
         epic_mdn_inliers = pred_epic_mdn_test[most_inlier_idxs]
@@ -820,24 +571,6 @@ def fit_methods(
             credo_CP_qnn_pred[outlier_indexes][:, 0], 
             y_test_out
         )
-        cover_credo_adap_out = average_coverage(
-            credo_adapt_outliers[:, 1], credo_adapt_outliers[:, 0], y_test_out
-        )
-        cover_credo_fixed_out = average_coverage(
-            credo_fixed_outliers[:, 1], credo_fixed_outliers[:, 0], y_test_out
-        )
-        cover_credo_gp_fixed_out = average_coverage(
-        credo_gp_fixed_outliers[:, 1], credo_gp_fixed_outliers[:, 0], y_test_out 
-        ) 
-        cover_credo_qnn_fixed_out = average_coverage(
-        credo_qnn_fixed_outliers[:, 1], credo_qnn_fixed_outliers[:, 0], y_test_out
-        ) 
-        cover_credo_qnn_ens_out = average_coverage(
-        credo_qnn_ens_outliers[:, 1], credo_qnn_ens_outliers[:, 0], y_test_out
-        ) 
-        cover_credo_qnn_ens_fixed_out = average_coverage(
-        credo_qnn_ens_fixed_outliers[:, 1], credo_qnn_ens_fixed_outliers[:, 0], y_test_out
-        )
         cover_cqr_out = average_coverage(
             cqr_outliers[:, 1], cqr_outliers[:, 0], y_test_out
         )
@@ -860,23 +593,6 @@ def fit_methods(
             credo_CP_qnn_pred[outlier_indexes][:, 0], 
             y_test_out, alpha
         )
-        isl_credo_adap_out = average_interval_score_loss(
-            credo_adapt_outliers[:, 1], credo_adapt_outliers[:, 0], y_test_out, alpha
-        )
-        isl_credo_fixed_out = average_interval_score_loss(
-            credo_fixed_outliers[:, 1], credo_fixed_outliers[:, 0], y_test_out, alpha
-        )
-        isl_credo_gp_fixed_out = average_interval_score_loss(
-            credo_gp_fixed_outliers[:, 1], credo_gp_fixed_outliers[:, 0], y_test_out, alpha ) 
-        isl_credo_qnn_fixed_out = average_interval_score_loss(
-            credo_qnn_fixed_outliers[:, 1], credo_qnn_fixed_outliers[:, 0], y_test_out, alpha
-            ) 
-        isl_credo_qnn_ens_out = average_interval_score_loss(
-            credo_qnn_ens_outliers[:, 1], credo_qnn_ens_outliers[:, 0], y_test_out, alpha
-            ) 
-        isl_credo_qnn_ens_fixed_out = average_interval_score_loss(
-            credo_qnn_ens_fixed_outliers[:, 1], credo_qnn_ens_fixed_outliers[:, 0], y_test_out, alpha
-            )
         isl_cqr_out = average_interval_score_loss(
             cqr_outliers[:, 1], cqr_outliers[:, 0], y_test_out, alpha
         )
@@ -911,60 +627,6 @@ def fit_methods(
                     credo_qnn_inliers[:, 0]
                 )
             )
-        credo_adap_ratio = np.mean(
-                compute_interval_length(
-                    credo_adapt_outliers[:, 1], credo_adapt_outliers[:, 0]
-                )
-            ) / np.mean(
-                compute_interval_length(
-                    credo_adapt_inliers[:, 1], credo_adapt_inliers[:, 0]
-                )
-            )
-        credo_fixed_ratio = np.mean(
-                compute_interval_length(
-                    credo_fixed_outliers[:, 1], credo_fixed_outliers[:, 0]
-                )
-            ) / np.mean(
-                compute_interval_length(
-                    credo_fixed_inliers[:, 1], credo_fixed_inliers[:, 0]
-                )
-            )
-        credo_gp_fixed_ratio = np.mean(
-                compute_interval_length(
-                    credo_gp_fixed_outliers[:, 1], credo_gp_fixed_outliers[:, 0] 
-                    )
-            ) / np.mean(
-                compute_interval_length(
-                    credo_gp_fixed_inliers[:, 1], credo_gp_fixed_inliers[:, 0] 
-                )
-            ) 
-        credo_qnn_fixed_ratio = np.mean(
-                compute_interval_length(
-                    credo_qnn_fixed_outliers[:, 1], credo_qnn_fixed_outliers[:, 0]
-                    )
-            ) / np.mean(
-                compute_interval_length(
-                    credo_qnn_fixed_inliers[:, 1], credo_qnn_fixed_inliers[:, 0]
-                    )
-            ) 
-        credo_qnn_ens_ratio = np.mean( 
-            compute_interval_length(
-                credo_qnn_ens_outliers[:, 1], credo_qnn_ens_outliers[:, 0]
-                )
-            ) / np.mean(
-            compute_interval_length(
-                credo_qnn_ens_inliers[:, 1], credo_qnn_ens_inliers[:, 0]
-                )
-            )
-        credo_qnn_ens_fixed_ratio = np.mean(
-            compute_interval_length(
-                credo_qnn_ens_fixed_outliers[:, 1], credo_qnn_ens_fixed_outliers[:, 0]
-                )
-            ) / np.mean(
-            compute_interval_length(
-                credo_qnn_ens_fixed_inliers[:, 1], credo_qnn_ens_fixed_inliers[:, 0]
-                )
-            )
         cqr_ratio = np.mean(
                 compute_interval_length(
                     cqr_outliers[:, 1], cqr_outliers[:, 0]
@@ -997,12 +659,6 @@ def fit_methods(
         isl_outlier_array = np.array([
             isl_credo_gp_out,
             isl_credo_qnn_out,
-            isl_credo_adap_out,
-            isl_credo_fixed_out,
-            isl_credo_gp_fixed_out,
-            isl_credo_qnn_fixed_out,
-            isl_credo_qnn_ens_out,
-            isl_credo_qnn_ens_fixed_out,
             isl_cqr_out,
             isl_cqrr_out,
             isl_uacqrs_out,
@@ -1012,12 +668,6 @@ def fit_methods(
         cover_outlier_array = np.array([
             cover_credo_gp_out,
             cover_credo_qnn_out,
-            cover_credo_adap_out,
-            cover_credo_fixed_out,
-            cover_credo_gp_fixed_out,
-            cover_credo_qnn_fixed_out,
-            cover_credo_qnn_ens_out,
-            cover_credo_qnn_ens_fixed_out,
             cover_cqr_out,
             cover_cqrr_out,
             cover_uacqrs_out,
@@ -1027,12 +677,6 @@ def fit_methods(
         ratio_array = np.array([
             credo_gp_ratio,
             credo_qnn_ratio,
-            credo_adap_ratio,
-            credo_fixed_ratio,
-            credo_gp_fixed_ratio,
-            credo_qnn_fixed_ratio,
-            credo_qnn_ens_ratio,
-            credo_qnn_ens_fixed_ratio,
             cqr_ratio,
             cqrr_ratio,
             uacqrs_ratio,
@@ -1161,12 +805,12 @@ def fit_methods_outlier(
     gc.collect()
 
     # Fitting CREDO with GP
-    print(f"Fitting CREDO with GP")
+    print(f"Fitting CREDO vanilla with GP")
     credal_CP_gp = CredalCPRegressor(
         nc_type = 'Quantile',
         base_model = "GP",
         alpha = alpha,
-        adaptive_gamma = True,
+        adaptive_gamma = False,
         gamma = gamma,
     )
 
@@ -1182,25 +826,7 @@ def fit_methods_outlier(
     credal_CP_gp.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
     credo_CP_gp_pred = credal_CP_gp.predict(X_test)
 
-    print(f"Fitting CREDO with GP fixed gamma")
-    credal_CP_gp_fixed = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = credal_CP_gp.base_model,
-    alpha = alpha,
-    adaptive_gamma = False,
-    gamma = gamma,
-    is_fitted = True,
-)
-    credal_CP_gp_fixed.fit(
-        X_train,
-        y_train,
-        base_model_type = "GP",
-    )
-    credal_CP_gp_fixed.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
-    credo_CP_gp_fixed_pred = credal_CP_gp.predict(X_test)
-
     del credal_CP_gp
-    del credal_CP_gp_fixed
     gc.collect()
 
     # Fitting CREDO with QNN
@@ -1209,7 +835,7 @@ def fit_methods_outlier(
         nc_type = 'Quantile',
         base_model = "QNN",
         alpha = alpha,
-        adaptive_gamma = True,
+        adaptive_gamma = False,
         gamma = gamma,
         )
     
@@ -1235,134 +861,6 @@ def fit_methods_outlier(
     del credal_CP_qnn
     gc.collect()
 
-    print(f"Fitting CREDO with QNN fixed gamma")
-    credal_CP_qnn_fixed = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = credal_CP_qnn.base_model,
-    alpha = alpha,
-    adaptive_gamma = False,
-    gamma = gamma,
-    is_fitted = True,
-    )
-
-    credal_CP_qnn_fixed.fit(
-        X_train,
-        y_train,
-        base_model_type = "QNN",
-    )
-    credal_CP_qnn_fixed.calibrate(X_calib, 
-                                  y_calib,
-                                  N_samples_MC=n_MCMC, 
-                                  )
-    credo_CP_qnn_fixed_pred = credal_CP_qnn_fixed.predict(X_test)
-
-    del credal_CP_qnn
-    del credal_CP_qnn_fixed
-    gc.collect()
-
-    print(f"Fitting CREDO with QNN Ensemble")
-    # Fitting CREDO with QNN
-    credal_CP_qnn_ens = CredalCPRegressor(
-        nc_type = 'Quantile',
-        base_model = "QNN",
-        alpha = alpha,
-        adaptive_gamma = True,
-        gamma = gamma,
-        )
-    
-    credal_CP_qnn_ens.fit(
-        X_train, 
-        y_train,
-        nn_type = "Ensemble",
-        n_models = n_models,
-        weight_decay=1e-6,
-        step_size=20,
-        gamma=0.985,
-        hidden_layers=[64, 64],
-        dropout=0.3,
-        epochs=1000,
-        patience=30,
-        lr=1e-3, 
-        batch_size=mdn_params["batch_size"],
-        verbose=1,
-        random_seed_fit=i,
-    )
-
-    credal_CP_qnn_ens.calibrate(X_calib, y_calib)
-    credo_CP_qnn_pred_ens = credal_CP_qnn_ens.predict(X_test)
-
-    print(f"Fitting CREDO with QNN Ensemble fixed gamma")
-    credal_CP_qnn_ens_fixed = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = credal_CP_qnn_ens.base_model,
-    alpha = alpha,
-    adaptive_gamma = False,
-    gamma = gamma,
-    is_fitted = True,
-    )
-
-    credal_CP_qnn_ens_fixed.fit(
-        X_train,
-        y_train,
-        base_model_type = "QNN",
-        nn_type = "Ensemble",
-    )
-    credal_CP_qnn_ens_fixed.calibrate(X_calib, 
-                                  y_calib,
-                                  )
-    credo_CP_qnn_ens_fixed_pred = credal_CP_qnn_fixed.predict(X_test)
-
-    del credal_CP_qnn_ens
-    del credal_CP_qnn_ens_fixed
-    gc.collect()
-
-    # Fitting CREDO with BART
-    print(f"Fitting CREDO with BART")
-    credal_CP_bart_adaptive = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = "BART",
-    alpha = alpha,
-    adaptive_gamma = True,
-    gamma = gamma,
-    )
-    
-    credal_CP_bart_adaptive.fit(
-        X_train, 
-        y_train,
-        progressbar = True,
-        n_cores = n_cores,
-        n_MCMC = n_MCMC,
-        normalize_y=True,
-        alpha_bart = alpha_bart,
-        random_seed_fit=i,
-    )
-    credal_CP_bart_adaptive.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
-
-    credal_CP_bart_fixed = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = credal_CP_bart_adaptive.base_model,
-    alpha = alpha,
-    adaptive_gamma = False,
-    gamma = gamma,
-    is_fitted = True,
-    )
-
-    credal_CP_bart_fixed.fit(
-        X_train, 
-        y_train,
-        base_model_type ="BART",
-    )
-    
-    credal_CP_bart_fixed.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
-
-    credo_adaptive_int = credal_CP_bart_adaptive.predict(X_test)
-    credo_fixed_int = credal_CP_bart_fixed.predict(X_test)
-
-    # deleting CREDO models to free memory
-    del credal_CP_bart_adaptive
-    del credal_CP_bart_fixed
-    gc.collect()
-
     lower_cqr = uacqr_pred_test["CQR"]["lower"]
     upper_cqr = uacqr_pred_test["CQR"]["upper"]
     cqr_int = np.column_stack((lower_cqr, upper_cqr))
@@ -1378,11 +876,6 @@ def fit_methods_outlier(
     lower_uacqrp = uacqr_pred_test["UACQR-P"]["lower"]
     upper_uacqrp = uacqr_pred_test["UACQR-P"]["upper"]
     uacqrp_int = np.column_stack((lower_uacqrp, upper_uacqrp))
-
-    # killing all multiprocessing threads in the case of BART to avoid memory leaks and issues in the next iterations of the loop
-    childs = mp.active_children()
-    for child in childs:
-        child.kill()
 
     # Detecting outliers using t-SNE and Local Outlier Factor
     print(f"Performing outlier detection with t-SNE and Local Outlier Factor")
@@ -1411,12 +904,6 @@ def fit_methods_outlier(
     # selecting prediction intervals for inliers and outliers
     credo_gp_outliers = credo_CP_gp_pred[outlier_indexes]
     credo_qnn_outliers = credo_CP_qnn_pred[outlier_indexes]
-    credo_adapt_outliers = credo_adaptive_int[outlier_indexes]
-    credo_fixed_outliers = credo_fixed_int[outlier_indexes]
-    credo_gp_fixed_outliers = credo_CP_gp_fixed_pred[outlier_indexes]
-    credo_qnn_fixed_outliers = credo_CP_qnn_fixed_pred[outlier_indexes]
-    credo_qnn_ens_outliers = credo_CP_qnn_pred_ens[outlier_indexes]
-    credo_qnn_ens_fixed_outliers = credo_CP_qnn_ens_fixed_pred[outlier_indexes]
     cqr_outliers = cqr_int[outlier_indexes]
     cqrr_outliers = cqrr_int[outlier_indexes]
     uacqrs_outliers = uacqrs_int[outlier_indexes]
@@ -1426,12 +913,6 @@ def fit_methods_outlier(
 
     credo_gp_inliers = credo_CP_gp_pred[most_inlier_idxs]
     credo_qnn_inliers = credo_CP_qnn_pred[most_inlier_idxs]
-    credo_adapt_inliers = credo_adaptive_int[most_inlier_idxs]
-    credo_fixed_inliers = credo_fixed_int[most_inlier_idxs]
-    credo_gp_fixed_inliers = credo_CP_gp_fixed_pred[most_inlier_idxs]
-    credo_qnn_fixed_inliers = credo_CP_qnn_fixed_pred[most_inlier_idxs]
-    credo_qnn_ens_inliers = credo_CP_qnn_pred_ens[most_inlier_idxs]
-    credo_qnn_ens_fixed_inliers = credo_CP_qnn_ens_fixed_pred[most_inlier_idxs]
     cqr_inliers = cqr_int[most_inlier_idxs]
     cqrr_inliers = cqrr_int[most_inlier_idxs]
     uacqrs_inliers = uacqrs_int[most_inlier_idxs]
@@ -1490,24 +971,6 @@ def fit_methods_outlier(
         credo_CP_qnn_pred[outlier_indexes][:, 0], 
         y_test_out
     )
-    cover_credo_adap_out = average_coverage(
-        credo_adapt_outliers[:, 1], credo_adapt_outliers[:, 0], y_test_out
-    )
-    cover_credo_fixed_out = average_coverage(
-        credo_fixed_outliers[:, 1], credo_fixed_outliers[:, 0], y_test_out
-    )
-    cover_credo_gp_fixed_out = average_coverage(
-    credo_gp_fixed_outliers[:, 1], credo_gp_fixed_outliers[:, 0], y_test_out 
-    ) 
-    cover_credo_qnn_fixed_out = average_coverage(
-    credo_qnn_fixed_outliers[:, 1], credo_qnn_fixed_outliers[:, 0], y_test_out
-    ) 
-    cover_credo_qnn_ens_out = average_coverage(
-    credo_qnn_ens_outliers[:, 1], credo_qnn_ens_outliers[:, 0], y_test_out
-    ) 
-    cover_credo_qnn_ens_fixed_out = average_coverage(
-    credo_qnn_ens_fixed_outliers[:, 1], credo_qnn_ens_fixed_outliers[:, 0], y_test_out
-    )
     cover_cqr_out = average_coverage(
         cqr_outliers[:, 1], cqr_outliers[:, 0], y_test_out
     )
@@ -1538,23 +1001,6 @@ def fit_methods_outlier(
         credo_CP_qnn_pred[outlier_indexes][:, 0], 
         y_test_out, alpha
     )
-    isl_credo_adap_out = average_interval_score_loss(
-        credo_adapt_outliers[:, 1], credo_adapt_outliers[:, 0], y_test_out, alpha
-    )
-    isl_credo_fixed_out = average_interval_score_loss(
-        credo_fixed_outliers[:, 1], credo_fixed_outliers[:, 0], y_test_out, alpha
-    )
-    isl_credo_gp_fixed_out = average_interval_score_loss(
-        credo_gp_fixed_outliers[:, 1], credo_gp_fixed_outliers[:, 0], y_test_out, alpha ) 
-    isl_credo_qnn_fixed_out = average_interval_score_loss(
-        credo_qnn_fixed_outliers[:, 1], credo_qnn_fixed_outliers[:, 0], y_test_out, alpha
-        ) 
-    isl_credo_qnn_ens_out = average_interval_score_loss(
-        credo_qnn_ens_outliers[:, 1], credo_qnn_ens_outliers[:, 0], y_test_out, alpha
-        ) 
-    isl_credo_qnn_ens_fixed_out = average_interval_score_loss(
-        credo_qnn_ens_fixed_outliers[:, 1], credo_qnn_ens_fixed_outliers[:, 0], y_test_out, alpha
-        )
     isl_cqr_out = average_interval_score_loss(
         cqr_outliers[:, 1], cqr_outliers[:, 0], y_test_out, alpha
     )
@@ -1595,60 +1041,6 @@ def fit_methods_outlier(
             compute_interval_length(
                 credo_qnn_inliers[:, 1],
                 credo_qnn_inliers[:, 0]
-            )
-        )
-    credo_adap_ratio = np.mean(
-            compute_interval_length(
-                credo_adapt_outliers[:, 1], credo_adapt_outliers[:, 0]
-            )
-        ) / np.mean(
-            compute_interval_length(
-                credo_adapt_inliers[:, 1], credo_adapt_inliers[:, 0]
-            )
-        )
-    credo_fixed_ratio = np.mean(
-            compute_interval_length(
-                credo_fixed_outliers[:, 1], credo_fixed_outliers[:, 0]
-            )
-        ) / np.mean(
-            compute_interval_length(
-                credo_fixed_inliers[:, 1], credo_fixed_inliers[:, 0]
-            )
-        )
-    credo_gp_fixed_ratio = np.mean(
-            compute_interval_length(
-                credo_gp_fixed_outliers[:, 1], credo_gp_fixed_outliers[:, 0] 
-                )
-        ) / np.mean(
-            compute_interval_length(
-                credo_gp_fixed_inliers[:, 1], credo_gp_fixed_inliers[:, 0] 
-            )
-        ) 
-    credo_qnn_fixed_ratio = np.mean(
-            compute_interval_length(
-                credo_qnn_fixed_outliers[:, 1], credo_qnn_fixed_outliers[:, 0]
-                )
-        ) / np.mean(
-            compute_interval_length(
-                credo_qnn_fixed_inliers[:, 1], credo_qnn_fixed_inliers[:, 0]
-                )
-        ) 
-    credo_qnn_ens_ratio = np.mean( 
-        compute_interval_length(
-            credo_qnn_ens_outliers[:, 1], credo_qnn_ens_outliers[:, 0]
-            )
-        ) / np.mean(
-        compute_interval_length(
-            credo_qnn_ens_inliers[:, 1], credo_qnn_ens_inliers[:, 0]
-            )
-        )
-    credo_qnn_ens_fixed_ratio = np.mean(
-        compute_interval_length(
-            credo_qnn_ens_fixed_outliers[:, 1], credo_qnn_ens_fixed_outliers[:, 0]
-            )
-        ) / np.mean(
-        compute_interval_length(
-            credo_qnn_ens_fixed_inliers[:, 1], credo_qnn_ens_fixed_inliers[:, 0]
             )
         )
     cqr_ratio = np.mean(
@@ -1705,12 +1097,6 @@ def fit_methods_outlier(
     isl_array = np.array([
         isl_credo_gp_out,
         isl_credo_qnn_out,
-        isl_credo_adap_out,
-        isl_credo_fixed_out,
-        isl_credo_gp_fixed_out,
-        isl_credo_qnn_fixed_out,
-        isl_credo_qnn_ens_out,
-        isl_credo_qnn_ens_fixed_out,
         isl_cqr_out,
         isl_cqrr_out,
         isl_uacqrs_out,
@@ -1720,12 +1106,6 @@ def fit_methods_outlier(
     cover_array = np.array([
         cover_credo_gp_out,
         cover_credo_qnn_out,
-        cover_credo_adap_out,
-        cover_credo_fixed_out,
-        cover_credo_gp_fixed_out,
-        cover_credo_qnn_fixed_out,
-        cover_credo_qnn_ens_out,
-        cover_credo_qnn_ens_fixed_out,
         cover_cqr_out,
         cover_cqrr_out,
         cover_uacqrs_out,
@@ -1735,12 +1115,6 @@ def fit_methods_outlier(
     ratio_array = np.array([
         credo_gp_ratio,
         credo_qnn_ratio,
-        credo_adap_ratio,
-        credo_fixed_ratio,
-        credo_gp_fixed_ratio,
-        credo_qnn_fixed_ratio,
-        credo_qnn_ens_ratio,
-        credo_qnn_ens_fixed_ratio,
         cqr_ratio,
         cqrr_ratio,
         uacqrs_ratio,
@@ -1872,14 +1246,7 @@ def run_experiment_outlier(
 
     methods = [
         "credo_GP",
-        "credo_GP_heter",
-        "credo_BART_adap",
-        "credo_BART_fixed",
-        "credo_GP_fixed",
         "credo_QNN",
-        "credo_QNN_fixed",
-        "credo_QNN_ens",
-        "credo_QNN_ens_fixed",
         "cqr",
         "cqrr",
         "uacqrs",
@@ -2098,12 +1465,6 @@ def run_experiment(dataset,
     methods = [
         "credo_GP",
         "credo_QNN",
-        "credo_BART_adap",
-        "credo_BART_fixed",
-        "credo_GP_fixed",
-        "credo_QNN_fixed",
-        "credo_QNN_ens",
-        "credo_QNN_ens_fixed",
         "cqr",
         "cqrr",
         "uacqrs",
