@@ -1,14 +1,13 @@
 import os
 import numpy as np
 import pandas as pd
-import traceback
 import torch
 from argparse import ArgumentParser
 import gc
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
-import copy
+import multiprocessing as mp
 
 original_path = os.getcwd()
 os.chdir(os.path.join(original_path, "comparisons"))
@@ -655,6 +654,11 @@ def fit_methods(
         pcorr_uacqrp,
         pcorr_epic_mdn,
     ])
+
+    # killing all multiprocessing threads in the case of BART to avoid memory leaks and issues in the next iterations of the loop
+    childs = mp.active_children()
+    for child in childs:
+        child.kill()
 
     if outlier_same_time and outlier_analysis:
         # Detecting outliers using t-SNE and Local Outlier Factor
@@ -1374,6 +1378,11 @@ def fit_methods_outlier(
     lower_uacqrp = uacqr_pred_test["UACQR-P"]["lower"]
     upper_uacqrp = uacqr_pred_test["UACQR-P"]["upper"]
     uacqrp_int = np.column_stack((lower_uacqrp, upper_uacqrp))
+
+    # killing all multiprocessing threads in the case of BART to avoid memory leaks and issues in the next iterations of the loop
+    childs = mp.active_children()
+    for child in childs:
+        child.kill()
 
     # Detecting outliers using t-SNE and Local Outlier Factor
     print(f"Performing outlier detection with t-SNE and Local Outlier Factor")
