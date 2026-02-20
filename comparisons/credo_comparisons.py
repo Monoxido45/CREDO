@@ -7,7 +7,6 @@ import gc
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
-import multiprocessing as mp
 
 original_path = os.getcwd()
 os.chdir(os.path.join(original_path, "comparisons"))
