@@ -307,8 +307,8 @@ def run_experiment(dataset,
     epis_unc_outlier_qnn_results = np.array(epis_unc_outlier_qnn_results)
 
     def mean_sd(arr):
-        mean = np.nanmean(arr, axis=0, )
-        sd = np.nanstd(arr, axis=0, ddof=1) if arr.shape[0] > 1 else np.zeros_like(mean)
+        mean = np.nanmean(arr)
+        sd = np.nanstd(arr, ddof=1) if arr.shape[0] > 1 else np.zeros_like(mean)
         return mean, sd
 
     methods = [
@@ -355,7 +355,7 @@ def run_experiment(dataset,
     os.makedirs(data_dir, exist_ok=True)
 
     general_df.to_csv(os.path.join(data_dir, f"{dataset}_general_summary.csv"))
-    
+
     return np.array(epis_unc_inlier_gp_results), np.array(epis_unc_outlier_gp_results), \
             np.array(epis_unc_inlier_qnn_results), np.array(epis_unc_outlier_qnn_results)
 
