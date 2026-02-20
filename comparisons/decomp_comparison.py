@@ -67,8 +67,8 @@ def fit_methods(
         y_calib,
         X_test,
         y_test,
-        mdn_params,
         i,
+        batch_size = 40,
         scale_y = False,
         inlier_size = 0.2,
         n_neighbors = 15,
@@ -88,26 +88,6 @@ def fit_methods(
     y_calib = y_calib.to_numpy()
     X_test = X_test.to_numpy()
     y_test = y_test.to_numpy()
-
-    # Fitting CREDO with GP
-    print(f"Fitting CREDO vanilla with GP")
-    credal_CP_gp = CredalCPRegressor(
-        nc_type = 'Quantile',
-        base_model = "GP",
-        alpha = alpha,
-        adaptive_gamma = False,
-        gamma = gamma,
-    )
-
-    credal_CP_gp.fit(
-        X_train,
-        y_train,
-        kernel = kernel_gp,
-        normalize_y = True,
-        scale = True,
-        heteroscedastic = False,
-    )
-    credal_CP_gp.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
 
     print(f"Fitting CREDO vanilla with QNN")
     # Fitting CREDO with QNN
@@ -130,7 +110,7 @@ def fit_methods(
         epochs=2000,
         patience=50,
         lr=1e-3, 
-        batch_size=mdn_params["batch_size"],
+        batch_size=batch_size,
         verbose=1,
         random_seed_fit=i,
     )
@@ -162,35 +142,29 @@ def fit_methods(
     size = int((y_test.shape[0] - outlier_obs.shape[0]) * inlier_size)
     most_inlier_idxs = inlier_indexes[np.argsort(inlier_scores)[::-1][:size]]
 
-    print("Disentangling uncertainties for inliers and outliers for both methods")
-    _, aleat_unc_inlier_gp, epis_unc_inlier_gp = credal_CP_gp.predict(X_test[most_inlier_idxs], disentangle=True)
-    _, aleat_unc_outlier_gp, epis_unc_outlier_gp = credal_CP_gp.predict(X_test[outlier_indexes], disentangle=True)
+    print("Disentangling uncertainties for inliers and outliers for CREDO QNN")
+    _, aleat_unc_inlier_qnn, epis_unc_inlier_qnn = credal_CP_qnn.predict(X_test[most_inlier_idxs, :], disentangle=True)
+    _, aleat_unc_outlier_qnn, epis_unc_outlier_qnn = credal_CP_qnn.predict(X_test[outlier_indexes, :], disentangle=True)
 
-    _, aleat_unc_inlier_qnn, epis_unc_inlier_qnn = credal_CP_qnn.predict(X_test[most_inlier_idxs], disentangle=True)
-    _, aleat_unc_outlier_qnn, epis_unc_outlier_qnn = credal_CP_qnn.predict(X_test[outlier_indexes], disentangle=True)
-
-    del credal_CP_gp, credal_CP_qnn
+    del  credal_CP_qnn
     gc.collect()
 
     # normalizing uncertainties to be able to compare inliers and outliers
-    total_gp = aleat_unc_inlier_gp + epis_unc_inlier_gp
-    epis_unc_inlier_gp /= total_gp
-
-    total_gp_outlier = aleat_unc_outlier_gp + epis_unc_outlier_gp
-    epis_unc_outlier_gp /= total_gp_outlier
-
     total_qnn = aleat_unc_inlier_qnn + epis_unc_inlier_qnn
     epis_unc_inlier_qnn /= total_qnn
+    print(f"total aleatoric unc in QNN: {aleat_unc_inlier_qnn}")
+    print(f"total epistemic unc in QNN: {epis_unc_inlier_qnn}")
 
     total_qnn_outlier = aleat_unc_outlier_qnn + epis_unc_outlier_qnn
     epis_unc_outlier_qnn /= total_qnn_outlier
+    print(f"total aleatoric unc in QNN: {aleat_unc_outlier_qnn}")
+    print(f"total epistemic unc in QNN: {epis_unc_outlier_qnn}")
 
     # returning the mean epistemic uncertainty for inliers and outliers for both models to be able to compare them
-    print("Summarizing epistemic uncertainty over inliers and outliers for both methods")
-    epis_unc_inlier_gp_mean, epis_unc_outlier_gp_mean = np.mean(epis_unc_inlier_gp), np.mean(epis_unc_outlier_gp)
+    print("Summarizing epistemic uncertainty over inliers and outliers for QNN")
     epis_unc_inlier_qnn_mean, epis_unc_outlier_qnn_mean = np.mean(epis_unc_inlier_qnn), np.mean(epis_unc_outlier_qnn)
 
-    return epis_unc_inlier_gp_mean, epis_unc_outlier_gp_mean, epis_unc_inlier_qnn_mean, epis_unc_outlier_qnn_mean
+    return epis_unc_inlier_qnn_mean, epis_unc_outlier_qnn_mean
 
 def run_experiment(dataset, 
                    n_rep, 
@@ -198,42 +172,24 @@ def run_experiment(dataset,
                    prop_test = 0.2,
                    checkpoint_flag = False,
                    checkpoint_data = None,
+                   batch_size = 40,
 ):
     data = pd.read_csv(os.path.join(DATA_PATH, f"{dataset}.csv"))
-
-    # EPICSCORE params
-    mdn_params = {
-    "num_components": 3,
-    "dropout_rate": 0.5,
-    "epistemic_model": "MC_dropout",
-    "hidden_layers": [64, 64],
-    "patience": 50,
-    "epochs": 2000,
-    "scale": True,
-    "batch_size": 40,
-    "normalize_y": True,
-    "verbose": 0,
-    "type": "gaussian",
-    }
-
+    
     if data.shape[0] > 10000:
-        mdn_params["batch_size"] = 120
+        batch_size = 120
     if dataset == "WEC":
-        mdn_params["batch_size"] = 250
+        batch_size = 250
 
     if checkpoint_flag:
         resume_from = int(checkpoint_data.get("iteration", -1)) + 1
-        epis_unc_inlier_gp_results = checkpoint_data.get("epis_unc_inlier_gp", [])
-        epis_unc_outlier_gp_results = checkpoint_data.get("epis_unc_outlier_gp", [])
         epis_unc_inlier_qnn_results = checkpoint_data.get("epis_unc_inlier_qnn", [])
         epis_unc_outlier_qnn_results = checkpoint_data.get("epis_unc_outlier_qnn", [])
         seeds = checkpoint_data.get("seeds", None)
-        print(f"Resuming from iteration {resume_from}. Loaded {len(epis_unc_inlier_gp_results)} results so far.")
+        print(f"Resuming from iteration {resume_from}. Loaded {len(epis_unc_inlier_qnn_results)} results so far.")
     else:
         resume_from = 0
         seeds = generate_seeds(seed_initial, n_rep)
-        epis_unc_inlier_gp_results = []
-        epis_unc_outlier_gp_results = []
         epis_unc_inlier_qnn_results = []
         epis_unc_outlier_qnn_results = []
 
@@ -260,27 +216,23 @@ def run_experiment(dataset,
         else:
             scale_y = False
 
-        epis_unc_inlier_gp, epis_unc_outlier_gp, epis_unc_inlier_qnn, epis_unc_outlier_qnn = fit_methods(
+        epis_unc_inlier_qnn, epis_unc_outlier_qnn = fit_methods(
             X_train,
             y_train,
             X_calib,
             y_calib,
             X_test,
             y_test,
-            mdn_params,
             i,
+            batch_size=batch_size,
             scale_y = scale_y,
         )
-        epis_unc_inlier_gp_results.append(epis_unc_inlier_gp)
-        epis_unc_outlier_gp_results.append(epis_unc_outlier_gp)
         epis_unc_inlier_qnn_results.append(epis_unc_inlier_qnn)
         epis_unc_outlier_qnn_results.append(epis_unc_outlier_qnn)
 
         def save_checkpoint(iteration, seeds):
             try:
                 checkpoint = {
-                    "epis_unc_inlier_gp": epis_unc_inlier_gp_results,
-                    "epis_unc_outlier_gp": epis_unc_outlier_gp_results,
                     "epis_unc_inlier_qnn": epis_unc_inlier_qnn_results,
                     "epis_unc_outlier_qnn": epis_unc_outlier_qnn_results,
                     "iteration": iteration,
@@ -301,8 +253,6 @@ def run_experiment(dataset,
         save_checkpoint(i, seeds)
     
     # summarize results: convert lists to arrays and compute mean and sd (sample sd if n_rep>1)
-    epis_unc_inlier_gp_results = np.array(epis_unc_inlier_gp_results)
-    epis_unc_outlier_gp_results = np.array(epis_unc_outlier_gp_results)
     epis_unc_inlier_qnn_results = np.array(epis_unc_inlier_qnn_results)
     epis_unc_outlier_qnn_results = np.array(epis_unc_outlier_qnn_results)
 
@@ -312,8 +262,6 @@ def run_experiment(dataset,
         return mean, sd
 
     methods = [
-        "credo_GP",
-        "credo_GP",
         "credo_QNN",
         "credo_QNN",
         ]
@@ -321,26 +269,18 @@ def run_experiment(dataset,
     types = [
         "inliers",
         "outliers",
-        "inliers",
-        "outliers",
     ]
 
-    epis_unc_inlier_gp_mean, epis_unc_inlier_gp_sd = mean_sd(epis_unc_inlier_gp_results)
-    epis_unc_outlier_gp_mean, epis_unc_outlier_gp_sd = mean_sd(epis_unc_outlier_gp_results)
     epis_unc_inlier_qnn_mean, epis_unc_inlier_qnn_sd = mean_sd(epis_unc_inlier_qnn_results)
     epis_unc_outlier_qnn_mean, epis_unc_outlier_qnn_sd = mean_sd(epis_unc_outlier_qnn_results)
     
     # concatenate inlier/outlier results into flat arrays
     mean_all_combined = np.array([
-        epis_unc_inlier_gp_mean,
-        epis_unc_outlier_gp_mean,
         epis_unc_inlier_qnn_mean,
         epis_unc_outlier_qnn_mean,
     ])
 
     sd_all_combined = np.array([
-        epis_unc_inlier_gp_sd,
-        epis_unc_outlier_gp_sd,
         epis_unc_inlier_qnn_sd,
         epis_unc_outlier_qnn_sd,
     ])
@@ -357,8 +297,7 @@ def run_experiment(dataset,
 
     general_df.to_csv(os.path.join(data_dir, f"{dataset}_general_summary.csv"))
 
-    return np.array(epis_unc_inlier_gp_results), np.array(epis_unc_outlier_gp_results), \
-            np.array(epis_unc_inlier_qnn_results), np.array(epis_unc_outlier_qnn_results)
+    return np.array(epis_unc_inlier_qnn_results), np.array(epis_unc_outlier_qnn_results)
 
 
 
@@ -402,8 +341,6 @@ if __name__ == "__main__":
 
     resume_from = 0
     checkpoint_data = None
-    loaded_cover = loaded_isl = loaded_IL = loaded_pcorr = None
-    loaded_seeds_so_far = None
     
     if os.path.exists(chk_file):
         try:
@@ -421,7 +358,7 @@ if __name__ == "__main__":
         checkpoint_flag = False
     
     # Run the experiment
-    epis_unc_inlier_gp, epis_unc_outlier_gp, epis_unc_inlier_qnn, epis_unc_outlier_qnn = run_experiment(
+    epis_unc_inlier_qnn, epis_unc_outlier_qnn = run_experiment(
             dataset = dataset, 
             n_rep = n_rep, 
             target_column = "target",
@@ -432,8 +369,7 @@ if __name__ == "__main__":
     raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}")
     os.makedirs(raw_dir, exist_ok=True)
 
-    to_save = {"epis_unc_inlier_gp": epis_unc_inlier_gp, "epis_unc_outlier_gp": epis_unc_outlier_gp,
-               "epis_unc_inlier_qnn": epis_unc_inlier_qnn, "epis_unc_outlier_qnn": epis_unc_outlier_qnn}
+    to_save = {"epis_unc_inlier_qnn": epis_unc_inlier_qnn, "epis_unc_outlier_qnn": epis_unc_outlier_qnn}
     for name, arr in to_save.items():
         filepath = os.path.join(raw_dir, f"{dataset}_{name}_raw_unc.pkl")
         with open(filepath, "wb") as f:
