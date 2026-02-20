@@ -162,6 +162,7 @@ def fit_methods(
     size = int((y_test.shape[0] - outlier_obs.shape[0]) * inlier_size)
     most_inlier_idxs = inlier_indexes[np.argsort(inlier_scores)[::-1][:size]]
 
+    print("Disentangling uncertainties for inliers and outliers for both methods")
     _, aleat_unc_inlier_gp, epis_unc_inlier_gp = credal_CP_gp.predict(X_test[most_inlier_idxs], disentangle=True)
     _, aleat_unc_outlier_gp, epis_unc_outlier_gp = credal_CP_gp.predict(X_test[outlier_indexes], disentangle=True)
 
@@ -185,6 +186,7 @@ def fit_methods(
     epis_unc_outlier_qnn /= total_qnn_outlier
 
     # returning the mean epistemic uncertainty for inliers and outliers for both models to be able to compare them
+    print("Summarizing epistemic uncertainty over inliers and outliers for both methods")
     epis_unc_inlier_gp_mean, epis_unc_outlier_gp_mean = np.mean(epis_unc_inlier_gp), np.mean(epis_unc_outlier_gp)
     epis_unc_inlier_qnn_mean, epis_unc_outlier_qnn_mean = np.mean(epis_unc_inlier_qnn), np.mean(epis_unc_outlier_qnn)
 
