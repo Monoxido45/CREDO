@@ -95,7 +95,7 @@ def fit_methods(
         nc_type = 'Quantile',
         base_model = "QNN",
         alpha = alpha,
-        adaptive_gamma = False,
+        adaptive_gamma = True,
         gamma = gamma,
         )
     
