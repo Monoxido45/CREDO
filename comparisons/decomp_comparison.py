@@ -312,31 +312,50 @@ def run_experiment(dataset,
         return mean, sd
 
     methods = [
-        "credo_GP_inliers",
-        "credo_GP_outliers",
-        "credo_QNN_inliers",
-        "credo_QNN_outliers",
+        "credo_GP",
+        "credo_GP",
+        "credo_QNN",
+        "credo_QNN",
         ]
+    
+    types = [
+        "inliers",
+        "outliers",
+        "inliers",
+        "outliers",
+    ]
 
     epis_unc_inlier_gp_mean, epis_unc_inlier_gp_sd = mean_sd(epis_unc_inlier_gp_results)
     epis_unc_outlier_gp_mean, epis_unc_outlier_gp_sd = mean_sd(epis_unc_outlier_gp_results)
     epis_unc_inlier_qnn_mean, epis_unc_inlier_qnn_sd = mean_sd(epis_unc_inlier_qnn_results)
     epis_unc_outlier_qnn_mean, epis_unc_outlier_qnn_sd = mean_sd(epis_unc_outlier_qnn_results)
 
-    # create summary dataframes and save to CSV
-    df_gp_inlier = pd.DataFrame({"methods": methods ,"mean": epis_unc_inlier_gp_mean, "sd": epis_unc_inlier_gp_sd})
-    df_gp_outlier = pd.DataFrame({"methods": methods ,"mean": epis_unc_outlier_gp_mean, "sd": epis_unc_outlier_gp_sd})
-    df_qnn_inlier = pd.DataFrame({"methods": methods ,"mean": epis_unc_inlier_qnn_mean, "sd": epis_unc_inlier_qnn_sd})
-    df_qnn_outlier = pd.DataFrame({"methods": methods ,"mean": epis_unc_outlier_qnn_mean, "sd": epis_unc_outlier_qnn_sd})
+    # concatenate inlier/outlier results into flat arrays
+    mean_all_combined = np.concatenate((
+        epis_unc_inlier_gp_mean,
+        epis_unc_outlier_gp_mean,
+        epis_unc_inlier_qnn_mean,
+        epis_unc_outlier_qnn_mean,
+    ))
 
+    sd_all_combined = np.concatenate((
+        epis_unc_inlier_gp_sd,
+        epis_unc_outlier_gp_sd,
+        epis_unc_inlier_qnn_sd,
+        epis_unc_outlier_qnn_sd,
+    ))
+
+    # create summary dataframes and save to CSV
+    general_df = pd.DataFrame({"methods": methods ,
+                          "mean": mean_all_combined, 
+                          "sd": sd_all_combined,
+                          "type": types,
+                          })
     data_dir = os.path.join(RESULTS_PATH, f"{dataset}_unc_summary")
     os.makedirs(data_dir, exist_ok=True)
 
-    df_gp_inlier.to_csv(os.path.join(data_dir, f"{dataset}_gp_inlier_summary.csv"))
-    df_gp_outlier.to_csv(os.path.join(data_dir, f"{dataset}_gp_outlier_summary.csv"))
-    df_qnn_inlier.to_csv(os.path.join(data_dir, f"{dataset}_qnn_inlier_summary.csv"))
-    df_qnn_outlier.to_csv(os.path.join(data_dir, f"{dataset}_qnn_outlier_summary.csv"))
-
+    general_df.to_csv(os.path.join(data_dir, f"{dataset}_general_summary.csv"))
+    
     return np.array(epis_unc_inlier_gp_results), np.array(epis_unc_outlier_gp_results), \
             np.array(epis_unc_inlier_qnn_results), np.array(epis_unc_outlier_qnn_results)
 

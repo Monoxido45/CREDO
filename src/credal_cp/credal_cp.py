@@ -505,10 +505,15 @@ class CredalCPRegressor(BaseEstimator):
                 
         return self.cutoff
     
-    def fit_gamma(self, X, k =50):
+    # adaptive K with respect to the sample size
+    def fit_gamma(self, X, C_base=6.672):
         self.scaler_x = StandardScaler().fit(X)
         # standardizing XStandardScaler()
         X_scaled = self.scaler_x.transform(X)
+
+        # fixing k according to dimmensionalyty of X and sample size
+        n, d = X.shape
+        k = np.ceil(C_base * (n**(4/(4 + d))))
         self.gamma_model = NearestNeighbors(n_neighbors=k).fit(X_scaled)
 
         distances, indices = self.gamma_model.kneighbors(X_scaled)
