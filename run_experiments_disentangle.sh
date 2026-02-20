@@ -1,20 +1,26 @@
 #!/bin/bash
 
 # List of datasets or configurations you want to run
-# Capture all arguments passed by the user
-DATASETS=("$@")
 
-# Check if the user passed any arguments
-if [ ${#DATASETS[@]} -eq 0 ]; then
-    echo "Error: You need to pass at least one dataset."
-    echo "Example: ./run_experiments.sh concrete energy wine"
-    exit 1
+# Simple N_REP parsing: if first arg is an integer take it as N_REP, else default to 30.
+N_REP_DEFAULT=30
+if [[ "$1" =~ ^[0-9]+$ ]]; then
+    N_REP="$1"
+    shift
+else
+    N_REP="$N_REP_DEFAULT"
 fi
 
-# Common configurations
-N_REP=30
-OUTLIER_ANALYSIS=True
-OUTLIER_SAME_TIME=True
+# Remaining args are datasets
+DATASETS=("$@")
+
+# List of datasets or configurations you want to run
+if [ ${#DATASETS[@]} -eq 0 ]; then
+    echo "Error: You need to pass at least one dataset."
+    echo "Usage: $0 [N_REP] dataset1 [dataset2 ...]"
+    echo "Example: $0 30 concrete energy wine"
+    exit 1
+fi
 
 # 8 blocks of 4 cores
 CORES=("0-3" "4-7" "8-11" "12-15" "16-19" "20-23" "24-27" "28-31")
