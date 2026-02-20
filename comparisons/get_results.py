@@ -58,7 +58,6 @@ methods = ["credo_GP","credo_QNN",
 
 file_names = [
     "airfoil",
-    "bike",
     "concrete",
     "cycle",
     "electric",
