@@ -299,8 +299,6 @@ def run_experiment(dataset,
 
     return np.array(epis_unc_inlier_qnn_results), np.array(epis_unc_outlier_qnn_results)
 
-
-
 if __name__ == "__main__":
     if kernel == "RBF":
         kernel_gp = gpx.kernels.RBF()
