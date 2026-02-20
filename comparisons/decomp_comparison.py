@@ -329,28 +329,29 @@ def run_experiment(dataset,
     epis_unc_outlier_gp_mean, epis_unc_outlier_gp_sd = mean_sd(epis_unc_outlier_gp_results)
     epis_unc_inlier_qnn_mean, epis_unc_inlier_qnn_sd = mean_sd(epis_unc_inlier_qnn_results)
     epis_unc_outlier_qnn_mean, epis_unc_outlier_qnn_sd = mean_sd(epis_unc_outlier_qnn_results)
-
+    
     # concatenate inlier/outlier results into flat arrays
-    mean_all_combined = np.concatenate((
+    mean_all_combined = np.array([
         epis_unc_inlier_gp_mean,
         epis_unc_outlier_gp_mean,
         epis_unc_inlier_qnn_mean,
         epis_unc_outlier_qnn_mean,
-    ))
+    ])
 
-    sd_all_combined = np.concatenate((
+    sd_all_combined = np.array([
         epis_unc_inlier_gp_sd,
         epis_unc_outlier_gp_sd,
         epis_unc_inlier_qnn_sd,
         epis_unc_outlier_qnn_sd,
-    ))
+    ])
 
     # create summary dataframes and save to CSV
-    general_df = pd.DataFrame({"methods": methods ,
-                          "mean": mean_all_combined, 
-                          "sd": sd_all_combined,
-                          "type": types,
-                          })
+    general_df = pd.DataFrame({
+      "methods": methods ,
+      "mean": mean_all_combined,
+      "sd": sd_all_combined,
+      "type": types,
+      })
     data_dir = os.path.join(RESULTS_PATH, f"{dataset}_unc_summary")
     os.makedirs(data_dir, exist_ok=True)
 
