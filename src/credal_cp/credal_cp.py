@@ -514,6 +514,7 @@ class CredalCPRegressor(BaseEstimator):
         # fixing k according to dimmensionalyty of X and sample size
         n, d = X.shape
         k = int(np.ceil(C_base * (n**(4/(4 + d)))))
+        print(f"Fitting gamma model with k={k} neighbors for adaptive gamma")
         self.gamma_model = NearestNeighbors(n_neighbors=k).fit(X_scaled)
 
         distances, indices = self.gamma_model.kneighbors(X_scaled)
