@@ -43,8 +43,6 @@ parser.add_argument("-n_MCMC", "--n_MCMC", type=int, default=1000, help="number 
 parser.add_argument("-seed_initial", "--seed_initial", type=int, default=125,
                      help="initial seed for random generator to create seeds for repetitions")
 parser.add_argument("-dataset", "--dataset", type=str, default="airfoil", help="dataset to use for the experiment")
-parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default="catboost", help="UACQR and CQR base models: 'rfqr' or 'catboost'")
-parser.add_argument("-outlier_analysis", "--outlier_analysis", type=bool, help="whether to perform outlier analysis using LOF and t-SNE")
 parser.add_argument("-n_cores", "--n_cores", type=int, default=4, help="number of cores to use for parallel processing")
 parser.add_argument("-kernel", "--kernel", type=str, default="RBF + Matern52", 
                     help="kernel to use for Gaussian Process regression in CREDO: 'RBF', 'Matern32', 'Matern52' or 'RationalQuadratic'")
@@ -60,8 +58,6 @@ n_rep = args.n_rep
 n_MCMC = args.n_MCMC
 seed_initial = args.seed_initial
 dataset = args.dataset
-uacqr_model = args.uacqr_model
-outlier_analysis = args.outlier_analysis
 n_cores = args.n_cores
 kernel = args.kernel
 kernel_noise = args.kernel_noise
@@ -82,7 +78,6 @@ def fit_methods(
         i,
         batch_size = 42,
         scale_y = False,
-        outlier_same_time = False,
         inlier_size = 0.2,
         n_neighbors = 15,
         contamination = 0.05,
@@ -204,107 +199,105 @@ def fit_methods(
         pcorr_credo_gp,
         pcorr_credo_qnn, 
     ])
+    
+    # Detecting outliers using t-SNE and Local Outlier Factor
+    print(f"Performing outlier detection with t-SNE and Local Outlier Factor")
+    tsne = TSNE(n_components=n_components, random_state=tsne_random_state)
+    X_tsne_test = tsne.fit_transform(X_test)
 
-    if outlier_same_time and outlier_analysis:
-        # Detecting outliers using t-SNE and Local Outlier Factor
-        print(f"Performing outlier detection with t-SNE and Local Outlier Factor")
-        tsne = TSNE(n_components=n_components, random_state=tsne_random_state)
-        X_tsne_test = tsne.fit_transform(X_test)
+    # Standardize the features
+    scaler = StandardScaler()
+    X_test_scaled = scaler.fit_transform(X_tsne_test)
+    # Use Local Outlier Factor for anomaly detection on scaled data
+    lof = LocalOutlierFactor(
+        n_neighbors=n_neighbors,
+        contamination=contamination,
+    )
+    out_pred = lof.fit_predict(X_test_scaled)
 
-        # Standardize the features
-        scaler = StandardScaler()
-        X_test_scaled = scaler.fit_transform(X_tsne_test)
-        # Use Local Outlier Factor for anomaly detection on scaled data
-        lof = LocalOutlierFactor(
-            n_neighbors=n_neighbors,
-            contamination=contamination,
-        )
-        out_pred = lof.fit_predict(X_test_scaled)
+    outlier_obs = y_test[out_pred == -1]
+    outlier_indexes = np.where(out_pred == -1)[0]
+    # selecting 15% top inliers
+    inlier_indexes = np.setdiff1d(np.arange(len(y_test)), outlier_indexes)
+    inlier_scores = lof.negative_outlier_factor_[inlier_indexes]
+    # computing inlier scores
+    size = int((y_test.shape[0] - outlier_obs.shape[0]) * inlier_size)
+    most_inlier_idxs = inlier_indexes[np.argsort(inlier_scores)[::-1][:size]]
 
-        outlier_obs = y_test[out_pred == -1]
-        outlier_indexes = np.where(out_pred == -1)[0]
-        # selecting 15% top inliers
-        inlier_indexes = np.setdiff1d(np.arange(len(y_test)), outlier_indexes)
-        inlier_scores = lof.negative_outlier_factor_[inlier_indexes]
-        # computing inlier scores
-        size = int((y_test.shape[0] - outlier_obs.shape[0]) * inlier_size)
-        most_inlier_idxs = inlier_indexes[np.argsort(inlier_scores)[::-1][:size]]
+    # selecting prediction intervals for inliers and outliers
+    credo_gp_outliers = credo_CP_gp_pred[outlier_indexes]
+    credo_qnn_outliers = credo_CP_qnn_pred[outlier_indexes]
+    y_test_out = y_test[outlier_indexes]
 
-        # selecting prediction intervals for inliers and outliers
-        credo_gp_outliers = credo_CP_gp_pred[outlier_indexes]
-        credo_qnn_outliers = credo_CP_qnn_pred[outlier_indexes]
-        y_test_out = y_test[outlier_indexes]
+    credo_gp_inliers = credo_CP_gp_pred[most_inlier_idxs]
+    credo_qnn_inliers = credo_CP_qnn_pred[most_inlier_idxs]
+    y_test_in = y_test[most_inlier_idxs]
+    
+    # evaluating metrics of interest
+    # coverage for outliers
+    cover_credo_gp_out = average_coverage(
+        credo_CP_gp_pred[outlier_indexes][:, 1], 
+        credo_CP_gp_pred[outlier_indexes][:, 0], 
+        y_test_out
+    )
+    cover_credo_qnn_out = average_coverage(
+        credo_CP_qnn_pred[outlier_indexes][:, 1], 
+        credo_CP_qnn_pred[outlier_indexes][:, 0], 
+        y_test_out
+    )
 
-        credo_gp_inliers = credo_CP_gp_pred[most_inlier_idxs]
-        credo_qnn_inliers = credo_CP_qnn_pred[most_inlier_idxs]
-        y_test_in = y_test[most_inlier_idxs]
-        
-        # evaluating metrics of interest
-        # coverage for outliers
-        cover_credo_gp_out = average_coverage(
-            credo_CP_gp_pred[outlier_indexes][:, 1], 
-            credo_CP_gp_pred[outlier_indexes][:, 0], 
-            y_test_out
-        )
-        cover_credo_qnn_out = average_coverage(
-            credo_CP_qnn_pred[outlier_indexes][:, 1], 
-            credo_CP_qnn_pred[outlier_indexes][:, 0], 
-            y_test_out
-        )
-
-        # ISL on outliers
-        isl_credo_gp_out = average_interval_score_loss(
-            credo_CP_gp_pred[outlier_indexes][:, 1], 
-            credo_CP_gp_pred[outlier_indexes][:, 0], 
-            y_test_out, alpha
-        )
-        isl_credo_qnn_out = average_interval_score_loss(
-            credo_CP_qnn_pred[outlier_indexes][:, 1], 
-            credo_CP_qnn_pred[outlier_indexes][:, 0], 
-            y_test_out, alpha
-        )
-        
-        # Interval length ratio
-        credo_gp_ratio = np.mean(
-                compute_interval_length(
-                    credo_gp_outliers[:, 1],
-                    credo_gp_outliers[:, 0]
-                )
-            ) / np.mean(
-                compute_interval_length(
-                    credo_gp_inliers[:, 1],
-                    credo_gp_inliers[:, 0]
-                )
+    # ISL on outliers
+    isl_credo_gp_out = average_interval_score_loss(
+        credo_CP_gp_pred[outlier_indexes][:, 1], 
+        credo_CP_gp_pred[outlier_indexes][:, 0], 
+        y_test_out, alpha
+    )
+    isl_credo_qnn_out = average_interval_score_loss(
+        credo_CP_qnn_pred[outlier_indexes][:, 1], 
+        credo_CP_qnn_pred[outlier_indexes][:, 0], 
+        y_test_out, alpha
+    )
+    
+    # Interval length ratio
+    credo_gp_ratio = np.mean(
+            compute_interval_length(
+                credo_gp_outliers[:, 1],
+                credo_gp_outliers[:, 0]
             )
-        credo_qnn_ratio = np.mean(
-                compute_interval_length(
-                    credo_qnn_outliers[:, 1],
-                    credo_qnn_outliers[:, 0]
-                )
-            ) / np.mean(
-                compute_interval_length(
-                    credo_qnn_inliers[:, 1],
-                    credo_qnn_inliers[:, 0]
-                )
+        ) / np.mean(
+            compute_interval_length(
+                credo_gp_inliers[:, 1],
+                credo_gp_inliers[:, 0]
             )
-          
-        
-        isl_outlier_array = np.array([
-            isl_credo_gp_out,
-            isl_credo_qnn_out,
-        ])
-        cover_outlier_array = np.array([
-            cover_credo_gp_out,
-            cover_credo_qnn_out,
-        ])
-        ratio_array = np.array([
-            credo_gp_ratio,
-            credo_qnn_ratio,
-        ])
+        )
+    credo_qnn_ratio = np.mean(
+            compute_interval_length(
+                credo_qnn_outliers[:, 1],
+                credo_qnn_outliers[:, 0]
+            )
+        ) / np.mean(
+            compute_interval_length(
+                credo_qnn_inliers[:, 1],
+                credo_qnn_inliers[:, 0]
+            )
+        )
+      
+    
+    isl_outlier_array = np.array([
+        isl_credo_gp_out,
+        isl_credo_qnn_out,
+    ])
+    cover_outlier_array = np.array([
+        cover_credo_gp_out,
+        cover_credo_qnn_out,
+    ])
+    ratio_array = np.array([
+        credo_gp_ratio,
+        credo_qnn_ratio,
+    ])
 
-        return cover_array, isl_array, IL_array, pcorr_array, cover_outlier_array, isl_outlier_array, ratio_array
+    return cover_array, isl_array, IL_array, pcorr_array, cover_outlier_array, isl_outlier_array, ratio_array
 
-    return cover_array, isl_array, IL_array, pcorr_array
 
 def run_experiment(dataset, 
                    n_rep, 
@@ -452,7 +445,7 @@ def run_experiment(dataset,
     df_IL = pd.DataFrame({"methods": methods ,"mean": IL_mean, "sd": IL_sd})
     df_pcorr = pd.DataFrame({"methods": methods ,"mean": pcorr_mean, "sd": pcorr_sd})
 
-    data_dir = os.path.join(RESULTS_PATH, f"{dataset}_{uacqr_model}_summary")
+    data_dir = os.path.join(RESULTS_PATH, f"{dataset}_gamma_adaptive_summary")
     os.makedirs(data_dir, exist_ok=True)
 
     df_cover.to_csv(os.path.join(data_dir, f"{dataset}_coverage_summary.csv"))
