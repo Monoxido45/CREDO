@@ -537,8 +537,8 @@ class CredalCPRegressor(BaseEstimator):
         last_neighbor_dist = distances[:, -1]
 
         scarce_score = (last_neighbor_dist - self.q_lo_gamma) / (self.q_hi_gamma - self.q_lo_gamma + eps)
-        gamma_min = self.gamma/4
-        gamma_max = 1 - self.gamma/4
+        gamma_min = self.gamma/2
+        gamma_max = 1 - self.gamma/2
         gamma_values = gamma_max - ((gamma_max - gamma_min) * self.sigma(scarce_score))
 
         return gamma_values
