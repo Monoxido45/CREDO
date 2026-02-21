@@ -103,7 +103,7 @@ def fit_methods(
         X_train, 
         y_train,
         weight_decay=1e-6,
-        step_size=10,
+        step_size=5,
         gamma=0.99,
         hidden_layers=[64, 64],
         dropout=0.3,
@@ -164,7 +164,7 @@ def fit_methods(
     print("Summarizing epistemic uncertainty over inliers and outliers for QNN")
     epis_unc_inlier_qnn_mean, epis_unc_outlier_qnn_mean = np.mean(epis_unc_inlier_qnn), np.mean(epis_unc_outlier_qnn)
 
-    return epis_unc_inlier_qnn_mean, epis_unc_outlier_qnn_mean
+    return epis_unc_inlier_qnn_mean, epis_unc_outlier_qnn_mean, epis_unc_inlier_qnn, epis_unc_outlier_qnn
 
 def run_experiment(dataset, 
                    n_rep, 
@@ -185,6 +185,8 @@ def run_experiment(dataset,
         resume_from = int(checkpoint_data.get("iteration", -1)) + 1
         epis_unc_inlier_qnn_results = checkpoint_data.get("epis_unc_inlier_qnn", [])
         epis_unc_outlier_qnn_results = checkpoint_data.get("epis_unc_outlier_qnn", [])
+        epis_unc_inlier_qnn_all = checkpoint_data.get("epis_unc_inlier_qnn_all", [])
+        epis_unc_outlier_qnn_all = checkpoint_data.get("epis_unc_outlier_qnn_all", [])
         seeds = checkpoint_data.get("seeds", None)
         print(f"Resuming from iteration {resume_from}. Loaded {len(epis_unc_inlier_qnn_results)} results so far.")
     else:
@@ -192,6 +194,8 @@ def run_experiment(dataset,
         seeds = generate_seeds(seed_initial, n_rep)
         epis_unc_inlier_qnn_results = []
         epis_unc_outlier_qnn_results = []
+        epis_unc_inlier_qnn_all = []
+        epis_unc_outlier_qnn_all = []
 
 
     for i in tqdm(range(resume_from, n_rep), desc = f"Running methods for dataset: {dataset}"):
@@ -216,7 +220,7 @@ def run_experiment(dataset,
         else:
             scale_y = False
 
-        epis_unc_inlier_qnn, epis_unc_outlier_qnn = fit_methods(
+        epis_unc_inlier_qnn_mean, epis_unc_outlier_qnn_mean, epis_unc_inlier_qnn_arr, epis_unc_outlier_qnn_arr = fit_methods(
             X_train,
             y_train,
             X_calib,
@@ -227,14 +231,18 @@ def run_experiment(dataset,
             batch_size=batch_size,
             scale_y = scale_y,
         )
-        epis_unc_inlier_qnn_results.append(epis_unc_inlier_qnn)
-        epis_unc_outlier_qnn_results.append(epis_unc_outlier_qnn)
+        epis_unc_inlier_qnn_results.append(epis_unc_inlier_qnn_mean)
+        epis_unc_outlier_qnn_results.append(epis_unc_outlier_qnn_mean)
+        epis_unc_inlier_qnn_all.append(epis_unc_inlier_qnn_arr)
+        epis_unc_outlier_qnn_all.append(epis_unc_outlier_qnn_arr)
 
         def save_checkpoint(iteration, seeds):
             try:
                 checkpoint = {
                     "epis_unc_inlier_qnn": epis_unc_inlier_qnn_results,
                     "epis_unc_outlier_qnn": epis_unc_outlier_qnn_results,
+                    "epis_unc_inlier_qnn_all": epis_unc_inlier_qnn_all,
+                    "epis_unc_outlier_qnn_all": epis_unc_outlier_qnn_all,
                     "iteration": iteration,
                     "seeds": seeds,
                     "alpha": alpha,
@@ -255,6 +263,10 @@ def run_experiment(dataset,
     # summarize results: convert lists to arrays and compute mean and sd (sample sd if n_rep>1)
     epis_unc_inlier_qnn_results = np.array(epis_unc_inlier_qnn_results)
     epis_unc_outlier_qnn_results = np.array(epis_unc_outlier_qnn_results)
+
+    # convert lists to arrays and stack by rows (each element is 1D and same length)
+    epis_unc_inlier_qnn_all = np.vstack(epis_unc_inlier_qnn_all)
+    epis_unc_outlier_qnn_all = np.vstack(epis_unc_outlier_qnn_all)
 
     def mean_sd(arr):
         mean = np.nanmean(arr)
@@ -285,6 +297,21 @@ def run_experiment(dataset,
         epis_unc_outlier_qnn_sd,
     ])
 
+    # compute mean across repetitions for each observation (columns)
+    epis_unc_inlier_qnn_byobs_mean = np.nanmean(epis_unc_inlier_qnn_all, axis=0)
+    epis_unc_outlier_qnn_byobs_mean = np.nanmean(epis_unc_outlier_qnn_all, axis=0)
+
+    # save per-observation means
+    obs_dir = os.path.join(RESULTS_PATH, f"{dataset}_unc_by_observation")
+    os.makedirs(obs_dir, exist_ok=True)
+
+    df_inliers_byobs = pd.DataFrame({"mean_epistemic_unc_inlier": epis_unc_inlier_qnn_byobs_mean})
+    df_outliers_byobs = pd.DataFrame({"mean_epistemic_unc_outlier": epis_unc_outlier_qnn_byobs_mean})
+
+    df_inliers_byobs.to_csv(os.path.join(obs_dir, f"{dataset}_epis_unc_inlier_obs_mean.csv"), index=False)
+    df_outliers_byobs.to_csv(os.path.join(obs_dir, f"{dataset}_epis_unc_outlier_obs_mean.csv"), index=False)
+
+
     # create summary dataframes and save to CSV
     general_df = pd.DataFrame({
       "methods": methods ,
@@ -297,7 +324,8 @@ def run_experiment(dataset,
 
     general_df.to_csv(os.path.join(data_dir, f"{dataset}_general_summary.csv"))
 
-    return np.array(epis_unc_inlier_qnn_results), np.array(epis_unc_outlier_qnn_results)
+    return np.array(epis_unc_inlier_qnn_results), np.array(epis_unc_outlier_qnn_results), \
+           np.array(epis_unc_inlier_qnn_all), np.array(epis_unc_outlier_qnn_all)
 
 if __name__ == "__main__":
     if kernel == "RBF":
@@ -356,7 +384,7 @@ if __name__ == "__main__":
         checkpoint_flag = False
     
     # Run the experiment
-    epis_unc_inlier_qnn, epis_unc_outlier_qnn = run_experiment(
+    epis_unc_inlier_qnn, epis_unc_outlier_qnn, epis_unc_inlier_qnn_all, epis_unc_outlier_qnn_all = run_experiment(
             dataset = dataset, 
             n_rep = n_rep, 
             target_column = "target",
@@ -367,7 +395,12 @@ if __name__ == "__main__":
     raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}")
     os.makedirs(raw_dir, exist_ok=True)
 
-    to_save = {"epis_unc_inlier_qnn": epis_unc_inlier_qnn, "epis_unc_outlier_qnn": epis_unc_outlier_qnn}
+    to_save = {
+        "epis_unc_inlier_qnn": epis_unc_inlier_qnn, 
+        "epis_unc_outlier_qnn": epis_unc_outlier_qnn,
+        "epis_unc_inlier_qnn_all": epis_unc_inlier_qnn_all,
+        "epis_unc_outlier_qnn_all": epis_unc_outlier_qnn_all,
+        }
     for name, arr in to_save.items():
         filepath = os.path.join(raw_dir, f"{dataset}_{name}_raw_unc.pkl")
         with open(filepath, "wb") as f:
