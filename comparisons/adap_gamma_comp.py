@@ -103,7 +103,7 @@ def fit_methods(
         nc_type = 'Quantile',
         base_model = "GP",
         alpha = alpha,
-        adaptive_gamma = True,
+        adaptive_gamma = False,
         gamma = gamma,
     )
 
@@ -117,6 +117,7 @@ def fit_methods(
     )
     credal_CP_gp.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
     credo_CP_gp_pred = credal_CP_gp.predict(X_test)
+#     print(credal_CP_gp.gamma_quantiles)
 
     del credal_CP_gp
     gc.collect()

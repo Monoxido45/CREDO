@@ -193,37 +193,36 @@ def fit_methods(
     del epic_obj
     gc.collect()
 
-    # Fitting CREDO with GP
-    print(f"Fitting CREDO vanilla with GP")
-    credal_CP_gp = CredalCPRegressor(
-        nc_type = 'Quantile',
-        base_model = "GP",
-        alpha = alpha,
-        adaptive_gamma = False,
-        gamma = gamma,
-    )
-
-    credal_CP_gp.fit(
+    print(f"Fitting CREDO with GP fixed gamma")
+    credal_CP_gp_fixed = CredalCPRegressor(
+    nc_type = 'Quantile',
+    base_model = "GP",
+    alpha = alpha,
+    adaptive_gamma = False,
+    gamma = gamma,
+)
+    credal_CP_gp_fixed.fit(
         X_train,
         y_train,
         kernel = kernel_gp,
+        kernel_noise = kernel_noise_gp,
+        heteroscedastic = True,
         normalize_y = True,
         scale = True,
-        heteroscedastic = False,
     )
-    credal_CP_gp.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
-    credo_CP_gp_pred = credal_CP_gp.predict(X_test)
+    credal_CP_gp_fixed.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
+    credo_CP_gp_pred = credal_CP_gp_fixed.predict(X_test)
 
-    del credal_CP_gp
+    del credal_CP_gp_fixed
     gc.collect()
 
-    print(f"Fitting CREDO vanilla with QNN")
+    print(f"Fitting CREDO with QNN")
     # Fitting CREDO with QNN
     credal_CP_qnn = CredalCPRegressor(
         nc_type = 'Quantile',
         base_model = "QNN",
         alpha = alpha,
-        adaptive_gamma = False,
+        adaptive_gamma = True,
         gamma = gamma,
         )
     
@@ -234,7 +233,7 @@ def fit_methods(
         step_size=10,
         gamma=0.99,
         hidden_layers=[64, 64],
-        dropout=0.3,
+        dropout=0.4,
         epochs=2000,
         patience=50,
         lr=1e-3, 
@@ -244,9 +243,31 @@ def fit_methods(
     )
 
     credal_CP_qnn.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
-    credo_CP_qnn_pred = credal_CP_qnn.predict(X_test)
+ #   credo_CP_qnn_pred = credal_CP_qnn.predict(X_test)
+
+    print(f"Fitting CREDO with QNN fixed gamma")
+    credal_CP_qnn_fixed = CredalCPRegressor(
+    nc_type = 'Quantile',
+    base_model = credal_CP_qnn.base_model,
+    alpha = alpha,
+    adaptive_gamma = False,
+    gamma = gamma,
+    is_fitted = True,
+    )
+
+    credal_CP_qnn_fixed.fit(
+        X_train,
+        y_train,
+        base_model_type = "QNN",
+    )
+    credal_CP_qnn_fixed.calibrate(X_calib, 
+                                  y_calib,
+                                  N_samples_MC=n_MCMC, 
+                                  )
+    credo_CP_qnn_pred = credal_CP_qnn_fixed.predict(X_test)
 
     del credal_CP_qnn
+    del credal_CP_qnn_fixed
     gc.collect()
 
     lower_cqr = uacqr_pred_test["CQR"]["lower"]
@@ -1528,7 +1549,7 @@ if __name__ == "__main__":
     elif kernel == "RBF + Matern52":
         kernel_gp = gpx.kernels.RBF() + gpx.kernels.Matern52()
     else:
-        kernel = (
+        kernel_gp = (
         gpx.kernels.RBF() + 
         gpx.kernels.Matern32()+
         gpx.kernels.Matern52(lengthscale=0.12)

@@ -19,6 +19,7 @@ from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import NearestNeighbors
 import jax.random as jr
+import jax.numpy as jnp
 
 class CredalCPRegressor(BaseEstimator):
     """
@@ -134,9 +135,11 @@ class CredalCPRegressor(BaseEstimator):
             base_model_type = None,
             activation_sigma = "softplus",
             kernel = None,
+            heuristic_gamma = "exp",
             **fit_params):
         self.nn_type = nn_type
         if self.base_is_sklearn and not self.base_is_fitted:
+            print("Fitting sklearn base model")
             self.base_model.fit(X, y, **fit_params)
             self.base_is_fitted = True
             self.base_model_type = base_model_type
@@ -282,8 +285,12 @@ class CredalCPRegressor(BaseEstimator):
         
         else:
           self.base_model_type = base_model_type
+
         if self.adaptive_gamma:
-            self.fit_gamma(X)
+            self.fit_gamma(
+                X,
+                heuristic = heuristic_gamma,
+                )
         return self
     
     def calibrate(
@@ -292,6 +299,8 @@ class CredalCPRegressor(BaseEstimator):
             y_calib,
             random_seed_calib=0,
             N_samples_MC=300,
+            eps = 1e-5,
+            gamma_max = 0.9,
             ):
         """
         Fit posterior over parametric family then creates imprecise quantiles as the modified conformal scores.
@@ -309,7 +318,7 @@ class CredalCPRegressor(BaseEstimator):
             Returns self.
         """
         if self.adaptive_gamma:
-            gamma_quantiles = self.compute_gamma(X_calib)
+            gamma_quantiles = self.compute_gamma(X_calib, eps = eps, gamma_max = gamma_max)
         else:
             gamma_quantiles = self.gamma * np.ones(len(X_calib))
 
@@ -456,11 +465,12 @@ class CredalCPRegressor(BaseEstimator):
 
                 # obtaining lower and upper quantiles for each x_calib
                 if self.adaptive_gamma:
-                    q_low_raw = np.array([np.quantile(q_low_grid[:, i], gamma_quantiles[i]/2) for i in range(len(X_calib))])
-                    q_upp_raw = np.array([np.quantile(q_upp_grid[:, i], 1 - gamma_quantiles[i]/2) for i in range(len(X_calib))])
+                    # For adaptive, we still need a loop, but use jnp.quantile
+                    q_low_raw = np.array([jnp.quantile(q_low_grid[:, i], gamma_quantiles[i]/2) for i in range(len(X_calib))])
+                    q_upp_raw = np.array([jnp.quantile(q_upp_grid[:, i], 1 - gamma_quantiles[i]/2) for i in range(len(X_calib))])
                 else:
-                    q_low_raw = np.quantile(q_low_grid, self.gamma/2, axis=0)
-                    q_upp_raw = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=0)
+                    q_low_raw = np.array(jnp.quantile(q_low_grid, self.gamma/2, axis=0))
+                    q_upp_raw = np.array(jnp.quantile(q_upp_grid, 1 - self.gamma/2, axis=0))
 
                 # with lower and upper quantiles, we can compute the modified nonconformity scores
                 self.nc_scores = np.maximum(q_low_raw - y_calib, y_calib - q_upp_raw)
@@ -505,14 +515,18 @@ class CredalCPRegressor(BaseEstimator):
         return self.cutoff
     
     # adaptive K with respect to the sample size
-    def fit_gamma(self, X, C_base=6.672):
+    def fit_gamma(self, X, C_base=6.672, heuristic = "exp"):
         self.scaler_x = StandardScaler().fit(X)
         # standardizing XStandardScaler()
         X_scaled = self.scaler_x.transform(X)
 
         # fixing k according to dimmensionalyty of X and sample size
         n, d = X.shape
-        k = int(np.ceil(C_base * (n**(4/(4 + d)))))
+        if heuristic == "exp":
+            k = int(np.ceil(C_base * (n**(4/(4 + d)))))
+        elif heuristic == "log":
+            k = int(np.ceil(d * np.log(n)))
+
         print(f"Fitting gamma model with k={k} neighbors for adaptive gamma")
         self.gamma_model = NearestNeighbors(n_neighbors=k).fit(X_scaled)
 
@@ -523,21 +537,22 @@ class CredalCPRegressor(BaseEstimator):
 
         # computing quantile on gammas
         self.q_lo_gamma = np.quantile(last_neighbor_dist, 0.5)
-        self.q_hi_gamma = np.quantile(last_neighbor_dist, 0.9)
+        self.q_hi_gamma = np.quantile(last_neighbor_dist, 0.95)
         return self
     
     @staticmethod
     def sigma(u):
         return 1 / (1 + np.exp(-u))
     
-    def compute_gamma(self, X, eps = 1e-5):
+    def compute_gamma(self, X, eps = 1e-5, gamma_max = 0.9):
         X_scaled = self.scaler_x.transform(X)
-        distances, indices = self.gamma_model.kneighbors(X_scaled)
-        last_neighbor_dist = distances[:, -1]
+        distances, indices = self.gamma_model.kneighbors(X_scaled)# Use log to handle the high-dimensional distance scaling
+        last_neighbor_dist = np.log1p(distances[:, -1]) 
+        q_lo = np.log1p(self.q_lo_gamma)
+        q_hi = np.log1p(self.q_hi_gamma)
 
-        scarce_score = (last_neighbor_dist - self.q_lo_gamma) / (self.q_hi_gamma - self.q_lo_gamma + eps)
+        scarce_score = (last_neighbor_dist - q_lo) / (q_hi - q_lo + eps)
         gamma_min = self.gamma
-        gamma_max = 1 - self.gamma/4
         gamma_values = gamma_max - ((gamma_max - gamma_min) * self.sigma(scarce_score))
 
         return gamma_values
@@ -548,7 +563,9 @@ class CredalCPRegressor(BaseEstimator):
             n_samples=500,
             conformalize = True,
             disentangle=False,
-            random_seed_test = 45
+            random_seed_test = 45,
+            gamma_max = 0.9,
+            eps = 1e-5,
             ):
         """
         Interval prediction using the fitted base model.
@@ -564,7 +581,7 @@ class CredalCPRegressor(BaseEstimator):
             Predicted values.
         """
         if self.adaptive_gamma:
-            gamma_quantiles = self.compute_gamma(X_test)
+            gamma_quantiles = self.compute_gamma(X_test, eps = eps, gamma_max = gamma_max)
         else:
             gamma_quantiles = self.gamma * np.ones(len(X_test))
         

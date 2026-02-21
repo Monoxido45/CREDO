@@ -2245,6 +2245,7 @@ class GP_model(BaseEstimator):
                 )
 
         elif self.heteroscedastic:
+            print("Fitting heteroscedastic model.")
             if activation_sigma == "lognormal":
                 self.activation_sigma = "lognormal"
                 noise_transform = LogNormalTransform()
@@ -2298,6 +2299,7 @@ class GP_model(BaseEstimator):
                 key=subkey,
                 verbose = False,
             )
+            print("fitted heteroscedastic GP")
         return self
     
     def predict_quantiles(
@@ -2361,9 +2363,13 @@ class GP_model(BaseEstimator):
             q_u = quantile_functions[:, :, 1]
 
         if self.normalize_y:
-            original_shape = q_l.shape
-            q_l = self.y_scaler.inverse_transform(q_l.flatten().reshape(-1, 1)).reshape(original_shape)
-            q_u = self.y_scaler.inverse_transform(q_u.flatten().reshape(-1, 1)).reshape(original_shape)
+            mean = jnp.array(self.y_scaler.mean_)
+            scale = jnp.array(self.y_scaler.scale_)
+            q_l = (q_l * scale) + mean
+            q_u = (q_u * scale) + mean
+            # original_shape = q_l.shape
+            # q_l = self.y_scaler.inverse_transform(q_l.flatten().reshape(-1, 1)).reshape(original_shape)
+            # q_u = self.y_scaler.inverse_transform(q_u.flatten().reshape(-1, 1)).reshape(original_shape)
 
         return q_l, q_u
 
