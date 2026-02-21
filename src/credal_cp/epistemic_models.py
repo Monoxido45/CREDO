@@ -1465,6 +1465,7 @@ class QuantileRegressionNet(nn.Module):
     def __init__(self, input_size, output_size, hidden_layers, p_dropout=0.2):
         super(QuantileRegressionNet, self).__init__()
         self.layers = nn.ModuleList()
+        self.batch_norms = nn.ModuleList() 
         self.dropouts = nn.ModuleList()
         
         self.p_dropout = p_dropout
@@ -1472,15 +1473,19 @@ class QuantileRegressionNet(nn.Module):
         prev_units = input_size
         for units in hidden_layers:
             self.layers.append(nn.Linear(prev_units, units))
+            self.batch_norms.append(nn.BatchNorm1d(units))
             self.dropouts.append(nn.Dropout(p_dropout))
             prev_units = units
         
         self.fc_out = nn.Linear(prev_units, output_size)
 
     def forward(self, x):
-        for layer, dropout in zip(self.layers, self.dropouts):
-            x = F.relu(layer(x))
+        for layer, bn, dropout in zip(self.layers, self.batch_norms, self.dropouts):
+            x = layer(x)  
+            x = bn(x)             
+            x = F.relu(x)
             x = dropout(x)
+            
         x = self.fc_out(x)
         return x
 
@@ -1628,7 +1633,7 @@ class QuantileRegressionNN(BaseEstimator):
         q_low = all_samples[:, :, 0]   # (N, n_mc)
         q_high = all_samples[:, :, 1]  # (N, n_mc)
 
-        self.model.train()
+        self.model.eval()
 
         return q_low, q_high
 
@@ -1829,7 +1834,6 @@ class QuantileRegressionNNEnsemble(BaseEstimator):
         """
         return np.sort(y_pred, axis=1)
 
-      
 ############### Classification using MC Dropout ###############
 # Neural Network Classifier Base Architecture
 class NN_base(nn.Module):

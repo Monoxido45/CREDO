@@ -204,13 +204,17 @@ def run_experiment(dataset,
         X = data.drop(columns=[target_column])
         y = data[target_column]
 
+        n = X.shape[0]
+        # compute a fixed integer test set size so X_test has the same number of rows every repetition
+        n_test = int(round(prop_test * n))
+        n_test = max(1, min(n - 1, n_test))  # ensure at least 1 and less than n
+
         X_train_calib, X_test, y_train_calib, y_test = train_test_split(
-            X, y, test_size=prop_test, random_state=seed
+            X, y, test_size=n_test, random_state=seed
         )
-        if X.shape[0] < 5000:
-          prop_train = 0.5
-        else:
-          prop_train = 0.7
+
+        prop_train = 0.7
+
         X_train, X_calib, y_train, y_calib = train_test_split(
             X_train_calib, y_train_calib, test_size=1-prop_train, random_state=seed
         )

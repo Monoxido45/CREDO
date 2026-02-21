@@ -161,18 +161,18 @@ class MDN_base(nn.Module):
         prev_units = input_shape
         for units in hidden_layers:
             self.layers.append(nn.Linear(prev_units, units))
-            self.dropouts.append(nn.Dropout(dropout_rate))
             self.batch_norms.append(nn.BatchNorm1d(units))
+            self.dropouts.append(nn.Dropout(dropout_rate))
             prev_units = units
 
         self.fc_out = nn.Linear(prev_units, num_components * 3)
 
     def forward(self, x):
         for layer, bn, dropout in zip(self.layers, self.batch_norms, self.dropouts):
-            x = F.relu(layer(x))
-            x = dropout(x)
-            # x = torch.tanh(layer(x))
+            x = layer(x)
             x = bn(x)
+            x = F.relu(x)
+            x = dropout(x)
         x = self.fc_out(x)
         return x
 
@@ -485,8 +485,6 @@ class MDN_model(BaseEstimator):
             x = torch.tensor(x, dtype=torch.float32)
 
         # original_mode = self.model.training
-        self.model.eval()
-        # force only dropout layers to be in train mode
         self.model.eval()
         for m in self.model.modules():
             if isinstance(m, nn.Dropout):
