@@ -446,7 +446,6 @@ class CredalCPRegressor(BaseEstimator):
             if self.nc_type == "Quantile":
                 lower_q = self.alpha / 2
                 upper_q = 1 - self.alpha / 2
-                i = 0
 
                 q_low_grid, q_upp_grid = self.base_model.predict_quantiles(
                     X_calib,
@@ -474,7 +473,6 @@ class CredalCPRegressor(BaseEstimator):
             if self.nc_type == "Quantile":
                 lower_q = self.alpha / 2
                 upper_q = 1 - self.alpha / 2
-                i = 0
                 
                 q_samples = self.base_model.sample_quantiles_from_posterior(
                     X_calib,
@@ -502,7 +500,8 @@ class CredalCPRegressor(BaseEstimator):
                 n = len(self.nc_scores)
                 self.cutoff = np.quantile(self.nc_scores, 
                                           q=np.ceil((n + 1) * (1 - self.alpha)) / n)
-                
+        
+        self.gamma_quantiles = gamma_quantiles
         return self.cutoff
     
     # adaptive K with respect to the sample size
@@ -568,6 +567,8 @@ class CredalCPRegressor(BaseEstimator):
             gamma_quantiles = self.compute_gamma(X_test)
         else:
             gamma_quantiles = self.gamma * np.ones(len(X_test))
+        
+        self.gamma_quantiles = gamma_quantiles
 
         if self.base_model_type == "MDN" and self.nn_type == "MC_Dropout":
             pi_test, mu_test, sigma_test = self.base_model.predict_mcdropout(

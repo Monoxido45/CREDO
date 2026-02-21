@@ -20,9 +20,9 @@ from lightgbm import LGBMRegressor
 from scipy.spatial.distance import cdist
 from catboost import CatBoostRegressor
 
-from experiments.helper import generate_data, interval_score_loss, randomized_conformal_cutoffs, select_column_per_row, average_coverage, average_interval_width
-from experiments.helper import sample_binning_model, QuantileBandwidthModel, QuantileRegressionNN, corr_coverage_widths # , hsic_coverage_widths, wsc
-from experiments.helper import CatBoostWrapper
+from helper import generate_data, interval_score_loss, randomized_conformal_cutoffs, select_column_per_row, average_coverage, average_interval_width
+from helper import sample_binning_model, QuantileBandwidthModel, QuantileRegressionNN, corr_coverage_widths # , hsic_coverage_widths, wsc
+from helper import CatBoostWrapper
 
 
 
@@ -322,80 +322,142 @@ class uacqr():
         if self.randomized_conformal:
             print("Warning: score threshold attributes at this point are not randomized. They will be after making predictions")
 
+    def predict_uacqr(self, x_test):
+        if len(x_test.shape) == 1:
+            x_test = x_test.reshape(-1, 1)
 
-
-    def predict(self, x_test):
-        if len(x_test.shape)==1:
-            x_test = x_test.reshape(-1,1)
-        
         if self.randomized_conformal:
-            self.score_threshold = randomized_conformal_cutoffs(self.scores['combined'], x_test.shape[0], alpha=self.alpha).astype(int)
-            self.cqr_score_threshold = randomized_conformal_cutoffs(self.cqr_scores['combined'], x_test.shape[0], alpha=self.alpha)
-            self.uacqrs_score_threshold = randomized_conformal_cutoffs(self.uacqrs_scores['combined'], x_test.shape[0], alpha=self.alpha)
-            self.cqrr_score_threshold = randomized_conformal_cutoffs(self.cqrr_scores['combined'], x_test.shape[0], alpha=self.alpha)
+            self.score_threshold = randomized_conformal_cutoffs(
+                self.scores["combined"], x_test.shape[0], alpha=self.alpha
+            ).astype(int)
+            self.cqr_score_threshold = randomized_conformal_cutoffs(
+                self.cqr_scores["combined"], x_test.shape[0], alpha=self.alpha
+            )
+            self.uacqrs_score_threshold = randomized_conformal_cutoffs(
+                self.uacqrs_scores["combined"], x_test.shape[0], alpha=self.alpha
+            )
+            self.cqrr_score_threshold = randomized_conformal_cutoffs(
+                self.cqrr_scores["combined"], x_test.shape[0], alpha=self.alpha
+            )
 
-        q_lower_uacqrp = self.__predict_B_sorted(x_test, lower = True)
+        q_lower_uacqrp = self.__predict_B_sorted(x_test, lower=True)
         q_upper_uacqrp = self.__predict_B_sorted(x_test, lower=False)
 
-        uacqrs_spread_upper_test = pd.DataFrame(q_upper_uacqrp).iloc[:,:-1].agg(self.uacqrs_agg, axis=1) 
-        uacqrs_spread_lower_test = pd.DataFrame(q_lower_uacqrp).iloc[:,:-1].agg(self.uacqrs_agg, axis=1)
+        uacqrs_spread_upper_test = (
+            pd.DataFrame(q_upper_uacqrp).iloc[:, :-1].agg(self.uacqrs_agg, axis=1)
+        )
+        uacqrs_spread_lower_test = (
+            pd.DataFrame(q_lower_uacqrp).iloc[:, :-1].agg(self.uacqrs_agg, axis=1)
+        )
 
         if self.oracle_g:
             cqr_model_lower = self.cqr_base_model.predict(x_test)[0]
             cqr_model_upper = self.cqr_base_model.predict(x_test)[-1]
 
-            true_quantile_lower = self.cond_exp(x_test) - norm.ppf(self.q_upper/100, 0, self.noise_sd_fn(x_test))
-            true_quantile_upper = self.cond_exp(x_test) + norm.ppf(self.q_upper/100, 0, self.noise_sd_fn(x_test))
+            true_quantile_lower = self.cond_exp(x_test) - norm.ppf(
+                self.q_upper / 100, 0, self.noise_sd_fn(x_test)
+            )
+            true_quantile_upper = self.cond_exp(x_test) + norm.ppf(
+                self.q_upper / 100, 0, self.noise_sd_fn(x_test)
+            )
 
-            uacqrs_spread_lower_test = pd.Series(np.abs(cqr_model_lower - true_quantile_lower))
-            uacqrs_spread_upper_test = pd.Series(np.abs(cqr_model_upper - true_quantile_upper))
+            uacqrs_spread_lower_test = pd.Series(
+                np.abs(cqr_model_lower - true_quantile_lower)
+            )
+            uacqrs_spread_upper_test = pd.Series(
+                np.abs(cqr_model_upper - true_quantile_upper)
+            )
 
         if self.inject_noise:
             noise_upper_variance = uacqrs_spread_upper_test.var() * self.inject_noise
             noise_lower_variance = uacqrs_spread_lower_test.var() * self.inject_noise
 
-            noise_upper = np.random.normal(size=uacqrs_spread_upper_test.shape[0], scale=noise_upper_variance**0.5)
-            noise_lower = np.random.normal(size=uacqrs_spread_lower_test.shape[0], scale=noise_lower_variance**0.5)
+            noise_upper = np.random.normal(
+                size=uacqrs_spread_upper_test.shape[0], scale=noise_upper_variance**0.5
+            )
+            noise_lower = np.random.normal(
+                size=uacqrs_spread_lower_test.shape[0], scale=noise_lower_variance**0.5
+            )
 
             uacqrs_spread_upper_test = uacqrs_spread_upper_test + noise_upper
             uacqrs_spread_lower_test = uacqrs_spread_lower_test + noise_lower
-                
-            uacqrs_spread_upper_test.loc[uacqrs_spread_upper_test<0] = 0
-            uacqrs_spread_lower_test.loc[uacqrs_spread_lower_test<0] = 0
 
+            uacqrs_spread_upper_test.loc[uacqrs_spread_upper_test < 0] = 0
+            uacqrs_spread_lower_test.loc[uacqrs_spread_lower_test < 0] = 0
 
         if self.bootstrapping_for_uacqrp:
-            cqr_model_lower = q_lower_uacqrp[:,int(self.B/2)]
-            cqr_model_upper = q_upper_uacqrp[:,int(self.B/2)]
+            cqr_model_lower = q_lower_uacqrp[:, int(self.B / 2)]
+            cqr_model_upper = q_upper_uacqrp[:, int(self.B / 2)]
         else:
             cqr_model_lower = self.cqr_base_model.predict(x_test)[0]
-            cqr_model_upper = self.cqr_base_model.predict(x_test)[-1]    
-        
+            cqr_model_upper = self.cqr_base_model.predict(x_test)[-1]
+
         test_interval_widths = cqr_model_upper - cqr_model_lower
 
-
         self.test_y_lower = select_column_per_row(q_lower_uacqrp, self.score_threshold)
-        self.test_y_lower_cqr = self.inv_transform(self.transform(cqr_model_lower) - self.cqr_score_threshold)
-        self.test_y_lower_uacqrs = self.inv_transform(self.transform(cqr_model_lower) - self.uacqrs_score_threshold*(uacqrs_spread_lower_test.values + 1e-05))
-        self.test_y_lower_cqrr = self.inv_transform(self.transform(cqr_model_lower) - self.cqrr_score_threshold*(test_interval_widths + 1e-05))
-        self.test_y_lower_median = q_lower_uacqrp[:,int(self.B/2)]
+        self.test_y_lower_cqr = self.inv_transform(
+            self.transform(cqr_model_lower) - self.cqr_score_threshold
+        )
+        self.test_y_lower_uacqrs = self.inv_transform(
+            self.transform(cqr_model_lower)
+            - self.uacqrs_score_threshold * (uacqrs_spread_lower_test.values + 1e-05)
+        )
+        self.test_y_lower_cqrr = self.inv_transform(
+            self.transform(cqr_model_lower)
+            - self.cqrr_score_threshold * (test_interval_widths + 1e-05)
+        )
+        self.test_y_lower_median = q_lower_uacqrp[:, int(self.B / 2)]
         self.test_y_lower_base = cqr_model_lower
 
         self.test_y_upper = select_column_per_row(q_upper_uacqrp, self.score_threshold)
-        self.test_y_upper_cqr = self.inv_transform(self.transform(cqr_model_upper) + self.cqr_score_threshold)
-        self.test_y_upper_uacqrs = self.inv_transform(self.transform(cqr_model_upper) + self.uacqrs_score_threshold*(uacqrs_spread_upper_test.values + 1e-05))
-        self.test_y_upper_cqrr = self.inv_transform(self.transform(cqr_model_upper) + self.cqrr_score_threshold*(test_interval_widths + 1e-05))
-        self.test_y_upper_median = q_upper_uacqrp[:,int(self.B/2)]
+        self.test_y_upper_cqr = self.inv_transform(
+            self.transform(cqr_model_upper) + self.cqr_score_threshold
+        )
+        self.test_y_upper_uacqrs = self.inv_transform(
+            self.transform(cqr_model_upper)
+            + self.uacqrs_score_threshold * (uacqrs_spread_upper_test.values + 1e-05)
+        )
+        self.test_y_upper_cqrr = self.inv_transform(
+            self.transform(cqr_model_upper)
+            + self.cqrr_score_threshold * (test_interval_widths + 1e-05)
+        )
+        self.test_y_upper_median = q_upper_uacqrp[:, int(self.B / 2)]
         self.test_y_upper_base = cqr_model_upper
 
-        bounds_df = pd.DataFrame(data={"UACQR-P_lower":self.test_y_lower, "UACQR-P_upper":self.test_y_upper,
-                                       "UACQR-S_lower":self.test_y_lower_uacqrs, "UACQR-S_upper":self.test_y_upper_uacqrs,
-                                       "CQR_lower":self.test_y_lower_cqr, "CQR_upper":self.test_y_upper_cqr,
-                                       "CQR-r_lower":self.test_y_lower_cqrr, "CQR-r_upper":self.test_y_upper_cqrr,
-                                       "Base_lower":self.test_y_lower_base, "Base_upper":self.test_y_upper_base})
-        bounds_df.columns = pd.MultiIndex.from_product((['UACQR-P','UACQR-S','CQR','CQR-r','Base'],['lower','upper']))
+        bounds_df = pd.DataFrame(
+            data={
+                "UACQR-P_lower": self.test_y_lower,
+                "UACQR-P_upper": self.test_y_upper,
+                "UACQR-S_lower": self.test_y_lower_uacqrs,
+                "UACQR-S_upper": self.test_y_upper_uacqrs,
+                "CQR_lower": self.test_y_lower_cqr,
+                "CQR_upper": self.test_y_upper_cqr,
+                "CQR-r_lower": self.test_y_lower_cqrr,
+                "CQR-r_upper": self.test_y_upper_cqrr,
+                "Base_lower": self.test_y_lower_base,
+                "Base_upper": self.test_y_upper_base,
+            }
+        )
+        bounds_df.columns = pd.MultiIndex.from_product(
+            (["UACQR-P", "UACQR-S", "CQR", "CQR-r", "Base"], ["lower", "upper"])
+        )
 
         return bounds_df
+    
+    def predict(self, x_test):
+        if len(x_test.shape) == 1:
+            x_test = x_test.reshape(-1, 1)
+
+        if self.bootstrapping_for_uacqrp:
+            q_lower_uacqrp = self.__predict_B_sorted(x_test, lower=True)
+            q_upper_uacqrp = self.__predict_B_sorted(x_test, lower=False)
+            cqr_model_lower = q_lower_uacqrp[:, int(self.B / 2)]
+            cqr_model_upper = q_upper_uacqrp[:, int(self.B / 2)]
+        else:
+            cqr_model_lower = self.cqr_base_model.predict(x_test)[0]
+            cqr_model_upper = self.cqr_base_model.predict(x_test)[-1]
+
+        return np.column_stack((cqr_model_lower, cqr_model_upper))
 
     def evaluate(self, x_test, y_test, oqr_metrics=False): 
         
@@ -429,11 +491,6 @@ class uacqr():
                 setattr(self, f"{inner_key.replace('-','').lower()}_{outer_key}", inner_value)
 
         return metrics        
-
-
-
-
-
 
     def calculate_conditional_coverage(self, cond_exp=None, noise_sd_fn=None, plot=True, sorting_column=0, round_to=2, title=None,
                                         included_methods=['UACQR-P','UACQR-S','CQR', 'CQR-r','Base Estimator'],
@@ -511,8 +568,6 @@ class uacqr():
             
             plt.xlabel('$X_{\\cdot,'+str(sorting_column+1)+'}$')
                                                       
-
-
     def plot(self, cond_exp, noise_sd_fn, feature_for_x_axis=0):
         colors = {'UACQR-P':'tab:orange', 'CQR':'tab:green', 'UACQR-S':'tab:red', 'Base Estimator':'tab:purple', 
           'CQR-m with oracle info':'tab:brown','UACQR-S with oracle info':'tab:pink', 'Truth':'tab:blue',
@@ -564,7 +619,6 @@ class uacqr():
         by_label = dict(zip(labels, handles))
         plt.legend(by_label.values(), by_label.keys())
         
-
     def plot_simple(self, cond_exp, noise_sd_fn, feature_for_x_axis=0, sharey=True, suptitle=None,
                     ylabel = '$Y$', xlabel = '$X$', expanded=False):
         colors = {'UACQR-P':'tab:orange', 'CQR':'tab:green', 'UACQR-S':'tab:red', 'Base Estimator':'tab:purple', 
@@ -641,7 +695,6 @@ class uacqr():
             ax4.set_title('Proposal: UACQR-S')
         plt.rcParams['font.size'] = 10
 
-
     def __predict_individual_model(self, x_calib, model,lower=True):
         if lower:
             i = 0
@@ -664,7 +717,6 @@ class uacqr():
         elif self.model_type == 'ls' and not(lower):
             return model.predict(x_calib) + norm.ppf(self.q_upper/100) * self.sigmahat
         
-
     def __predict_B_sorted(self, x_test, lower=True):
         q_lower_uacqrp = np.zeros((len(x_test),self.B+1))
         for t,model in enumerate(self.models_B):
