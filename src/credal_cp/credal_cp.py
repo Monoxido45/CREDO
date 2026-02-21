@@ -135,7 +135,7 @@ class CredalCPRegressor(BaseEstimator):
             base_model_type = None,
             activation_sigma = "softplus",
             kernel = None,
-            heuristic_gamma = "exp",
+            heuristic_gamma = "log",
             **fit_params):
         self.nn_type = nn_type
         if self.base_is_sklearn and not self.base_is_fitted:
@@ -300,7 +300,7 @@ class CredalCPRegressor(BaseEstimator):
             random_seed_calib=0,
             N_samples_MC=300,
             eps = 1e-5,
-            gamma_max = 0.9,
+            gamma_max = 0.75,
             ):
         """
         Fit posterior over parametric family then creates imprecise quantiles as the modified conformal scores.
@@ -544,7 +544,7 @@ class CredalCPRegressor(BaseEstimator):
     def sigma(u):
         return 1 / (1 + np.exp(-u))
     
-    def compute_gamma(self, X, eps = 1e-5, gamma_max = 0.9):
+    def compute_gamma(self, X, eps = 1e-5, gamma_max = 0.75):
         X_scaled = self.scaler_x.transform(X)
         distances, indices = self.gamma_model.kneighbors(X_scaled)# Use log to handle the high-dimensional distance scaling
         last_neighbor_dist = np.log1p(distances[:, -1]) 
@@ -564,7 +564,7 @@ class CredalCPRegressor(BaseEstimator):
             conformalize = True,
             disentangle=False,
             random_seed_test = 45,
-            gamma_max = 0.9,
+            gamma_max = 0.75,
             eps = 1e-5,
             ):
         """

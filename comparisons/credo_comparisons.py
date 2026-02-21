@@ -210,7 +210,7 @@ def fit_methods(
         step_size=10,
         gamma=0.99,
         hidden_layers=[64, 64],
-        dropout=0.4,
+        dropout=0.3,
         epochs=2000,
         patience=50,
         lr=1e-3, 
@@ -703,6 +703,7 @@ def fit_methods_outlier(
         y_test,
         mdn_params,
         i,
+        batch_size = 32,
         scale_y = False,
         inlier_size = 0.2,
         n_neighbors = 15,
@@ -824,14 +825,14 @@ def fit_methods_outlier(
         X_train, 
         y_train,
         weight_decay=1e-6,
-        step_size=10,
+        step_size=5,
         gamma=0.99,
         hidden_layers=[64, 64],
-        dropout=0.4,
+        dropout=0.3,
         epochs=2000,
         patience=50,
         lr=1e-3, 
-        batch_size=mdn_params["batch_size"],
+        batch_size=batch_size,
         verbose=1,
         random_seed_fit=i,
     )
@@ -853,14 +854,14 @@ def fit_methods_outlier(
          X_train, 
         y_train,
         weight_decay=1e-6,
-        step_size=10,
+        step_size=5,
         gamma=0.99,
         hidden_layers=[64, 64],
-        dropout=0.4,
+        dropout=0.3,
         epochs=2000,
         patience=50,
         lr=1e-3, 
-        batch_size=mdn_params["batch_size"],
+        batch_size=batch_size,
         verbose=1,
         random_seed_fit=i,
     )
@@ -1298,7 +1299,7 @@ def run_experiment(dataset,
     # EPICSCORE params
     mdn_params = {
     "num_components": 3,
-    "dropout_rate": 0.4,
+    "dropout_rate": 0.3,
     "epistemic_model": "MC_dropout",
     "hidden_layers": [64, 64],
     "patience": 50,
@@ -1309,11 +1310,14 @@ def run_experiment(dataset,
     "verbose": 0,
     "type": "gaussian",
     }
-
+    
+    
     if data.shape[0] > 10000:
         mdn_params["batch_size"] = 120
+        batch_size = 125
     if dataset == "WEC":
         mdn_params["batch_size"] = 250
+    
 
     if checkpoint_flag:
         resume_from = int(checkpoint_data.get("iteration", -1)) + 1
@@ -1352,7 +1356,7 @@ def run_experiment(dataset,
         X_train_calib, X_test, y_train_calib, y_test = train_test_split(
             X, y, test_size=prop_test, random_state=seed
         )
-        if X.shape[0] < 5000:
+        if X.shape[0] <= 5000:
           prop_train = 0.5
         else:
           prop_train = 0.7
@@ -1375,6 +1379,7 @@ def run_experiment(dataset,
                 y_test,
                 mdn_params,
                 i,
+                batch_size = batch_size,
                 scale_y = scale_y,
             )
             cover_results.append(cover_array)
