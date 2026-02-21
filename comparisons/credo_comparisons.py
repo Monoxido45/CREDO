@@ -206,10 +206,10 @@ def fit_methods(
     credal_CP_qnn.fit(
         X_train, 
         y_train,
-        weight_decay=1e-6,
+        weight_decay=0,
         step_size=10,
         gamma=0.99,
-        hidden_layers=[64, 64],
+        hidden_layers=[128, 128, 64],
         dropout=0.3,
         epochs=2000,
         patience=50,
@@ -235,11 +235,11 @@ def fit_methods(
     credal_CP_qnn_adaptive.fit(
          X_train, 
         y_train,
-        weight_decay=1e-6,
+        weight_decay=0,
         step_size=10,
         gamma=0.99,
-        hidden_layers=[64, 64],
-        dropout=0.4,
+        hidden_layers=[128, 128, 64],
+        dropout=0.3,
         epochs=2000,
         patience=50,
         lr=1e-3, 
@@ -825,7 +825,7 @@ def fit_methods_outlier(
         X_train, 
         y_train,
         weight_decay=1e-6,
-        step_size=5,
+        step_size=10,
         gamma=0.99,
         hidden_layers=[64, 64],
         dropout=0.3,
@@ -1298,8 +1298,8 @@ def run_experiment(dataset,
 
     # EPICSCORE params
     mdn_params = {
-    "num_components": 3,
-    "dropout_rate": 0.3,
+    "num_components": 5,
+    "dropout_rate": 0.5,
     "epistemic_model": "MC_dropout",
     "hidden_layers": [64, 64],
     "patience": 50,
@@ -1356,10 +1356,9 @@ def run_experiment(dataset,
         X_train_calib, X_test, y_train_calib, y_test = train_test_split(
             X, y, test_size=prop_test, random_state=seed
         )
-        if X.shape[0] <= 5000:
-          prop_train = 0.5
-        else:
-          prop_train = 0.7
+        
+        prop_train = 0.7
+        
         X_train, X_calib, y_train, y_calib = train_test_split(
             X_train_calib, y_train_calib, test_size=1-prop_train, random_state=seed
         )
