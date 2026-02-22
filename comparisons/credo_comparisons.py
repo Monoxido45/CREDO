@@ -229,7 +229,6 @@ def fit_methods(
     alpha = alpha,
     adaptive_gamma = True,
     gamma = gamma,
-    is_fitted = True,
     )
 
     credal_CP_qnn_adaptive.fit(
