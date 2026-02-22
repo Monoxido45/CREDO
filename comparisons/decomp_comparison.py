@@ -267,6 +267,22 @@ def run_experiment(dataset,
     epis_unc_outlier_qnn_results = np.array(epis_unc_outlier_qnn_results)
 
     # convert lists to arrays and stack by rows (each element is 1D and same length)
+    def _align_and_truncate(list_of_arrays):
+        # handle empty list
+        if not list_of_arrays:
+            return list_of_arrays
+        # ensure numpy 1D arrays
+        arrs = [np.asarray(a).ravel() for a in list_of_arrays]
+        lengths = [a.shape[0] for a in arrs]
+        min_len = min(lengths)
+        # if lengths differ, truncate to the smallest length
+        if any(l != min_len for l in lengths):
+            print(f"Warning: unequal array lengths detected, truncating all to length {min_len}")
+            arrs = [a[:min_len] for a in arrs]
+        return arrs
+
+    epis_unc_inlier_qnn_all = _align_and_truncate(epis_unc_inlier_qnn_all)
+    epis_unc_outlier_qnn_all = _align_and_truncate(epis_unc_outlier_qnn_all)
     epis_unc_inlier_qnn_all = np.vstack(epis_unc_inlier_qnn_all)
     epis_unc_outlier_qnn_all = np.vstack(epis_unc_outlier_qnn_all)
 
