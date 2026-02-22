@@ -51,7 +51,7 @@ def read_metrics_files(datasets, methods, model = "catboost", metric = "isl", ou
 # Define metrics and datset names
 # First for quantile regression
 # OBS: In the paper, it is called EPICSCORE, but the CSV data was labeled ECP. They are the same method.
-methods = ["credo_GP","credo_QNN",
+methods = ["credo_QNN","credo_QNN_adaptive",
            "cqr", "cqrr", 
            "uacqrs", "uacqrp", 
            "EPIC"]
@@ -63,9 +63,10 @@ file_names = [
     "electric",
     "homes",
     "meps19",
-    "news",
     "protein",
+    "star",
     "superconductivity",
+    "WEC",
     "winered",
     "winewhite",
 ]

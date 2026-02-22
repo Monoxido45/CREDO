@@ -70,7 +70,7 @@ def fit_methods(
         i,
         batch_size = 40,
         scale_y = False,
-        inlier_size = 0.2,
+        inlier_size = 0.1,
         n_neighbors = 15,
         contamination = 0.05,
         tsne_random_state=120,
@@ -135,7 +135,7 @@ def fit_methods(
     outlier_obs = y_test[out_pred == -1]
     outlier_indexes = np.where(out_pred == -1)[0]
 
-    # selecting 15% top inliers
+    # selecting 10% top inliers
     inlier_indexes = np.setdiff1d(np.arange(len(y_test)), outlier_indexes)
     inlier_scores = lof.negative_outlier_factor_[inlier_indexes]
     # computing inlier scores
@@ -143,22 +143,20 @@ def fit_methods(
     most_inlier_idxs = inlier_indexes[np.argsort(inlier_scores)[::-1][:size]]
 
     print("Disentangling uncertainties for inliers and outliers for CREDO QNN")
-    _, aleat_unc_inlier_qnn, epis_unc_inlier_qnn = credal_CP_qnn.predict(X_test[most_inlier_idxs, :], disentangle=True)
-    _, aleat_unc_outlier_qnn, epis_unc_outlier_qnn = credal_CP_qnn.predict(X_test[outlier_indexes, :], disentangle=True)
+    _, aleat_unc_inlier_qnn, epis_unc_inlier_qnn_total = credal_CP_qnn.predict(X_test[most_inlier_idxs, :], disentangle=True)
+    _, aleat_unc_outlier_qnn, epis_unc_outlier_qnn_total = credal_CP_qnn.predict(X_test[outlier_indexes, :], disentangle=True)
 
     del  credal_CP_qnn
     gc.collect()
 
     # normalizing uncertainties to be able to compare inliers and outliers
-    total_qnn = aleat_unc_inlier_qnn + epis_unc_inlier_qnn
-    epis_unc_inlier_qnn /= total_qnn
-    print(f"total aleatoric unc in QNN: {aleat_unc_inlier_qnn}")
-    print(f"total epistemic unc in QNN: {epis_unc_inlier_qnn}")
+    total_qnn = aleat_unc_inlier_qnn + epis_unc_inlier_qnn_total
+    epis_unc_inlier_qnn = epis_unc_inlier_qnn_total / total_qnn
+    print(f"total normalized epistemic unc in QNN for inliers: {epis_unc_inlier_qnn}")
 
-    total_qnn_outlier = aleat_unc_outlier_qnn + epis_unc_outlier_qnn
-    epis_unc_outlier_qnn /= total_qnn_outlier
-    print(f"total aleatoric unc in QNN: {aleat_unc_outlier_qnn}")
-    print(f"total epistemic unc in QNN: {epis_unc_outlier_qnn}")
+    total_qnn_outlier = aleat_unc_outlier_qnn + epis_unc_outlier_qnn_total
+    epis_unc_outlier_qnn =  epis_unc_outlier_qnn_total / total_qnn_outlier
+    print(f"total normalized epistemic unc in QNN for outliers: {epis_unc_outlier_qnn}")
 
     # returning the mean epistemic uncertainty for inliers and outliers for both models to be able to compare them
     print("Summarizing epistemic uncertainty over inliers and outliers for QNN")

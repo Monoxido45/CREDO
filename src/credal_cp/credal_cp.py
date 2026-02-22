@@ -710,8 +710,13 @@ class CredalCPRegressor(BaseEstimator):
     
                     # obtaining lower and upper quantiles for each x_calib
                     if self.adaptive_gamma:
-                        q_low_pred = np.array([np.quantile(q_low_grid[i, :], gamma_quantiles[i]/2) for i in range(len(X_test))])
-                        q_upp_pred = np.array([np.quantile(q_upp_grid[i, :], 1 - gamma_quantiles[i]/2) for i in range(len(X_test))])
+                        q_low_list = []
+                        q_upp_list = []
+                        for i in range(len(X_test)):
+                            q_low_list.append(np.quantile(q_low_grid[i, :], gamma_quantiles[i]/2))
+                            q_upp_list.append(np.quantile(q_upp_grid[i, :], 1 - gamma_quantiles[i]/2))
+                        q_low_pred = np.array(q_low_list)
+                        q_upp_pred = np.array(q_upp_list)
                     else:
                         q_low_pred = np.quantile(q_low_grid, self.gamma/2, axis=1)
                         q_upp_pred = np.quantile(q_upp_grid, 1 - self.gamma/2, axis=1)

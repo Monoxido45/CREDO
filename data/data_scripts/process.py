@@ -326,6 +326,7 @@ def process(dataset, n_samples=None, seed=125):
 
     if dataset == "star":
         df = pd.read_csv("data/raw/star/STAR.csv")
+        df = df.astype(object)
 
         df.loc[df["gender"] == "female", "gender"] = 0
         df.loc[df["gender"] == "male", "gender"] = 1
@@ -450,6 +451,7 @@ def process(dataset, n_samples=None, seed=125):
         df.loc[df["tethnicity3"] == "afam", "tethnicity3"] = 1
         df.loc[df["tethnicity3"] == "asian", "tethnicity3"] = 2
 
+        df = df.apply(pd.to_numeric, errors='coerce')
         df = df.dropna()
 
         grade = df["readk"] + df["read1"] + df["read2"] + df["read3"]
