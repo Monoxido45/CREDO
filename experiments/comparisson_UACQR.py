@@ -5,18 +5,14 @@ import matplotlib.pyplot as plt
 import torch
 from sklearn.model_selection import train_test_split
 
-# importing our package
 from credal_cp.credal_cp import CredalCPRegressor
 import numpy as np
-###### PASTA
 RESULTS_DIR = "results"
 os.makedirs(RESULTS_DIR, exist_ok=True)
-
-# For reproducibility
 np.random.seed(125)
 torch.manual_seed(125)
 
-device = torch.device("cpu")  # change to "cuda" if desired
+device = torch.device("cpu") 
 
 def make_gap_epistemic_few_middle(n, noise_std=0.1, p_middle=0.01):
     """
@@ -64,7 +60,6 @@ data = make_gap_epistemic_few_middle(n=1500, noise_std=0.1, p_middle=0.01)
 # Train / cal / test split
 train, rest = train_test_split(data, test_size=0.5, random_state=42)
 cal, test   = train_test_split(rest,  test_size=0.5, random_state=42)
-
 
 # ============================================
 # Training, calibration, and prediction

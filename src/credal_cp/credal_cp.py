@@ -136,6 +136,7 @@ class CredalCPRegressor(BaseEstimator):
             activation_sigma = "softplus",
             kernel = None,
             heuristic_gamma = "log",
+            k = None,
             **fit_params):
         self.nn_type = nn_type
         if self.base_is_sklearn and not self.base_is_fitted:
@@ -290,6 +291,7 @@ class CredalCPRegressor(BaseEstimator):
             self.fit_gamma(
                 X,
                 heuristic = heuristic_gamma,
+                k = k,
                 )
         return self
     
@@ -512,20 +514,25 @@ class CredalCPRegressor(BaseEstimator):
                                           q=np.ceil((n + 1) * (1 - self.alpha)) / n)
         
         self.gamma_quantiles = gamma_quantiles
+        self.gamma_max = gamma_max
         return self.cutoff
     
     # adaptive K with respect to the sample size
-    def fit_gamma(self, X, C_base=6.672, heuristic = "exp"):
+    def fit_gamma(self, X, C_base=6.672, heuristic = "exp", k = None):
         self.scaler_x = StandardScaler().fit(X)
         # standardizing XStandardScaler()
         X_scaled = self.scaler_x.transform(X)
 
         # fixing k according to dimmensionalyty of X and sample size
-        n, d = X.shape
-        if heuristic == "exp":
-            k = int(np.ceil(C_base * (n**(4/(4 + d)))))
-        elif heuristic == "log":
-            k = int(np.ceil(d * np.log(n)))
+        if k is None:
+            n, d = X.shape
+            if heuristic == "exp":
+                k = int(np.ceil(C_base * (n**(4/(4 + d)))))
+            elif heuristic == "log":
+                k = int(np.ceil(d * np.log(n)))
+        else:
+            k = int(k)
+        
 
         print(f"Fitting gamma model with k={k} neighbors for adaptive gamma")
         self.gamma_model = NearestNeighbors(n_neighbors=k).fit(X_scaled)
@@ -564,7 +571,6 @@ class CredalCPRegressor(BaseEstimator):
             conformalize = True,
             disentangle=False,
             random_seed_test = 45,
-            gamma_max = 0.75,
             eps = 1e-5,
             ):
         """
@@ -581,7 +587,7 @@ class CredalCPRegressor(BaseEstimator):
             Predicted values.
         """
         if self.adaptive_gamma:
-            gamma_quantiles = self.compute_gamma(X_test, eps = eps, gamma_max = gamma_max)
+            gamma_quantiles = self.compute_gamma(X_test, eps = eps, gamma_max = self.gamma_max)
         else:
             gamma_quantiles = self.gamma * np.ones(len(X_test))
         

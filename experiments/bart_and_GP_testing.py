@@ -1,6 +1,7 @@
 # Repeating code from credal sets testing but for 
 # BART and GP
-# First starting by first example
+# showcasing the flexibility of our framework and the ability to use different underlying models for the credal CPs, 
+# as well as the ability to handle heteroscedasticity with GPs.
 
 # ============================================
 # 0. Imports & data generation
