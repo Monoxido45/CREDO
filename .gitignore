@@ -11,3 +11,5 @@ data/data_scripts/__pycache__/
 catboost_info/
 comparisons/__pycache__/
 *log_*
+*.png*
+*.pdf*
