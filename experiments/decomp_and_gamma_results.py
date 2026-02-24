@@ -15,6 +15,7 @@ from credal_cp.credal_cp import CredalCPRegressor
 from credal_cp.utils import CQR
 import numpy as np
 from matplotlib.patches import Patch
+import os
 
 # For reproducibility
 np.random.seed(125)
@@ -205,12 +206,13 @@ def fit_bart(train, cal, test):
     X_test = test["x"].values.astype(np.float32).reshape(-1, 1)
     Y_test = test["y"].values.astype(np.float32)
 
+    # fit adaptive CREDO-BART
     credal_CP_bart = CredalCPRegressor(
         nc_type = 'Quantile',
         base_model = "BART",
         alpha = 0.1,
         adaptive_gamma = True,
-        gamma = 0.05,
+        gamma = 0.1,
     )
 
     # starting fitting
@@ -229,9 +231,35 @@ def fit_bart(train, cal, test):
         Y_cal,
         N_samples_MC=1000,
         gamma_max = 0.95,
+        gamma_min = 0.025,
+        tau = 1,
         )
     
-    return credal_CP_bart, X_test, Y_test
+    credal_CP_bart_fixed = CredalCPRegressor(
+        nc_type = 'Quantile',
+        base_model = "BART",
+        alpha = 0.1,
+        adaptive_gamma = False,
+        gamma = 0.1,
+    )
+
+    # starting fitting
+    credal_CP_bart_fixed.fit(
+        X_train, 
+        Y_train,
+        progressbar = True,
+        n_cores = 4,
+        n_MCMC = 1000,
+        alpha_bart = 0.985,
+    )
+
+    bart_cutoff = credal_CP_bart_fixed.calibrate(
+        X_cal, 
+        Y_cal,
+        N_samples_MC=1000,
+        )
+    
+    return credal_CP_bart, credal_CP_bart_fixed, X_test, Y_test
 
 def plot_uncertainty_decomposition_bart(
     credal_CP_bart,
@@ -239,6 +267,7 @@ def plot_uncertainty_decomposition_bart(
     X_test,
     Y_test,
     normalize=True,
+    fixed_credo = False,
 ):
     y_pred, aleatoric, epistemic = credal_CP_bart.predict(X_test_grid, disentangle=True)
 
@@ -247,9 +276,11 @@ def plot_uncertainty_decomposition_bart(
         total = aleatoric + epistemic
         new_aleatoric = aleatoric/total
         new_epistemic = epistemic/total
+        type_decomp = "Normalized"
     else:
         new_aleatoric = aleatoric
         new_epistemic = epistemic
+        type_decomp = "Raw"
     
      # Also get full prediction intervals (conformalized) for both methods to plot below
     pred_intervals = np.asarray(y_pred)
@@ -259,10 +290,7 @@ def plot_uncertainty_decomposition_bart(
 
     xx = X_test_grid.ravel()
 
-    # Create a 1x2 grid: left = uncertainty decomposition, right = prediction intervals
-    fig, axes = plt.subplots(1, 2, figsize=(12, 8), sharex=True)
-    
-    # Increase caption/font sizes for this figure
+    # Separate figures: left = uncertainty decomposition, right = prediction intervals
     fontsize = 16
     plt.rcParams.update({
         "axes.titlesize": fontsize,
@@ -272,33 +300,36 @@ def plot_uncertainty_decomposition_bart(
         "ytick.labelsize": fontsize,
     })
 
-    # Make room at the top for legends placed above the titles
-    fig.subplots_adjust(top=0.82)
+    # Figure 1: uncertainty decomposition
+    fig1, ax1 = plt.subplots(1, 1, figsize=(12, 5))
+    l1, = ax1.plot(xx, new_aleatoric, label="Aleatoric", color="C2")
+    l2, = ax1.plot(xx, new_epistemic, label="Epistemic", color="C1")
+    ax1.set_title(f"Normalized Uncertainty Decomposition ({type_decomp})")
+    ax1.set_xlabel("x", fontsize=fontsize)
+    if normalize:
+        ax1.set_ylabel("Uncertainty percentage", fontsize=fontsize)
+    else:
+        ax1.set_ylabel("Uncertainty", fontsize=fontsize)
+    ax1.grid(True)
+    # place legend above the plot
+    ax1.legend(handles=[l1, l2], loc="lower center", bbox_to_anchor=(0.5, 1.02), ncol=2, frameon=False)
+    ax1.set_xlim(xx.min(), xx.max())
+    fig1.subplots_adjust(top=0.85)
+    plt.tight_layout()
+    plt.show()
 
-    # Left: BART uncertainty decomposition
-    ax = axes[0]
-    l1, = ax.plot(xx, new_aleatoric, label="Aleatoric", color="C2")
-    l2, = ax.plot(xx, new_epistemic, label="Epistemic", color="C1")
-    ax.set_title("Normalized Uncertainty Decomposition (BART)")
-    ax.set_ylabel("Uncertainty percentage", fontsize=fontsize)
-    ax.set_xlabel("x", fontsize=fontsize)
-    ax.grid(True)
-    # Place legend above the title, horizontally
-    ax.legend(handles=[l1, l2], loc="lower center", bbox_to_anchor=(0.5, 1.025), ncol=2, frameon=False)
-
-    # Right: BART prediction intervals
-    ax = axes[1]
-    s = ax.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha=0.4, zorder=3)
-    p = ax.fill_between(xx, lower, upper, color="C0", alpha=0.25, label="Prediction Interval")
-    c = ax.plot(xx, center_ens, color="C0", lw=1, label="Interval Center")
-    ax.set_title("Prediction Intervals (BART)")
-    ax.set_xlabel("x", fontsize=fontsize)
-    ax.grid(True)
-    # Place legend above the title, horizontally
-    handles = [p, c[0]]
-    labels = ["Prediction Interval", "Interval Center"]
-    ax.legend(handles=handles, labels=labels, loc="lower center", bbox_to_anchor=(0.5, 1.025), ncol=2, frameon=False)
-
+    # Figure 2: CREDO-BART prediction intervals
+    fig2, ax2 = plt.subplots(1, 1, figsize=(12, 5))
+    ax2.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha=0.4, zorder=3)
+    ax2.fill_between(xx, lower, upper, color="C0", alpha=0.25)
+    ax2.plot(xx, center_ens, color="C0", lw=1)
+    if fixed_credo:
+        ax2.set_title("Fixed CREDO")
+    else:
+        ax2.set_title("CREDO", fontweight="bold")
+    ax2.set_xlabel(r"$x$", fontsize=fontsize)
+    ax2.grid(True)
+    ax2.set_xlim(xx.min(), xx.max())
     plt.tight_layout()
     plt.show()
 
@@ -308,7 +339,10 @@ def plot_gamma(
     gamma_grid,
     X_test,
     Y_test,
+    credal_CP_bart_fixed = None,
 ):
+    if credal_CP_bart_fixed is not None:
+        y_pred_fixed = credal_CP_bart_fixed.predict(X_test_grid)
     y_pred = credal_CP_bart.predict(X_test_grid)
     
      # Also get full prediction intervals (conformalized) for both methods to plot below
@@ -326,10 +360,6 @@ def plot_gamma(
     xx = X_test_grid.ravel()
     gamma = np.asarray(gamma_grid).ravel()
 
-    # Create a 2-row figure: top = prediction intervals, bottom = gamma(x)
-    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-
-    # Increase caption/font sizes for readability
     fontsize = 16
     plt.rcParams.update({
         "axes.titlesize": fontsize,
@@ -339,31 +369,82 @@ def plot_gamma(
         "ytick.labelsize": fontsize,
     })
 
-    # Top: BART prediction intervals (no x-axis ticks/label shown here)
-    ax_top = axes[0]
+    # Create a single figure with 2 rows: top = prediction intervals (both methods), bottom = gamma(x)
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    ax_top, ax_bot = axes
+
+    # Increase caption/font sizes for readability
+    # Prepare adaptive (blue, background) intervals/center
+    pred_intervals = np.asarray(y_pred)
+    lower, upper = pred_intervals[:, 0], pred_intervals[:, 1]
+    center = 0.5 * (lower + upper)
+
+    if credal_CP_bart_fixed is not None:
+        # Prepare fixed (orange, foreground) intervals/center
+        pred_intervals_fixed = np.asarray(y_pred_fixed)
+        lower_f, upper_f = pred_intervals_fixed[:, 0], pred_intervals_fixed[:, 1]
+        center_f = 0.5 * (lower_f + upper_f)
+
+    xx = X_test_grid.ravel()
+    gamma = np.asarray(gamma_grid).ravel()
+
+    # Top: prediction intervals. Draw adaptive (blue) first as background, then fixed (orange) on top.
     ax_top.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha=0.4, zorder=3)
-    ax_top.fill_between(xx, lower, upper, color="C0", alpha=0.25, label="Prediction Interval")
-    ax_top.plot(xx, center, color="C0", lw=1, label="Interval Center")
-    ax_top.set_title("Prediction Intervals (BART)")
+    ax_top.fill_between(
+        xx, 
+        lower, 
+        upper, 
+        color="C0", 
+        alpha=0.25, 
+        zorder=1,
+        label = "Adaptive CREDO",
+        )
+    ax_top.plot(xx, center, color="C0", lw=1, zorder=2)
+    if credal_CP_bart_fixed is not None:
+        ax_top.fill_between(
+            xx, 
+            lower_f, 
+            upper_f, 
+            color="C1", 
+            alpha=0.25, 
+            zorder=4, 
+            label="Fixed CREDO"
+            )
+        ax_top.plot(xx, center_f, color="C1", lw=1, zorder=5)
+        ax_top.set_title("CREDO: adaptive vs fixed", fontweight="bold")
+    else:
+        ax_top.set_title("CREDO", fontweight="bold")
+    ax_top.set_ylabel("y", fontsize=fontsize)
     ax_top.grid(True)
-    ax_top.tick_params(labelbottom=False)  # hide x-scale on the top plot
-    ax_top.legend(loc="upper left")
+    ax_top.set_xlim(xx.min(), xx.max())
+
+    # Place legend centered at the top of the axes, just below the title
+    ax_top.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.28),
+        ncol=2,
+        frameon=False,
+    )
 
     # Bottom: gamma(x)
-    ax_bot = axes[1]
-    ax_bot.plot(xx, gamma, color="C4", lw=2, label=r"$\gamma(x)$")
-    ax_bot.set_title("Adaptive gamma(x) (BART)")
-    ax_bot.set_xlabel("x", fontsize=fontsize)  # use X-scale label only here
-    ax_bot.set_ylabel("gamma", fontsize=fontsize)
+    ax_bot.plot(xx, gamma, color="C4", lw=2)
+    ax_bot.set_title(r"Adaptive $\gamma(x)$")
+    ax_bot.set_xlabel(r"$x$", fontsize=fontsize)
+    ax_bot.set_ylabel(r"$\gamma$", fontsize=fontsize)
     ax_bot.grid(True)
-    ax_bot.legend(loc="upper left")
+    ax_bot.set_xlim(xx.min(), xx.max())
 
     plt.tight_layout()
+    # save to current working directory (no need to worry about path)
+    out_dir = os.getcwd()
+    os.makedirs(out_dir, exist_ok=True)
+    png_path = os.path.join(out_dir, f"credo_gamma.png")
+
+    fig.savefig(png_path, dpi=500, bbox_inches="tight")
     plt.show()
 
-
-####### Fitting bart-based method #######
-credal_CP_bart, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
+####### First epistemic example #######
+credal_CP_bart, credal_CP_bart_fixed, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
 
 X_test_grid = np.linspace(-1.15, 1.15, 500).astype(np.float32).reshape(-1, 1)
 
@@ -396,27 +477,49 @@ plot_gamma(
     Y_test_bart,
 )
 
-############ Testing the other example with variable noise ############
+############ Second epistemic example with variable noise ############
 np.random.seed(42)
 n= 1500
 data = make_variable_data(n)
-train, rest = train_test_split(data, test_size=0.5, random_state=42)
-cal, test = train_test_split(rest, test_size=0.5, random_state=42)
+train, rest = train_test_split(data, test_size=0.5, random_state=45)
+cal, test = train_test_split(rest, test_size=0.5, random_state=45)
 
 ####### Fitting bart-based method #######
-credal_CP_bart, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
+credal_CP_bart, credal_CP_bart_fixed, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
 
 X_test_grid = np.linspace(-1.15, 1.15, 500).astype(np.float32).reshape(-1, 1)
+
+# illustrating gamma(x) for BART
+gamma_grid = credal_CP_bart.compute_gamma(
+    X_test_grid,
+    eps = 1e-5, 
+    gamma_max = 0.95,
+    gamma_min = 0.025,
+    tau = 1,
+    )
+
+# plotting gamma(x) for BART
+plot_gamma(
+    credal_CP_bart,
+    X_test_grid,
+    gamma_grid,
+    X_test_bart,
+    Y_test_bart,
+    credal_CP_bart_fixed = credal_CP_bart_fixed,
+)
+
 # plotting uncertainty decomposition for BART
 plot_uncertainty_decomposition_bart(
-    credal_CP_bart,
+    credal_CP_bart_fixed,
     X_test_grid,
     X_test_bart,
     Y_test_bart,
     normalize=True,
+    fixed_credo = True,
 )
 
-# last different epistemic scenario
+############ last different epistemic scenario ############
+np.random.seed(42)
 n= 1500
 data = make_epistemic_mixture_gaps(rng, n)
 train, rest = train_test_split(data, test_size=0.5, random_state=42)

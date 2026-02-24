@@ -303,6 +303,8 @@ class CredalCPRegressor(BaseEstimator):
             N_samples_MC=300,
             eps = 1e-5,
             gamma_max = 0.75,
+            gamma_min = None,
+            tau = 1,
             ):
         """
         Fit posterior over parametric family then creates imprecise quantiles as the modified conformal scores.
@@ -320,7 +322,7 @@ class CredalCPRegressor(BaseEstimator):
             Returns self.
         """
         if self.adaptive_gamma:
-            gamma_quantiles = self.compute_gamma(X_calib, eps = eps, gamma_max = gamma_max)
+            gamma_quantiles = self.compute_gamma(X_calib, eps = eps, gamma_max = gamma_max, tau = tau, gamma_min = gamma_min)
         else:
             gamma_quantiles = self.gamma * np.ones(len(X_calib))
 
@@ -513,8 +515,12 @@ class CredalCPRegressor(BaseEstimator):
                 self.cutoff = np.quantile(self.nc_scores, 
                                           q=np.ceil((n + 1) * (1 - self.alpha)) / n)
         
+        # saving adaptive gamma quantiles for use in prediction
         self.gamma_quantiles = gamma_quantiles
         self.gamma_max = gamma_max
+        self.gamma_min = gamma_min
+        self.tau = tau
+
         return self.cutoff
     
     # adaptive K with respect to the sample size
@@ -551,7 +557,7 @@ class CredalCPRegressor(BaseEstimator):
     def sigma(u):
         return 1 / (1 + np.exp(-u))
     
-    def compute_gamma(self, X, eps = 1e-5, gamma_max = 0.75):
+    def compute_gamma(self, X, eps = 1e-5, gamma_max = 0.75, tau = 1, gamma_min = None):
         X_scaled = self.scaler_x.transform(X)
         distances, indices = self.gamma_model.kneighbors(X_scaled)# Use log to handle the high-dimensional distance scaling
         last_neighbor_dist = np.log1p(distances[:, -1]) 
@@ -559,8 +565,11 @@ class CredalCPRegressor(BaseEstimator):
         q_hi = np.log1p(self.q_hi_gamma)
 
         scarce_score = (last_neighbor_dist - q_lo) / (q_hi - q_lo + eps)
-        gamma_min = self.gamma
-        gamma_values = gamma_max - ((gamma_max - gamma_min) * self.sigma(scarce_score))
+        if gamma_min is None:
+            gamma_min = self.gamma
+        else:
+            gamma_min = max(gamma_min, 0.01) # Ensure gamma_min is not too close to zero
+        gamma_values = gamma_max - ((gamma_max - gamma_min) * self.sigma(scarce_score/tau))
 
         return gamma_values
 
@@ -587,7 +596,13 @@ class CredalCPRegressor(BaseEstimator):
             Predicted values.
         """
         if self.adaptive_gamma:
-            gamma_quantiles = self.compute_gamma(X_test, eps = eps, gamma_max = self.gamma_max)
+            gamma_quantiles = self.compute_gamma(
+                X_test, 
+                eps = eps, 
+                gamma_max = self.gamma_max,
+                tau = self.tau, 
+                gamma_min = self.gamma_min,
+                )
         else:
             gamma_quantiles = self.gamma * np.ones(len(X_test))
         
