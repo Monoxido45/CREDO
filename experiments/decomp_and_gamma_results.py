@@ -122,16 +122,8 @@ def make_variable_data(n, std_dev=1/5):
 
 # third type of data
 def make_epistemic_mixture_gaps(rng, n):
-    """
-    Example where:
-      - several gaps in the input space
-      - noise is small and constant (mostly aleatoric)
-      - mean is non-linear
-    """
-
     # Mixture to create dense regions, sparse regions, and a few tail points (extrapolation pressure)
     mix = rng.choice([0, 1, 2, 3], size=n, p=[0.55, 0.30, 0.10, 0.05])
-
     x = np.empty(n)
     x[mix == 0] = rng.normal(loc=-1.8, scale=0.35, size=(mix == 0).sum())   # dense left cluster
     x[mix == 1] = rng.normal(loc=1.6,  scale=0.45, size=(mix == 1).sum())   # dense right cluster
@@ -142,14 +134,10 @@ def make_epistemic_mixture_gaps(rng, n):
     x = np.sort(x)
     X = x.reshape(-1, 1)
 
-
     def f(x_):
-        """Smooth latent function."""
         return 0.8*np.sin(1.1*x_) + 0.25*x_ + 0.45*np.cos(0.6*x_)
 
-
     def sigma_base(x_):
-        """Heteroscedastic baseline scale."""
         return (
             0.12
             + 0.10*np.exp(-0.5*((x_+1.7)/0.5)**2)
@@ -157,12 +145,7 @@ def make_epistemic_mixture_gaps(rng, n):
             + 0.06*(x_/3.0)**2
         )
 
-
     def sample_noise(x_):
-        """
-        Adds conditional heterogeneity beyond Gaussian:
-        A 'shock' component (shifted, high-variance) occurs with probability increasing in right tail and far tails.
-        """
         x_ = np.asarray(x_)
 
         p_shock = 0.05 + 0.35/(1+np.exp(-(x_-1.3))) + 0.15*(np.abs(x_) > 3.2)
@@ -174,7 +157,6 @@ def make_epistemic_mixture_gaps(rng, n):
         e_shock = rng.normal(loc=1.8, scale=2.2, size=x_.shape[0])  # shifted & heavier
 
         return (1-shock)*e_main + shock*e_shock
-
 
     y = f(x) + sigma_base(x) * sample_noise(x)
     df = pd.DataFrame({"x": x, "y": y})
@@ -267,7 +249,8 @@ def plot_uncertainty_decomposition_bart(
     X_test,
     Y_test,
     normalize=True,
-    fixed_credo = False,
+    fixed_credo=False,
+    name_file = "credo_decomposition.png",
 ):
     y_pred, aleatoric, epistemic = credal_CP_bart.predict(X_test_grid, disentangle=True)
 
@@ -290,7 +273,7 @@ def plot_uncertainty_decomposition_bart(
 
     xx = X_test_grid.ravel()
 
-    # Separate figures: left = uncertainty decomposition, right = prediction intervals
+    # Combine both figures into a single figure with 2 rows: top = uncertainty decomposition, bottom = prediction intervals
     fontsize = 16
     plt.rcParams.update({
         "axes.titlesize": fontsize,
@@ -300,37 +283,36 @@ def plot_uncertainty_decomposition_bart(
         "ytick.labelsize": fontsize,
     })
 
-    # Figure 1: uncertainty decomposition
-    fig1, ax1 = plt.subplots(1, 1, figsize=(12, 5))
-    l1, = ax1.plot(xx, new_aleatoric, label="Aleatoric", color="C2")
-    l2, = ax1.plot(xx, new_epistemic, label="Epistemic", color="C1")
-    ax1.set_title(f"Normalized Uncertainty Decomposition ({type_decomp})")
-    ax1.set_xlabel("x", fontsize=fontsize)
-    if normalize:
-        ax1.set_ylabel("Uncertainty percentage", fontsize=fontsize)
-    else:
-        ax1.set_ylabel("Uncertainty", fontsize=fontsize)
-    ax1.grid(True)
-    # place legend above the plot
-    ax1.legend(handles=[l1, l2], loc="lower center", bbox_to_anchor=(0.5, 1.02), ncol=2, frameon=False)
-    ax1.set_xlim(xx.min(), xx.max())
-    fig1.subplots_adjust(top=0.85)
-    plt.tight_layout()
-    plt.show()
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    ax_top, ax_bot = axes
 
-    # Figure 2: CREDO-BART prediction intervals
-    fig2, ax2 = plt.subplots(1, 1, figsize=(12, 5))
-    ax2.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha=0.4, zorder=3)
-    ax2.fill_between(xx, lower, upper, color="C0", alpha=0.25)
-    ax2.plot(xx, center_ens, color="C0", lw=1)
+    # Top: uncertainty decomposition
+    l1, = ax_top.plot(xx, new_aleatoric, label="Aleatoric", color="C2")
+    l2, = ax_top.plot(xx, new_epistemic, label="Epistemic", color="C1")
+    ax_top.set_title(f"Uncertainty Decomposition ({type_decomp})", fontweight="bold")
+    ax_top.set_ylabel("Uncertainty percentage" if normalize else "Uncertainty", fontsize=fontsize)
+    ax_top.grid(True)
+    ax_top.set_xlim(xx.min(), xx.max())
+    # place legend above the top subplot
+    ax_top.legend(handles=[l1, l2], loc="lower center", bbox_to_anchor=(0.5, 1.02), ncol=2, frameon=False)
+
+    # Bottom: CREDO-BART prediction intervals
+    ax_bot.scatter(X_test.ravel(), Y_test.ravel(), s=25, color="k", alpha=0.4, zorder=3)
+    ax_bot.fill_between(xx, lower, upper, color="C0", alpha=0.25)
+    ax_bot.plot(xx, center_ens, color="C0", lw=1)
     if fixed_credo:
-        ax2.set_title("Fixed CREDO")
+        ax_bot.set_title("Fixed CREDO")
     else:
-        ax2.set_title("CREDO", fontweight="bold")
-    ax2.set_xlabel(r"$x$", fontsize=fontsize)
-    ax2.grid(True)
-    ax2.set_xlim(xx.min(), xx.max())
+        ax_bot.set_title("CREDO", fontweight="bold")
+    ax_bot.set_xlabel(r"$x$", fontsize=fontsize)
+    ax_bot.set_ylabel("y", fontsize=fontsize)
+    ax_bot.grid(True)
+    ax_bot.set_xlim(xx.min(), xx.max())
+
+    fig.subplots_adjust(top=0.92)
     plt.tight_layout()
+
+    fig.savefig(name_file, dpi=300, bbox_inches="tight")
     plt.show()
 
 def plot_gamma(
@@ -510,12 +492,13 @@ plot_gamma(
 
 # plotting uncertainty decomposition for BART
 plot_uncertainty_decomposition_bart(
-    credal_CP_bart_fixed,
+    credal_CP_bart,
     X_test_grid,
     X_test_bart,
     Y_test_bart,
     normalize=True,
-    fixed_credo = True,
+    fixed_credo = False,
+    name_file = "credo_v1_decomp.png",
 )
 
 ############ last different epistemic scenario ############
@@ -525,7 +508,7 @@ data = make_epistemic_mixture_gaps(rng, n)
 train, rest = train_test_split(data, test_size=0.5, random_state=42)
 cal, test = train_test_split(rest, test_size=0.5, random_state=42)
 
-credal_CP_bart, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
+credal_CP_bart, _, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
 
 X_test_grid = np.linspace(-4.35, 4.35, 700).astype(np.float32).reshape(-1, 1)
 # plotting uncertainty decomposition for BART
@@ -535,7 +518,10 @@ plot_uncertainty_decomposition_bart(
     X_test_bart,
     Y_test_bart,
     normalize=True,
+    fixed_credo = False,
+    name_file = "credo_v2_decomp.png",
 )
+
 
 
 # changing second epistemic scenario 
