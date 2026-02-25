@@ -8,7 +8,6 @@ from torch.optim.lr_scheduler import StepLR
 import copy
 from scipy.spatial.distance import cdist
 
-
 def generate_data(n, p, cond_exp, noise_sd_fn, x_dist = partial(np.random.uniform, low=0, high=10)):
     x = x_dist(size=n*p).reshape(n,p)
     noise_sd = noise_sd_fn(x)
@@ -38,19 +37,6 @@ def corr_coverage_widths(high_est, low_est, actual):
     coverage_indicator_vector = coverage_indicators(high_est, low_est, actual)
     widths_vector = interval_widths(high_est, low_est)
     return np.abs(np.corrcoef(coverage_indicator_vector, widths_vector)[0,1])
-
-# def hsic_coverage_widths(high_est, low_est, actual):
-#    coverage_indicator_vector = coverage_indicators(high_est, low_est, actual)
-#    if isinstance(coverage_indicator_vector, pd.Series):
-#        coverage_indicator_vector = coverage_indicator_vector.to_numpy()
-
-#    coverage_indicator_vector = torch.tensor(coverage_indicator_vector, dtype=torch.float).unsqueeze(1)
-#    widths_vector = torch.tensor(interval_widths(high_est, low_est)).unsqueeze(1)
-#    return np.abs(HSIC(coverage_indicator_vector, widths_vector).numpy())
-
-# def wsc(X, y, high_est, low_est):
-#    coverage = average_coverage(high_est, low_est, y)
-#    return np.abs(wsc_unbiased(X, y, high_est, low_est) - coverage)
 
 def randomized_conformal_cutoffs(series, T, alpha=0.1):
     series = series.sort_values(ascending=True)
@@ -103,9 +89,6 @@ def select_column_per_row(arr, cols):
     row_idxs = np.arange(arr.shape[0])[:,None]
     
     return arr[row_idxs, cols[:,None]].reshape(-1)
-
-
-
 
 class sample_binning_model():
     def __init__(self, q_lower=5, q_upper=95):
@@ -172,8 +155,6 @@ class CatBoostWrapper:
     def predict(self, X_test):
         return self.lower_model.predict(X_test, ntree_end=self.t+1), self.upper_model.predict(X_test, ntree_end=self.t+1)
         
-
-
 class QuantileRegressionNet(nn.Module):
     def __init__(self, input_size, output_size, hidden_size=100, dropout=False, batch_norm=False):
         super(QuantileRegressionNet, self).__init__()

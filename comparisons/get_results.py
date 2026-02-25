@@ -90,37 +90,12 @@ def save_all_res(file_names, methods, model = "catboost"):
             outlier=True,
             )
 
-        # AISL outlier
-        result_aisl_out = read_metrics_files(
-            file_names,
-            methods,
-            model,
-            metric = "isl",
-            outlier=True,
-        )
-
-        # IL
-        results_il = read_metrics_files(
-            file_names,
-            methods,
-            model,
-            metric="IL",
-        )
-
         # ISL
         results_isl = read_metrics_files(
             file_names,
             methods,
             model,
             metric="isl"
-        )
-
-        # pcorr
-        results_pcorr = read_metrics_files(
-            file_names,
-            methods,
-            model,
-            metric="pcorr"
         )
 
         # coverage
@@ -141,31 +116,17 @@ def save_all_res(file_names, methods, model = "catboost"):
             original_path
             + "/results/final_tables/result_cover.pkl"
         )
-        results_il.to_pickle(
-            original_path
-            + "/results/final_tables/result_il.pkl"
-        )
-        results_pcorr.to_pickle(
-            original_path
-            + "/results/final_tables/result_pcorr.pkl"
-        )
 
         result_ratio.to_pickle(
             original_path
             + "/results/final_tables/result_ratio_outlier.pkl"
-        )
-        result_aisl_out.to_pickle(
-            original_path
-            + "/results/final_tables/result_aisl_outlier.pkl"
         )
         result_cover_out.to_pickle(
             original_path
             + "/results/final_tables/result_cover_outlier.pkl"
         )
 
-        return [results_isl, results_cover, results_il, 
-                results_pcorr, result_ratio, result_aisl_out, 
-                result_cover_out]
+        return [results_isl, results_cover, result_ratio, result_cover_out]
 
 
 res_list = save_all_res(file_names, methods)
