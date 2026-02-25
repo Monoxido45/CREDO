@@ -1,6 +1,6 @@
 .Rproj.user
 *unc*
-src/credal_cp/__pycache__/
+src/credo/__pycache__/
 experiments/__pycache__/
 /figures
 /results/*raw*
