@@ -1,11 +1,4 @@
-import sys
-import os
-
-#project_root = os.path.abspath("..")
-#sys.path.append(project_root)
-
 from experiments.uacqr import uacqr
-import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import torch
@@ -22,13 +15,6 @@ torch.manual_seed(125)
 device = torch.device("cpu")  # change to "cuda" if desired
 
 def make_gap_epistemic_few_middle(n, noise_std=0.1, p_middle=0.01):
-    """
-    Example where:
-      - left and right regions are well sampled
-      - middle region has very few points (high epistemic uncertainty)
-      - noise is small and constant (mostly aleatoric)
-      - mean is different on each side, forcing extrapolation
-    """
     n_mid = max(1, int(n * p_middle))
     n_side = (n - n_mid) // 2
 
@@ -61,14 +47,12 @@ def make_gap_epistemic_few_middle(n, noise_std=0.1, p_middle=0.01):
     df = df.sample(frac=1.0, random_state=0).reset_index(drop=True)
     return df
 
-
 # Generate data
 data = make_gap_epistemic_few_middle(n=1500, noise_std=0.1, p_middle=0.01)
 
 # Train / cal / test split
 train, rest = train_test_split(data, test_size=0.5, random_state=42)
 cal, test   = train_test_split(rest,  test_size=0.5, random_state=42)
-
 
 # ============================================
 # Training, calibration, and prediction
@@ -81,7 +65,6 @@ Y_cal = cal["y"].values.astype(np.float32)
 
 X_test = test["x"].values.astype(np.float32).reshape(-1, 1)
 Y_test = test["y"].values.astype(np.float32)
-
 
 # Train and calibrate credal CP regions
 credal_CP_bart = CredalCPRegressor(
@@ -101,7 +84,6 @@ credal_CP_bart.fit(
     n_MCMC = 1000,
     alpha_bart = 0.985,
 )
-
 
 # calibration of the credal CPs
 bart_cutoff = credal_CP_bart.calibrate(X_cal, Y_cal, N_samples_MC=1000)
@@ -123,7 +105,6 @@ rfqr_params = {
     "max_features" : "sqrt",
     "min_samples_leaf": 5,
 }
-
 
 # fitting base estimator and UACQR
 uacqr_results = uacqr(
@@ -149,7 +130,6 @@ pred_cqr = uacqr_results.predict(X_test_grid)
 y_pred_bart, aleatoric, epistemic = credal_CP_bart.predict(
     X_test_grid, disentangle=True
 )
-
 
 # ============================================
 # Predictions BART (intervals + uncertainties)
@@ -244,12 +224,10 @@ ax.legend(
     frameon=False
 )
 
-
 # =====================================================
 # (1,1) — Empty
 # =====================================================
 axes[1, 1].axis("off")
-
 
 plt.tight_layout()
 plt.savefig("CREDO_CQR_decomposition.png", dpi=300, bbox_inches="tight")

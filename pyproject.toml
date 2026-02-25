@@ -3,7 +3,7 @@ name = "credal_conformal_prediction"
 version = "0.1.0"
 description = ""
 authors = [
-    {name = "Luben M. C. Cabezas",email = "lucruz45.cab@gmail.com"}
+    {name = "Anonymous",email = "."}
 ]
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
@@ -35,7 +35,7 @@ build-backend = "poetry.core.masonry.api"
 name = "credal_cp"
 version = "0.1.0"
 description = "Local Epistemic Uncertainty in Regression Conformal Prediction via Imprecise Probabilities and Credal Sets."
-authors = ["Luben M. C. Cabezas <lucruz45.cab@gmail.com>"]
+authors = ["Anonymous <.>"]
 license = "MIT"
 readme = "README.md"
 

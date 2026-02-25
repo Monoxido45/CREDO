@@ -12,9 +12,7 @@ import torch
 
 # importing our package
 from credal_cp.credal_cp import CredalCPRegressor
-from credal_cp.utils import CQR
 import numpy as np
-from matplotlib.patches import Patch
 import os
 
 # For reproducibility
@@ -26,13 +24,6 @@ device = torch.device("cpu")  # change to "cuda" if desired
 
 # first type of data generation
 def make_gap_epistemic_few_middle(n, noise_std=0.1, p_middle=0.01):
-    """
-    Example where:
-      - left and right regions are well sampled
-      - middle region has very few points (high epistemic uncertainty)
-      - noise is small and constant (mostly aleatoric)
-      - mean is different on each side, forcing extrapolation
-    """
     n_mid = max(1, int(n * p_middle))
     n_side = (n - n_mid) // 2
 
@@ -522,8 +513,6 @@ plot_uncertainty_decomposition_bart(
     name_file = "credo_v2_decomp.png",
 )
 
-
-
 # changing second epistemic scenario 
 def make_variable_data_v2(n, std_dev=1/5):
     # proportion of points in the scarce region
@@ -584,10 +573,9 @@ n= 1500
 data = make_variable_data_v2(n)
 train, rest = train_test_split(data, test_size=0.5, random_state=42)
 cal, test = train_test_split(rest, test_size=0.5, random_state=42)
-
 credal_CP_bart, X_test_bart, Y_test_bart = fit_bart(train, cal, test)
-
 X_test_grid = np.linspace(-1.15, 1.15, 500).astype(np.float32).reshape(-1, 1)
+
 # plotting uncertainty decomposition for BART
 plot_uncertainty_decomposition_bart(
     credal_CP_bart,

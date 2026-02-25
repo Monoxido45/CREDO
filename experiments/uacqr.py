@@ -1,27 +1,16 @@
+# Adapted from UACQR's repository:
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn_quantile import RandomForestQuantileRegressor, SampleRandomForestQuantileRegressor, KNeighborsQuantileRegressor
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
-from sklearn.base import clone
-from sklearn.metrics import f1_score, balanced_accuracy_score
-from scipy.stats import norm, uniform, beta, iqr, mode
+from scipy.stats import norm, iqr
 import math
-from functools import partial
-from sklearn.model_selection import RandomizedSearchCV
 from sklearn.linear_model import QuantileRegressor, LinearRegression
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.optim.lr_scheduler import StepLR
-import copy
-from scipy.special import expit, logit
 from lightgbm import LGBMRegressor
-from scipy.spatial.distance import cdist
 from catboost import CatBoostRegressor
 
-from helper import generate_data, interval_score_loss, randomized_conformal_cutoffs, select_column_per_row, average_coverage, average_interval_width
-from helper import sample_binning_model, QuantileBandwidthModel, QuantileRegressionNN, corr_coverage_widths # , hsic_coverage_widths, wsc
+from helper import interval_score_loss, randomized_conformal_cutoffs, select_column_per_row, average_coverage, average_interval_width
+from helper import sample_binning_model, QuantileBandwidthModel, QuantileRegressionNN, corr_coverage_widths
 from helper import CatBoostWrapper
 
 

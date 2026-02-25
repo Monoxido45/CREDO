@@ -11,7 +11,6 @@ from jax.scipy.stats import norm
 
 with install_import_hook("gpjax", "beartype.beartype"):
     import gpjax as gpx
-from matplotlib.patches import Patch
 
 # package for the modelling of UQ
 plt.rcParams.update({

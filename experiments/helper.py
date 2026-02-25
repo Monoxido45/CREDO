@@ -51,19 +51,6 @@ def corr_coverage_widths(high_est, low_est, actual):
     widths_vector = interval_widths(high_est, low_est)
     return np.abs(np.corrcoef(coverage_indicator_vector, widths_vector)[0,1])
 
-# def hsic_coverage_widths(high_est, low_est, actual):
-#    coverage_indicator_vector = coverage_indicators(high_est, low_est, actual)
-#    if isinstance(coverage_indicator_vector, pd.Series):
-#        coverage_indicator_vector = coverage_indicator_vector.to_numpy()
-
-#    coverage_indicator_vector = torch.tensor(coverage_indicator_vector, dtype=torch.float).unsqueeze(1)
-#    widths_vector = torch.tensor(interval_widths(high_est, low_est)).unsqueeze(1)
-#    return np.abs(HSIC(coverage_indicator_vector, widths_vector).numpy())
-
-# def wsc(X, y, high_est, low_est):
-#    coverage = average_coverage(high_est, low_est, y)
-#    return np.abs(wsc_unbiased(X, y, high_est, low_est) - coverage)
-
 def randomized_conformal_cutoffs(series, T, alpha=0.1):
     series = series.sort_values(ascending=True)
     

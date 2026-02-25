@@ -15,13 +15,6 @@ torch.manual_seed(125)
 device = torch.device("cpu") 
 
 def make_gap_epistemic_few_middle(n, noise_std=0.1, p_middle=0.01):
-    """
-    Example where:
-      - left and right regions are well sampled
-      - middle region has very few points (high epistemic uncertainty)
-      - noise is small and constant (mostly aleatoric)
-      - mean is different on each side, forcing extrapolation
-    """
     n_mid = max(1, int(n * p_middle))
     n_side = (n - n_mid) // 2
 
@@ -115,18 +108,6 @@ rfqr_params = {
     "min_samples_leaf": 5,
 }
 
-# catboost_params = {
-#    "iterations": 1000,
-#    "learning_rate": 1e-3,
-#    "depth": 6,  # default value
-#    "l2_leaf_reg": 3,  # default value
-#    "random_strength": 1,  # default value
-#    "bagging_temperature": 1,  # default value
-#    "od_type": "Iter",
-#    "od_wait": 50,
-#    "use_best_model": False,
-# }
-
 
 # fitting base estimator and UACQR
 uacqr_results = uacqr(
@@ -145,12 +126,6 @@ uacqr_results = uacqr(
 uacqr_results.fit(X_train, Y_train)
 uacqr_results.calibrate(X_cal, Y_cal)
 uacqr_pred_test = uacqr_results.predict(X_test)
-
-#Average_coverage_cqrr = average_coverage(
-     #uacqr_pred_test["CQR-r"]["upper"], uacqr_pred_test["CQR-r"]["lower"], Y_test)
-#Average_coverage_cqr = average_coverage(
-    #uacqr_pred_test["CQR"]["upper"], uacqr_pred_test["CQR"]["lower"], Y_test)
-
 
 # ============================================
 # Plotting and predicting

@@ -30,13 +30,6 @@ torch.manual_seed(125)
 device = torch.device("cpu")  # change to "cuda" if desired
 
 def make_gap_epistemic_few_middle(n, noise_std=0.1, p_middle=0.01):
-    """
-    Example where:
-      - left and right regions are well sampled
-      - middle region has very few points (high epistemic uncertainty)
-      - noise is small and constant (mostly aleatoric)
-      - mean is different on each side, forcing extrapolation
-    """
     n_mid = max(1, int(n * p_middle))
     n_side = (n - n_mid) // 2
 

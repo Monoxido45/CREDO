@@ -936,7 +936,6 @@ def fit_methods_outlier(
 
     # checking if there are any infinite bounds in UACQR-S or UACQR-P and removing 
     # those indices from all methods to ensure fair comparison
-    # check finite bounds but only for the selected outlier + inlier indices
     lower_s = np.asarray(uacqr_pred_test["UACQR-S"]["lower"])
     upper_s = np.asarray(uacqr_pred_test["UACQR-S"]["upper"])
     finite_s = np.isfinite(lower_s) & np.isfinite(upper_s)
@@ -945,7 +944,6 @@ def fit_methods_outlier(
     upper_p = np.asarray(uacqr_pred_test["UACQR-P"]["upper"])
     finite_p = np.isfinite(lower_p) & np.isfinite(upper_p)
 
-    # combined indices of interest (outliers + selected inliers)
     combined_idxs = np.concatenate([outlier_indexes, most_inlier_idxs])
     finite_s_combined = finite_s[combined_idxs]
     finite_p_combined = finite_p[combined_idxs]
@@ -955,7 +953,6 @@ def fit_methods_outlier(
     n_removed_combined = int((~good_combined_mask).sum())
     print(f"Combined removal: excluding {n_removed_combined} of {n_total_combined} selected points with infinite bounds in either UACQR-S or UACQR-P")
 
-    # valid combined indices (in the original test-set indexing)
     valid_combined_idxs = combined_idxs[good_combined_mask]
 
     # filter the previously sliced outlier / inlier arrays to keep only valid entries

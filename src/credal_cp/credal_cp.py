@@ -3,10 +3,6 @@ from __future__ import division
 import numpy as np
 from sklearn.base import BaseEstimator
 
-from sklearn.model_selection import train_test_split
-import scipy.stats as st
-
-from sklearn.utils.validation import check_is_fitted
 from credal_cp.epistemic_models import (
     MDN_model,
     GP_model,

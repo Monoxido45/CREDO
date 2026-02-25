@@ -3,14 +3,11 @@ from __future__ import division
 
 import numpy as np
 from sklearn.base import BaseEstimator
-from copy import deepcopy
-from sklearn.ensemble import RandomForestRegressor
 
 from sklearn.model_selection import train_test_split
 import scipy.stats as st
 import torch
 from abc import ABC, abstractmethod
-from copy import deepcopy
 
 # used torch packages
 import torch
