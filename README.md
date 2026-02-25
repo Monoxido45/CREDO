@@ -11,7 +11,7 @@ This repository contains the implementation of the methods described in the pape
 ### Clone
 ```bash
 git clone <repo-url>
-cd credal_CP
+cd CREDO
 ```
 
 ### With Poetry (recommended)
