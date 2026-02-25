@@ -3,6 +3,8 @@
 src/credal_cp/__pycache__/
 experiments/__pycache__/
 /figures
+/results/*raw*
+/results/*.zip*
 data/*.csv*
 data/data
 data/raw
