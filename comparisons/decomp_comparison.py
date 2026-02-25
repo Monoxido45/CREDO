@@ -261,10 +261,6 @@ def run_experiment(dataset,
 
         # save checkpoint after each repetition
         save_checkpoint(i, seeds)
-    
-    # summarize results: convert lists to arrays and compute mean and sd (sample sd if n_rep>1)
-    epis_unc_inlier_qnn_results = np.array(epis_unc_inlier_qnn_results)
-    epis_unc_outlier_qnn_results = np.array(epis_unc_outlier_qnn_results)
 
     # convert lists to arrays and stack by rows (each element is 1D and same length)
     def _align_and_truncate(list_of_arrays):
@@ -283,6 +279,11 @@ def run_experiment(dataset,
 
     epis_unc_inlier_qnn_all = _align_and_truncate(epis_unc_inlier_qnn_all)
     epis_unc_outlier_qnn_all = _align_and_truncate(epis_unc_outlier_qnn_all)
+    
+    # summarize results: convert lists to arrays and compute mean and sd (sample sd if n_rep>1)
+    epis_unc_inlier_qnn_results = np.array(epis_unc_inlier_qnn_results)
+    epis_unc_outlier_qnn_results = np.array(epis_unc_outlier_qnn_results)
+    
     epis_unc_inlier_qnn_all = np.vstack(epis_unc_inlier_qnn_all)
     epis_unc_outlier_qnn_all = np.vstack(epis_unc_outlier_qnn_all)
 
