@@ -47,7 +47,3 @@ poetry run flake8 .
 poetry run black .
 poetry run isort .
 ```
-
-## Contributing
-Open issues/PRs, follow existing style and add tests for new features. If you want a tailored example for a specific script/notebook, specify the file and desired output.
-
