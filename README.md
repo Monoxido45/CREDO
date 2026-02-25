@@ -1,5 +1,5 @@
-# Local Epistemic Uncertainty in Regression Conformal Prediction via Imprecise Probabilities and Credal Sets.
-This repository contains the implementation of the methods described in the paper:
+# CREDO: Epistemic-Aware Conformalized Credal Envelopes for Regression
+This repository contains the implementation of the methods described in the paper...
 
 ## Installation
 
