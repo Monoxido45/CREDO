@@ -239,7 +239,7 @@ ax.grid(True)
 # =========================
 plt.tight_layout()
 plt.show()
-output_path = os.path.join(RESULTS_DIR, "bart_CQR_CQRr_UACQR_teste.png")
+output_path = os.path.join(RESULTS_DIR, "bart_CQR_CQRr_UACQR_test.png")
 plt.savefig(output_path, dpi=300, bbox_inches="tight")
 plt.close()
 

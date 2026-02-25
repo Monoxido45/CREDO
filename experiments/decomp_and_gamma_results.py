@@ -408,7 +408,6 @@ def plot_gamma(
     ax_bot.set_xlim(xx.min(), xx.max())
 
     plt.tight_layout()
-    # save to current working directory (no need to worry about path)
     out_dir = os.getcwd()
     os.makedirs(out_dir, exist_ok=True)
     png_path = os.path.join(out_dir, f"credo_gamma.png")
