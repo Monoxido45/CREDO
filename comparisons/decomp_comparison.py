@@ -12,7 +12,7 @@ import multiprocessing as mp
 original_path = os.getcwd()
 os.chdir(os.path.join(original_path, "comparisons"))
 
-from credal_cp.credal_cp import CredalCPRegressor
+from credo.credal_cp import CredalCPRegressor
 from jaxtyping import install_import_hook
 with install_import_hook("gpjax", "beartype.beartype"):
     import gpjax as gpx

@@ -16,7 +16,7 @@ from sklearn.model_selection import train_test_split
 import torch
 
 # importing our package
-from credal_cp.credal_cp import CredalCPRegressor
+from credo.credal_cp import CredalCPRegressor
 import numpy as np
 import copy
 

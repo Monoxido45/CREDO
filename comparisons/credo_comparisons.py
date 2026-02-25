@@ -11,8 +11,8 @@ from tqdm import tqdm
 original_path = os.getcwd()
 os.chdir(os.path.join(original_path, "comparisons"))
 
-from credal_cp.credal_cp import CredalCPRegressor
-from credal_cp.utils import (
+from credo.credal_cp import CredalCPRegressor
+from credo.utils import (
     average_interval_score_loss,
     average_coverage,
     compute_interval_length

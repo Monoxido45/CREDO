@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import torch
 from sklearn.model_selection import train_test_split
 
-from credal_cp.credal_cp import CredalCPRegressor
+from credo.credal_cp import CredalCPRegressor
 import numpy as np
 RESULTS_DIR = "results"
 os.makedirs(RESULTS_DIR, exist_ok=True)

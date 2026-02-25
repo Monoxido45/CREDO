@@ -1,5 +1,5 @@
 [project]
-name = "credal_conformal_prediction"
+name = "credo"
 version = "0.1.0"
 description = ""
 authors = [
@@ -32,15 +32,15 @@ build-backend = "poetry.core.masonry.api"
 
 
 [tool.poetry]
-name = "credal_cp"
+name = "credo"
 version = "0.1.0"
-description = "Local Epistemic Uncertainty in Regression Conformal Prediction via Imprecise Probabilities and Credal Sets."
+description = "Epistemic-Aware Conformalized Credal Envelopes for Regression."
 authors = ["Anonymous <.>"]
 license = "MIT"
 readme = "README.md"
 
 packages = [
-    { include = "credal_cp", from = "src" }
+    { include = "credo", from = "src" }
 ]
 
 [tool.poetry.dependencies]

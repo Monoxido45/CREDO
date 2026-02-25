@@ -3,7 +3,7 @@ from __future__ import division
 import numpy as np
 from sklearn.base import BaseEstimator
 
-from credal_cp.epistemic_models import (
+from credo.epistemic_models import (
     MDN_model,
     GP_model,
     BART_model,
