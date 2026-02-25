@@ -2,7 +2,6 @@
 *unc*
 src/credal_cp/__pycache__/
 experiments/__pycache__/
-/results
 /figures
 data/*.csv*
 data/data
