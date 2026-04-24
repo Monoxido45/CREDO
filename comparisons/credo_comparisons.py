@@ -15,7 +15,11 @@ from credo.credal_cp import CredalCPRegressor
 from credo.utils import (
     average_interval_score_loss,
     average_coverage,
-    compute_interval_length
+    average_interval_width,
+    compute_interval_length,
+    coverage_by_score_quantile,
+    scarcity_scores_knn,
+    worst_slab_coverage,
 )
 from jaxtyping import install_import_hook
 with install_import_hook("gpjax", "beartype.beartype"):
@@ -42,7 +46,8 @@ parser.add_argument("-n_MCMC", "--n_MCMC", type=int, default=1000, help="number 
 parser.add_argument("-seed_initial", "--seed_initial", type=int, default=125,
                      help="initial seed for random generator to create seeds for repetitions")
 parser.add_argument("-dataset", "--dataset", type=str, default="airfoil", help="dataset to use for the experiment")
-parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default="catboost", help="UACQR and CQR base models: 'rfqr' or 'catboost'")
+parser.add_argument("-base_model", "--base_model", type=str, default="qnn", help="Base quantile model for competitors: 'qnn', 'rfqr', or 'catboost'")
+parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default=None, help="Deprecated alias for --base_model")
 parser.add_argument("-outlier_analysis", "--outlier_analysis", type=bool, help="whether to perform outlier analysis using LOF and t-SNE")
 parser.add_argument("-n_cores", "--n_cores", type=int, default=4, help="number of cores to use for parallel processing")
 parser.add_argument("-kernel", "--kernel", type=str, default="RBF + Matern52", 
@@ -53,6 +58,16 @@ parser.add_argument("-activation_noise", "--activation_noise", type=str, default
                     help="activation function for noise in Gaussian Process")
 parser.add_argument("-outlier_same_time", "--outlier_same_time", type=bool, default=False, 
                     help="whether to analyze outliers at the same time as fitting the models or as a separate step after fitting")
+parser.add_argument("-gamma_max", "--gamma_max", type=float, default=0.75, help="maximum adaptive gamma value")
+parser.add_argument("-gamma_min", "--gamma_min", type=float, default=None, help="minimum adaptive gamma value; defaults to --gamma")
+parser.add_argument("-tau_gamma", "--tau_gamma", type=float, default=1.0, help="temperature for the scarcity-to-gamma map")
+parser.add_argument("-k_gamma", "--k_gamma", type=int, default=None, help="fixed k for kNN scarcity; defaults to the selected heuristic")
+parser.add_argument("-heuristic_gamma", "--heuristic_gamma", type=str, default="log", help="k heuristic for adaptive gamma: 'log' or 'exp'")
+parser.add_argument("-wsc_directions", "--wsc_directions", type=int, default=1000, help="number of projection directions for approximate worst-slab coverage")
+parser.add_argument("-wsc_min_fraction", "--wsc_min_fraction", type=float, default=None, help="minimum fraction of test points in each slab for approximate worst-slab coverage; defaults to max(0.1, 50 / n_test)")
+parser.add_argument("-scarcity_bins", "--scarcity_bins", type=int, default=4, help="number of scarcity-score quantile bins for stratified coverage")
+parser.add_argument("-scarcity_k", "--scarcity_k", type=int, default=None, help="fixed k for diagnostic kNN scarcity score; defaults to --scarcity_heuristic")
+parser.add_argument("-scarcity_heuristic", "--scarcity_heuristic", type=str, default="log", help="k heuristic for diagnostic scarcity score: 'log' or 'exp'")
 args = parser.parse_args()
 
 alpha = args.alpha
@@ -61,13 +76,70 @@ n_rep = args.n_rep
 n_MCMC = args.n_MCMC
 seed_initial = args.seed_initial
 dataset = args.dataset
-uacqr_model = args.uacqr_model
+base_model_arg = args.uacqr_model if args.uacqr_model is not None else args.base_model
+base_model_arg = base_model_arg.lower()
+if base_model_arg in ["qnn", "neural_net"]:
+    uacqr_model = "neural_net"
+    base_model_label = "QNN"
+    base_model_slug = "qnn"
+elif base_model_arg == "catboost":
+    uacqr_model = "catboost"
+    base_model_label = "CatBoost"
+    base_model_slug = "catboost"
+elif base_model_arg == "rfqr":
+    uacqr_model = "rfqr"
+    base_model_label = "RFQR"
+    base_model_slug = "rfqr"
+else:
+    raise ValueError(f"Unknown base_model={base_model_arg}")
 outlier_analysis = args.outlier_analysis
 n_cores = args.n_cores
 kernel = args.kernel
 kernel_noise = args.kernel_noise
 activation_noise = args.activation_noise
 outlier_same_time = args.outlier_same_time
+gamma_max = args.gamma_max
+gamma_min = args.gamma_min
+tau_gamma = args.tau_gamma
+k_gamma = args.k_gamma
+heuristic_gamma = args.heuristic_gamma
+wsc_directions = args.wsc_directions
+wsc_min_fraction = args.wsc_min_fraction
+scarcity_bins = args.scarcity_bins
+scarcity_k = args.scarcity_k
+scarcity_heuristic = args.scarcity_heuristic
+
+QNN_HIDDEN_LAYERS = [128, 128, 64]
+QNN_DROPOUT_CREDO = 0.3
+QNN_DROPOUT_COMPETITORS = 0.0
+
+def make_competitor_qnn_params(batch_size, B=100):
+    return {
+        "lr": 1e-3,
+        "epochs": 2000,
+        "batch_size": batch_size,
+        "dropout": QNN_DROPOUT_COMPETITORS,
+        "normalize": True,
+        "weight_decay": 1e-6,
+        "hidden_layers": QNN_HIDDEN_LAYERS,
+        "batch_norm": True,
+        "gamma": 0.99,
+        "step_size": 10,
+        "verbose": False,
+        "undo_quantile_crossing": True,
+        "use_gpu": True,
+        "patience": 50,
+        "validation_fraction": 0.2,
+        "min_saved_models": min(B + 1, 1000),
+        "max_saved_models": 1000,
+    }
+
+def resolve_wsc_min_fraction(n_test):
+    if wsc_min_fraction is not None:
+        return wsc_min_fraction
+    if n_test <= 0:
+        return 0.1
+    return max(0.1, 50 / n_test)
 
 def generate_seeds(seed_initial, n_rep):
     np.random.seed(seed_initial)
@@ -83,6 +155,7 @@ def fit_methods(
         y_test,
         mdn_params,
         i,
+        batch_size = 32,
         scale_y = False,
         outlier_same_time = False,
         inlier_size = 0.2,
@@ -151,6 +224,27 @@ def fit_methods(
         random_state=i,
         uacqrs_agg=uacqr_params["uacqrs_agg"],
         )
+    elif uacqr_model in ["neural_net", "qnn"]:
+        uacqr_params = {
+        "model_type": "neural_net",
+        "B": 100,
+        "uacqrs_agg": "std",
+        "base_model_type": "Quantile",
+        }
+        qnn_params = make_competitor_qnn_params(batch_size, B=uacqr_params["B"])
+
+        uacqr_results = uacqr(
+        qnn_params,
+        q_lower=alpha / 2 * 100,
+        q_upper=(1 - alpha / 2) * 100,
+        model_type=uacqr_params["model_type"],
+        B=uacqr_params["B"],
+        random_state=i,
+        uacqrs_agg=uacqr_params["uacqrs_agg"],
+        bootstrapping_for_uacqrp=False,
+        )
+    else:
+        raise ValueError(f"Unknown uacqr_model={uacqr_model}")
     
     uacqr_results.fit(X_train, y_train)
     uacqr_results.calibrate(X_calib, y_calib)
@@ -205,15 +299,15 @@ def fit_methods(
     credal_CP_qnn.fit(
         X_train, 
         y_train,
-        weight_decay=0,
+        weight_decay=1e-6,
         step_size=10,
         gamma=0.99,
-        hidden_layers=[128, 128, 64],
-        dropout=0.3,
+        hidden_layers=QNN_HIDDEN_LAYERS,
+        dropout=QNN_DROPOUT_CREDO,
         epochs=2000,
         patience=50,
         lr=1e-3, 
-        batch_size=mdn_params["batch_size"],
+        batch_size=batch_size,
         verbose=1,
         random_seed_fit=i,
     )
@@ -233,21 +327,26 @@ def fit_methods(
     credal_CP_qnn_adaptive.fit(
          X_train, 
         y_train,
-        weight_decay=0,
+        weight_decay=1e-6,
         step_size=10,
         gamma=0.99,
-        hidden_layers=[128, 128, 64],
-        dropout=0.3,
+        hidden_layers=QNN_HIDDEN_LAYERS,
+        dropout=QNN_DROPOUT_CREDO,
         epochs=2000,
         patience=50,
         lr=1e-3, 
-        batch_size=mdn_params["batch_size"],
+        batch_size=batch_size,
         verbose=1,
         random_seed_fit=i,
+        heuristic_gamma=heuristic_gamma,
+        k=k_gamma,
     )
     credal_CP_qnn_adaptive.calibrate(X_calib, 
                                   y_calib,
                                   N_samples_MC=n_MCMC, 
+                                  gamma_max=gamma_max,
+                                  gamma_min=gamma_min,
+                                  tau=tau_gamma,
                                   )
     credo_CP_qnn_pred_adaptive = credal_CP_qnn_adaptive.predict(X_test)
     del credal_CP_qnn
@@ -348,10 +447,159 @@ def fit_methods(
         y_test, alpha
     )
 
+    # Mean interval length and conditional-coverage diagnostics
+    length_credo_qnn = average_interval_width(
+        credo_CP_qnn_pred[:, 1], credo_CP_qnn_pred[:, 0]
+    )
+    length_credo_qnn_adaptive = average_interval_width(
+        credo_CP_qnn_pred_adaptive[:, 1], credo_CP_qnn_pred_adaptive[:, 0]
+    )
+    length_cqr = average_interval_width(cqr_int[:, 1], cqr_int[:, 0])
+    length_cqrr = average_interval_width(cqrr_int[:, 1], cqrr_int[:, 0])
+    length_uacqrs = average_interval_width(uacqrs_int[:, 1], uacqrs_int[:, 0])
+    length_uacqrp = average_interval_width(uacqrp_int[:, 1], uacqrp_int[:, 0])
+    length_epic_mdn = average_interval_width(
+        pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0]
+    )
+
+    scarcity_scores = scarcity_scores_knn(
+        X_train,
+        X_test,
+        k=scarcity_k,
+        heuristic=scarcity_heuristic,
+    )
+    _, _, scarcity_bin_edges = coverage_by_score_quantile(
+        credo_CP_qnn_pred[:, 1],
+        credo_CP_qnn_pred[:, 0],
+        y_test,
+        scarcity_scores,
+        n_bins=scarcity_bins,
+    )
+    scarcity_scores_uacqr = scarcity_scores[good_mask]
+    wsc_min_fraction_resolved = resolve_wsc_min_fraction(y_test.shape[0])
+
+    wsc_credo_qnn = worst_slab_coverage(
+        X_test,
+        credo_CP_qnn_pred[:, 1],
+        credo_CP_qnn_pred[:, 0],
+        y_test,
+        n_directions=wsc_directions,
+        min_fraction=wsc_min_fraction_resolved,
+        random_state=i,
+    )
+    wsc_credo_qnn_adaptive = worst_slab_coverage(
+        X_test,
+        credo_CP_qnn_pred_adaptive[:, 1],
+        credo_CP_qnn_pred_adaptive[:, 0],
+        y_test,
+        n_directions=wsc_directions,
+        min_fraction=wsc_min_fraction_resolved,
+        random_state=i,
+    )
+    wsc_cqr = worst_slab_coverage(
+        X_test,
+        cqr_int[:, 1],
+        cqr_int[:, 0],
+        y_test,
+        n_directions=wsc_directions,
+        min_fraction=wsc_min_fraction_resolved,
+        random_state=i,
+    )
+    wsc_cqrr = worst_slab_coverage(
+        X_test,
+        cqrr_int[:, 1],
+        cqrr_int[:, 0],
+        y_test,
+        n_directions=wsc_directions,
+        min_fraction=wsc_min_fraction_resolved,
+        random_state=i,
+    )
+    wsc_uacqrs = worst_slab_coverage(
+        X_test[good_mask],
+        uacqrs_int[:, 1],
+        uacqrs_int[:, 0],
+        y_test_uacqr,
+        n_directions=wsc_directions,
+        min_fraction=wsc_min_fraction_resolved,
+        random_state=i,
+    )
+    wsc_uacqrp = worst_slab_coverage(
+        X_test[good_mask],
+        uacqrp_int[:, 1],
+        uacqrp_int[:, 0],
+        y_test_uacqr,
+        n_directions=wsc_directions,
+        min_fraction=wsc_min_fraction_resolved,
+        random_state=i,
+    )
+    wsc_epic_mdn = worst_slab_coverage(
+        X_test,
+        pred_epic_mdn_test[:, 1],
+        pred_epic_mdn_test[:, 0],
+        y_test,
+        n_directions=wsc_directions,
+        min_fraction=wsc_min_fraction_resolved,
+        random_state=i,
+    )
+
+    scarcity_cover_credo_qnn, _, _ = coverage_by_score_quantile(
+        credo_CP_qnn_pred[:, 1],
+        credo_CP_qnn_pred[:, 0],
+        y_test,
+        scarcity_scores,
+        bin_edges=scarcity_bin_edges,
+    )
+    scarcity_cover_credo_qnn_adaptive, _, _ = coverage_by_score_quantile(
+        credo_CP_qnn_pred_adaptive[:, 1],
+        credo_CP_qnn_pred_adaptive[:, 0],
+        y_test,
+        scarcity_scores,
+        bin_edges=scarcity_bin_edges,
+    )
+    scarcity_cover_cqr, _, _ = coverage_by_score_quantile(
+        cqr_int[:, 1],
+        cqr_int[:, 0],
+        y_test,
+        scarcity_scores,
+        bin_edges=scarcity_bin_edges,
+    )
+    scarcity_cover_cqrr, _, _ = coverage_by_score_quantile(
+        cqrr_int[:, 1],
+        cqrr_int[:, 0],
+        y_test,
+        scarcity_scores,
+        bin_edges=scarcity_bin_edges,
+    )
+    scarcity_cover_uacqrs, _, _ = coverage_by_score_quantile(
+        uacqrs_int[:, 1],
+        uacqrs_int[:, 0],
+        y_test_uacqr,
+        scarcity_scores_uacqr,
+        bin_edges=scarcity_bin_edges,
+    )
+    scarcity_cover_uacqrp, _, _ = coverage_by_score_quantile(
+        uacqrp_int[:, 1],
+        uacqrp_int[:, 0],
+        y_test_uacqr,
+        scarcity_scores_uacqr,
+        bin_edges=scarcity_bin_edges,
+    )
+    scarcity_cover_epic_mdn, _, _ = coverage_by_score_quantile(
+        pred_epic_mdn_test[:, 1],
+        pred_epic_mdn_test[:, 0],
+        y_test,
+        scarcity_scores,
+        bin_edges=scarcity_bin_edges,
+    )
+
     
     if n_removed == n_total:
       isl_uacqrs, isl_uacqrp= np.nan, np.nan
       cover_uacqrs, cover_uacqrp = np.nan, np.nan
+      length_uacqrs, length_uacqrp = np.nan, np.nan
+      wsc_uacqrs, wsc_uacqrp = np.nan, np.nan
+      scarcity_cover_uacqrs[:] = np.nan
+      scarcity_cover_uacqrp[:] = np.nan
     
     isl_array = np.array([
         isl_credo_qnn,
@@ -371,7 +619,37 @@ def fit_methods(
         cover_uacqrp,
         cover_epic_mdn,
     ])
-
+    length_array = np.array([
+        length_credo_qnn,
+        length_credo_qnn_adaptive,
+        length_cqr,
+        length_cqrr,
+        length_uacqrs,
+        length_uacqrp,
+        length_epic_mdn,
+    ])
+    wsc_array = np.array([
+        wsc_credo_qnn,
+        wsc_credo_qnn_adaptive,
+        wsc_cqr,
+        wsc_cqrr,
+        wsc_uacqrs,
+        wsc_uacqrp,
+        wsc_epic_mdn,
+    ])
+    scarcity_cover_array = np.vstack([
+        scarcity_cover_credo_qnn,
+        scarcity_cover_credo_qnn_adaptive,
+        scarcity_cover_cqr,
+        scarcity_cover_cqrr,
+        scarcity_cover_uacqrs,
+        scarcity_cover_uacqrp,
+        scarcity_cover_epic_mdn,
+    ])
+    scarcity_worst_cover_array = np.array([
+        np.nan if np.all(np.isnan(row)) else np.nanmin(row)
+        for row in scarcity_cover_array
+    ])
     if outlier_same_time and outlier_analysis:
         # Detecting outliers using t-SNE and Local Outlier Factor
         print(f"Performing outlier detection with t-SNE and Local Outlier Factor")
@@ -587,9 +865,9 @@ def fit_methods(
             epic_mdn_ratio,
         ])
 
-        return cover_array, isl_array, cover_outlier_array, ratio_array
+        return cover_array, isl_array, length_array, wsc_array, scarcity_cover_array, scarcity_worst_cover_array, wsc_min_fraction_resolved, cover_outlier_array, ratio_array
 
-    return cover_array, isl_array
+    return cover_array, isl_array, length_array, wsc_array, scarcity_cover_array, scarcity_worst_cover_array, wsc_min_fraction_resolved
 
 def fit_methods_outlier(
         X_train,
@@ -667,6 +945,27 @@ def fit_methods_outlier(
         random_state=i,
         uacqrs_agg=uacqr_params["uacqrs_agg"],
         )
+    elif uacqr_model in ["neural_net", "qnn"]:
+        uacqr_params = {
+        "model_type": "neural_net",
+        "B": 100,
+        "uacqrs_agg": "std",
+        "base_model_type": "Quantile",
+        }
+        qnn_params = make_competitor_qnn_params(batch_size, B=uacqr_params["B"])
+
+        uacqr_results = uacqr(
+        qnn_params,
+        q_lower=alpha / 2 * 100,
+        q_upper=(1 - alpha / 2) * 100,
+        model_type=uacqr_params["model_type"],
+        B=uacqr_params["B"],
+        random_state=i,
+        uacqrs_agg=uacqr_params["uacqrs_agg"],
+        bootstrapping_for_uacqrp=False,
+        )
+    else:
+        raise ValueError(f"Unknown uacqr_model={uacqr_model}")
     
     uacqr_results.fit(X_train, y_train)
     uacqr_results.calibrate(X_calib, y_calib)
@@ -724,8 +1023,8 @@ def fit_methods_outlier(
         weight_decay=1e-6,
         step_size=10,
         gamma=0.99,
-        hidden_layers=[64, 64],
-        dropout=0.3,
+        hidden_layers=QNN_HIDDEN_LAYERS,
+        dropout=QNN_DROPOUT_CREDO,
         epochs=2000,
         patience=50,
         lr=1e-3, 
@@ -753,18 +1052,23 @@ def fit_methods_outlier(
         weight_decay=1e-6,
         step_size=5,
         gamma=0.99,
-        hidden_layers=[64, 64],
-        dropout=0.3,
+        hidden_layers=QNN_HIDDEN_LAYERS,
+        dropout=QNN_DROPOUT_CREDO,
         epochs=2000,
         patience=50,
         lr=1e-3, 
         batch_size=batch_size,
         verbose=1,
         random_seed_fit=i,
+        heuristic_gamma=heuristic_gamma,
+        k=k_gamma,
     )
     credal_CP_qnn_adaptive.calibrate(X_calib, 
                                   y_calib,
                                   N_samples_MC=n_MCMC, 
+                                  gamma_max=gamma_max,
+                                  gamma_min=gamma_min,
+                                  tau=tau_gamma,
                                   )
     credo_CP_qnn_pred_adaptive = credal_CP_qnn_adaptive.predict(X_test)
     del credal_CP_qnn
@@ -1086,10 +1390,11 @@ def run_experiment_outlier(
                         "alpha": alpha,
                         "gamma": gamma,
                         "dataset": dataset,
+                        "base_model": base_model_label,
                     }
                     chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
                     os.makedirs(chk_dir, exist_ok=True)
-                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
+                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier.pkl")
                     with open(filepath, "wb") as f:
                         pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
                 except Exception as e:
@@ -1119,10 +1424,10 @@ def run_experiment_outlier(
     ratio_mean, ratio_sd = mean_sd(ratio_results)
 
     # create summary dataframes and save to CSV
-    df_cover = pd.DataFrame({"methods": methods ,"mean": cover_mean, "sd": cover_sd})
-    df_ratio = pd.DataFrame({"methods": methods ,"mean": ratio_mean, "sd": ratio_sd})
+    df_cover = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": cover_mean, "sd": cover_sd})
+    df_ratio = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": ratio_mean, "sd": ratio_sd})
 
-    data_dir = os.path.join(RESULTS_PATH, f"{dataset}_{uacqr_model}_summary")
+    data_dir = os.path.join(RESULTS_PATH, f"{dataset}_{base_model_slug}_summary")
     os.makedirs(data_dir, exist_ok=True)
 
     df_cover.to_csv(os.path.join(data_dir, f"{dataset}_coverage_outlier_summary.csv"))
@@ -1156,25 +1461,55 @@ def run_experiment(dataset,
     "type": "gaussian",
     }
     
+    batch_size = 32
     
     if data.shape[0] > 10000:
         mdn_params["batch_size"] = 120
         batch_size = 125
     if dataset == "WEC":
         mdn_params["batch_size"] = 250
+        batch_size = 250
     
 
     if checkpoint_flag:
+        local_diagnostics_restart = False
         resume_from = int(checkpoint_data.get("iteration", -1)) + 1
         cover_results = checkpoint_data.get("cover_results", [])
         isl_results = checkpoint_data.get("isl_results", [])
+        length_results = checkpoint_data.get("length_results", [])
+        wsc_results = checkpoint_data.get("wsc_results", None)
+        scarcity_coverage_results = checkpoint_data.get("scarcity_coverage_results", None)
+        scarcity_worst_coverage_results = checkpoint_data.get("scarcity_worst_coverage_results", None)
+        wsc_min_fraction_results = checkpoint_data.get("wsc_min_fraction_results", None)
         seeds = checkpoint_data.get("seeds", None)
+        if (
+            wsc_results is None
+            or scarcity_coverage_results is None
+            or scarcity_worst_coverage_results is None
+            or wsc_min_fraction_results is None
+        ):
+            print("Checkpoint does not include local coverage diagnostics. Restarting this run to keep summaries aligned.")
+            local_diagnostics_restart = True
+            resume_from = 0
+            cover_results = []
+            isl_results = []
+            length_results = []
+            wsc_results = []
+            scarcity_coverage_results = []
+            scarcity_worst_coverage_results = []
+            wsc_min_fraction_results = []
+            if seeds is None:
+                seeds = generate_seeds(seed_initial, n_rep)
         print(f"Resuming from iteration {resume_from}. Loaded {len(cover_results)} results so far.")
         if outlier_same_time and outlier_analysis:
-            resume_from = int(checkpoint_data_outlier.get("iteration", -1)) + 1
-            ratio_results = checkpoint_data_outlier.get("ratio_results", [])
-            coverage_outlier_results = checkpoint_data_outlier.get("coverage_results", [])
-            seeds = checkpoint_data_outlier.get("seeds", None)
+            if local_diagnostics_restart:
+                ratio_results = []
+                coverage_outlier_results = []
+            else:
+                resume_from = int(checkpoint_data_outlier.get("iteration", -1)) + 1
+                ratio_results = checkpoint_data_outlier.get("ratio_results", [])
+                coverage_outlier_results = checkpoint_data_outlier.get("coverage_results", [])
+                seeds = checkpoint_data_outlier.get("seeds", None)
             print(f"Resuming from iteration {resume_from}. Loaded {len(coverage_outlier_results)} results so far.")
 
     else:
@@ -1182,6 +1517,11 @@ def run_experiment(dataset,
         seeds = generate_seeds(seed_initial, n_rep)
         cover_results = []
         isl_results = []
+        length_results = []
+        wsc_results = []
+        scarcity_coverage_results = []
+        scarcity_worst_coverage_results = []
+        wsc_min_fraction_results = []
         if outlier_same_time and outlier_analysis:
             ratio_results = []
             coverage_outlier_results = []
@@ -1208,7 +1548,7 @@ def run_experiment(dataset,
             scale_y = False
 
         if not outlier_same_time:
-            cover_array, isl_array = fit_methods(
+            cover_array, isl_array, length_array, wsc_array, scarcity_cover_array, scarcity_worst_cover_array, wsc_min_fraction_used = fit_methods(
                 X_train,
                 y_train,
                 X_calib,
@@ -1222,21 +1562,32 @@ def run_experiment(dataset,
             )
             cover_results.append(cover_array)
             isl_results.append(isl_array)
+            length_results.append(length_array)
+            wsc_results.append(wsc_array)
+            scarcity_coverage_results.append(scarcity_cover_array)
+            scarcity_worst_coverage_results.append(scarcity_worst_cover_array)
+            wsc_min_fraction_results.append(wsc_min_fraction_used)
 
             def save_checkpoint(iteration, seeds):
                 try:
                     checkpoint = {
                         "cover_results": cover_results,
                         "isl_results": isl_results,
+                        "length_results": length_results,
+                        "wsc_results": wsc_results,
+                        "scarcity_coverage_results": scarcity_coverage_results,
+                        "scarcity_worst_coverage_results": scarcity_worst_coverage_results,
+                        "wsc_min_fraction_results": wsc_min_fraction_results,
                         "iteration": iteration,
                         "seeds": seeds,
                         "alpha": alpha,
                         "gamma": gamma,
                         "dataset": dataset,
+                        "base_model": base_model_label,
                     }
                     chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
                     os.makedirs(chk_dir, exist_ok=True)
-                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
+                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}.pkl")
                     with open(filepath, "wb") as f:
                         pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
                 except Exception as e:
@@ -1245,7 +1596,7 @@ def run_experiment(dataset,
             # save checkpoint after each repetition
             save_checkpoint(i, seeds)
         elif outlier_same_time and outlier_analysis:
-            cover_array, isl_array, cover_outlier_array, ratio_array = fit_methods(
+            cover_array, isl_array, length_array, wsc_array, scarcity_cover_array, scarcity_worst_cover_array, wsc_min_fraction_used, cover_outlier_array, ratio_array = fit_methods(
             X_train,
             y_train, 
             X_calib, 
@@ -1254,11 +1605,17 @@ def run_experiment(dataset,
             y_test,
             mdn_params, 
             i, 
+            batch_size = batch_size,
             scale_y = scale_y,
             outlier_same_time = outlier_same_time, 
             )
             cover_results.append(cover_array)
             isl_results.append(isl_array)
+            length_results.append(length_array)
+            wsc_results.append(wsc_array)
+            scarcity_coverage_results.append(scarcity_cover_array)
+            scarcity_worst_coverage_results.append(scarcity_worst_cover_array)
+            wsc_min_fraction_results.append(wsc_min_fraction_used)
             coverage_outlier_results.append(cover_outlier_array)
             ratio_results.append(ratio_array)
 
@@ -1267,15 +1624,21 @@ def run_experiment(dataset,
                     checkpoint = {
                         "cover_results": cover_results,
                         "isl_results": isl_results,
+                        "length_results": length_results,
+                        "wsc_results": wsc_results,
+                        "scarcity_coverage_results": scarcity_coverage_results,
+                        "scarcity_worst_coverage_results": scarcity_worst_coverage_results,
+                        "wsc_min_fraction_results": wsc_min_fraction_results,
                         "iteration": iteration,
                         "seeds": seeds,
                         "alpha": alpha,
                         "gamma": gamma,
                         "dataset": dataset,
+                        "base_model": base_model_label,
                     }
                     chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
                     os.makedirs(chk_dir, exist_ok=True)
-                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
+                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}.pkl")
                     with open(filepath, "wb") as f:
                         pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
                
@@ -1287,8 +1650,9 @@ def run_experiment(dataset,
                         "alpha": alpha,
                         "gamma": gamma,
                         "dataset": dataset,
+                        "base_model": base_model_label,
                     }
-                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
+                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier.pkl")
                     with open(filepath, "wb") as f:
                         pickle.dump(checkpoint_outlier, f, protocol=pickle.HIGHEST_PROTOCOL)
                         
@@ -1300,6 +1664,11 @@ def run_experiment(dataset,
     # summarize results: convert lists to arrays and compute mean and sd (sample sd if n_rep>1)
     cover_results = np.array(cover_results)
     isl_results = np.array(isl_results)
+    length_results = np.array(length_results)
+    wsc_results = np.array(wsc_results)
+    scarcity_coverage_results = np.array(scarcity_coverage_results)
+    scarcity_worst_coverage_results = np.array(scarcity_worst_coverage_results)
+    wsc_min_fraction_results = np.array(wsc_min_fraction_results)
 
     def mean_sd(arr):
         mean = np.nanmean(arr, axis=0, )
@@ -1317,16 +1686,69 @@ def run_experiment(dataset,
 
     cover_mean, cover_sd = mean_sd(cover_results)
     isl_mean, isl_sd = mean_sd(isl_results)
+    length_mean, length_sd = mean_sd(length_results)
+    wsc_mean, wsc_sd = mean_sd(wsc_results)
+    scarcity_worst_mean, scarcity_worst_sd = mean_sd(scarcity_worst_coverage_results)
 
     # create summary dataframes and save to CSV
-    df_cover = pd.DataFrame({"methods": methods ,"mean": cover_mean, "sd": cover_sd})
-    df_isl = pd.DataFrame({"methods": methods ,"mean": isl_mean, "sd": isl_sd})
+    df_cover = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": cover_mean, "sd": cover_sd})
+    df_isl = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": isl_mean, "sd": isl_sd})
+    df_length = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": length_mean, "sd": length_sd})
+    df_wsc = pd.DataFrame({
+        "base_model": base_model_label,
+        "methods": methods,
+        "mean": wsc_mean,
+        "sd": wsc_sd,
+        "n_directions": wsc_directions,
+        "min_fraction": wsc_min_fraction,
+        "effective_min_fraction_mean": np.nanmean(wsc_min_fraction_results),
+        "effective_min_fraction_sd": (
+            np.nanstd(wsc_min_fraction_results, ddof=1)
+            if wsc_min_fraction_results.shape[0] > 1
+            else 0.0
+        ),
+        "min_fraction_rule": "max(0.1, 50 / n_test)" if wsc_min_fraction is None else "fixed",
+    })
+    df_scarcity_worst = pd.DataFrame({
+        "base_model": base_model_label,
+        "methods": methods,
+        "mean": scarcity_worst_mean,
+        "sd": scarcity_worst_sd,
+        "n_bins": scarcity_bins,
+        "scarcity_k": scarcity_k,
+        "scarcity_heuristic": scarcity_heuristic,
+    })
 
-    data_dir = os.path.join(RESULTS_PATH, f"{dataset}_{uacqr_model}_summary")
+    scarcity_mean = np.nanmean(scarcity_coverage_results, axis=0)
+    scarcity_sd = (
+        np.nanstd(scarcity_coverage_results, axis=0, ddof=1)
+        if scarcity_coverage_results.shape[0] > 1
+        else np.zeros_like(scarcity_mean)
+    )
+    scarcity_rows = []
+    for method_idx, method in enumerate(methods):
+        for bin_idx in range(scarcity_mean.shape[1]):
+            scarcity_rows.append({
+                "base_model": base_model_label,
+                "methods": method,
+                "scarcity_bin": f"Q{bin_idx + 1}",
+                "mean": scarcity_mean[method_idx, bin_idx],
+                "sd": scarcity_sd[method_idx, bin_idx],
+                "n_bins": scarcity_bins,
+                "scarcity_k": scarcity_k,
+                "scarcity_heuristic": scarcity_heuristic,
+            })
+    df_scarcity = pd.DataFrame(scarcity_rows)
+
+    data_dir = os.path.join(RESULTS_PATH, f"{dataset}_{base_model_slug}_summary")
     os.makedirs(data_dir, exist_ok=True)
 
     df_cover.to_csv(os.path.join(data_dir, f"{dataset}_coverage_summary.csv"))
     df_isl.to_csv(os.path.join(data_dir, f"{dataset}_isl_summary.csv"))
+    df_length.to_csv(os.path.join(data_dir, f"{dataset}_interval_length_summary.csv"))
+    df_wsc.to_csv(os.path.join(data_dir, f"{dataset}_wsc_summary.csv"))
+    df_scarcity_worst.to_csv(os.path.join(data_dir, f"{dataset}_scarcity_worst_coverage_summary.csv"))
+    df_scarcity.to_csv(os.path.join(data_dir, f"{dataset}_scarcity_coverage_summary.csv"))
 
     if outlier_same_time and outlier_analysis:
         coverage_outlier_results = np.array(coverage_outlier_results)
@@ -1336,17 +1758,25 @@ def run_experiment(dataset,
         cover_mean_outlier, cover_sd_outlier = mean_sd(coverage_outlier_results)
         ratio_mean_outlier, ratio_sd_outlier = mean_sd(ratio_results)
 
-        df_cover_out = pd.DataFrame({"methods": methods ,"mean": cover_mean_outlier, "sd": cover_sd_outlier})
-        df_ratio_out = pd.DataFrame({"methods": methods ,"mean": ratio_mean_outlier, "sd": ratio_sd_outlier})
+        df_cover_out = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": cover_mean_outlier, "sd": cover_sd_outlier})
+        df_ratio_out = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": ratio_mean_outlier, "sd": ratio_sd_outlier})
 
         df_cover_out.to_csv(os.path.join(data_dir, f"{dataset}_coverage_outlier_summary.csv"))
         df_ratio_out.to_csv(os.path.join(data_dir, f"{dataset}_ratio_outlier_summary.csv"))
 
 
         return np.array(cover_results), np.array(isl_results), \
+                np.array(length_results), np.array(wsc_results), \
+                np.array(scarcity_coverage_results), \
+                np.array(scarcity_worst_coverage_results), \
+                np.array(wsc_min_fraction_results), \
                 np.array(coverage_outlier_results), np.array(ratio_results)
 
-    return np.array(cover_results), np.array(isl_results)
+    return np.array(cover_results), np.array(isl_results), \
+            np.array(length_results), np.array(wsc_results), \
+            np.array(scarcity_coverage_results), \
+            np.array(scarcity_worst_coverage_results), \
+            np.array(wsc_min_fraction_results)
 
 
 if __name__ == "__main__":
@@ -1386,12 +1816,12 @@ if __name__ == "__main__":
     # Check for an existing checkpoint to optionally resume the experiment
     chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
     if outlier_analysis and not(outlier_same_time):
-        chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
+        chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier.pkl")
     elif outlier_same_time and outlier_analysis:    
-        chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
-        chk_file_outlier = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
+        chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}.pkl")
+        chk_file_outlier = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier.pkl")
     else:
-        chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{uacqr_model}.pkl")
+        chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}.pkl")
     resume_from = 0
     checkpoint_data = None
     loaded_cover = loaded_isl = None
@@ -1425,7 +1855,7 @@ if __name__ == "__main__":
         checkpoint_data_outlier = None
 
     if not outlier_analysis:
-        cover, isl = run_experiment(
+        cover, isl, length, wsc, scarcity_cover, scarcity_worst_cover, wsc_min_fraction_used = run_experiment(
             dataset = dataset, 
             n_rep = n_rep, 
             target_column = "target",
@@ -1436,14 +1866,22 @@ if __name__ == "__main__":
         raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}")
         os.makedirs(raw_dir, exist_ok=True)
     
-        to_save = {"cover": cover, "isl": isl}
+        to_save = {
+            "cover": cover,
+            "isl": isl,
+            "length": length,
+            "wsc": wsc,
+            "scarcity_cover": scarcity_cover,
+            "scarcity_worst_cover": scarcity_worst_cover,
+            "wsc_min_fraction": wsc_min_fraction_used,
+        }
         for name, arr in to_save.items():
-            filepath = os.path.join(raw_dir, f"{dataset}_{name}_{uacqr_model}_raw.pkl")
+            filepath = os.path.join(raw_dir, f"{dataset}_{name}_{base_model_slug}_raw.pkl")
             with open(filepath, "wb") as f:
                 pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
     
     
-        chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{uacqr_model}.pkl")
+        chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{base_model_slug}.pkl")
         try:
             if os.path.exists(chk_file):
                 os.remove(chk_file)
@@ -1455,7 +1893,7 @@ if __name__ == "__main__":
     
     elif outlier_analysis and outlier_same_time:
         print("Running main experiment with outlier analysis at the same time")
-        cover, isl, cover_out, ratio_out = run_experiment(
+        cover, isl, length, wsc, scarcity_cover, scarcity_worst_cover, wsc_min_fraction_used, cover_out, ratio_out = run_experiment(
             dataset = dataset, 
             n_rep = n_rep, 
             target_column = "target", 
@@ -1470,17 +1908,22 @@ if __name__ == "__main__":
         os.makedirs(raw_dir, exist_ok=True)
         to_save = {"cover": cover, 
                    "isl": isl, 
+                   "length": length,
+                   "wsc": wsc,
+                   "scarcity_cover": scarcity_cover,
+                   "scarcity_worst_cover": scarcity_worst_cover,
+                   "wsc_min_fraction": wsc_min_fraction_used,
                    "cover_out": cover_out,
                    "ratio_out": ratio_out
                    }
         for name, arr in to_save.items(): 
             filepath = os.path.join(
-                raw_dir, f"{dataset}_{name}_{uacqr_model}_raw.pkl")
+                raw_dir, f"{dataset}_{name}_{base_model_slug}_raw.pkl")
             with open(filepath, "wb") as f:
                 pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
         
-        chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{uacqr_model}.pkl")
-        chk_file_out = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
+        chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{base_model_slug}.pkl")
+        chk_file_out = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{base_model_slug}_outlier.pkl")
         try:
             if os.path.exists(chk_file):
                 os.remove(chk_file)
@@ -1514,11 +1957,11 @@ if __name__ == "__main__":
     
         to_save = {"cover_out": cover_out, "ratio_out": ratio_out}
         for name, arr in to_save.items():
-            filepath = os.path.join(raw_dir, f"{dataset}_{name}_{uacqr_model}_raw.pkl")
+            filepath = os.path.join(raw_dir, f"{dataset}_{name}_{base_model_slug}_raw.pkl")
             with open(filepath, "wb") as f:
                 pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
     
-        chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{uacqr_model}_outlier.pkl")
+        chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{base_model_slug}_outlier.pkl")
         try:
             if os.path.exists(chk_file):
                 os.remove(chk_file)
@@ -1527,4 +1970,3 @@ if __name__ == "__main__":
                     os.rmdir(chk_dir)
         except Exception as e:
             print(f"Failed to delete checkpoint {chk_file}: {e}")
-

@@ -3,7 +3,7 @@ name = "credo"
 version = "0.1.0"
 description = ""
 authors = [
-    {name = "Anonymous",email = "."}
+    {name = "Anonymous", email = "anonymous@example.com"}
 ]
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
@@ -35,7 +35,7 @@ build-backend = "poetry.core.masonry.api"
 name = "credo"
 version = "0.1.0"
 description = "Epistemic-Aware Conformalized Credal Envelopes for Regression."
-authors = ["Anonymous <.>"]
+authors = ["Anonymous <anonymous@example.com>"]
 license = "MIT"
 readme = "README.md"
 
