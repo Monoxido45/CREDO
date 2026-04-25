@@ -668,7 +668,7 @@ def fit_methods(
 
         outlier_obs = y_test[out_pred == -1]
         outlier_indexes = np.where(out_pred == -1)[0]
-        # selecting 15% top inliers
+        # selecting 20% top inliers
         inlier_indexes = np.setdiff1d(np.arange(len(y_test)), outlier_indexes)
         inlier_scores = lof.negative_outlier_factor_[inlier_indexes]
         # computing inlier scores
@@ -1109,7 +1109,7 @@ def fit_methods_outlier(
 
     outlier_obs = y_test[out_pred == -1]
     outlier_indexes = np.where(out_pred == -1)[0]
-    # selecting 15% top inliers
+    # selecting 20% top inliers
     inlier_indexes = np.setdiff1d(np.arange(len(y_test)), outlier_indexes)
     inlier_scores = lof.negative_outlier_factor_[inlier_indexes]
     # computing inlier scores

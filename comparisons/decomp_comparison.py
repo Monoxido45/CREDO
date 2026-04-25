@@ -54,6 +54,8 @@ kernel = args.kernel
 kernel_noise = args.kernel_noise
 activation_noise = args.activation_noise
 
+DISENTANGLEMENT_INLIER_SIZE = 0.2
+
 
 def generate_seeds(seed_initial, n_rep):
     np.random.seed(seed_initial)
@@ -70,7 +72,7 @@ def fit_methods(
         i,
         batch_size = 40,
         scale_y = False,
-        inlier_size = 0.1,
+        inlier_size = DISENTANGLEMENT_INLIER_SIZE,
         n_neighbors = 15,
         contamination = 0.05,
         tsne_random_state=120,
@@ -135,7 +137,7 @@ def fit_methods(
     outlier_obs = y_test[out_pred == -1]
     outlier_indexes = np.where(out_pred == -1)[0]
 
-    # selecting 10% top inliers
+    # selecting 20% top inliers
     inlier_indexes = np.setdiff1d(np.arange(len(y_test)), outlier_indexes)
     inlier_scores = lof.negative_outlier_factor_[inlier_indexes]
     # computing inlier scores
@@ -171,6 +173,7 @@ def run_experiment(dataset,
                    checkpoint_flag = False,
                    checkpoint_data = None,
                    batch_size = 40,
+                   inlier_size = DISENTANGLEMENT_INLIER_SIZE,
 ):
     data = pd.read_csv(os.path.join(DATA_PATH, f"{dataset}.csv"))
     
@@ -232,6 +235,7 @@ def run_experiment(dataset,
             i,
             batch_size=batch_size,
             scale_y = scale_y,
+            inlier_size = inlier_size,
         )
         epis_unc_inlier_qnn_results.append(epis_unc_inlier_qnn_mean)
         epis_unc_outlier_qnn_results.append(epis_unc_outlier_qnn_mean)
@@ -250,6 +254,7 @@ def run_experiment(dataset,
                     "alpha": alpha,
                     "gamma": gamma,
                     "dataset": dataset,
+                    "inlier_size": inlier_size,
                 }
                 chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
                 os.makedirs(chk_dir, exist_ok=True)
@@ -391,8 +396,18 @@ if __name__ == "__main__":
         try:
             with open(chk_file, "rb") as f:
                 checkpoint_data = pickle.load(f)
-            checkpoint_flag = True
-            print(f"Found checkpoint for dataset '{dataset}'. Resuming from iteration {resume_from}.")
+            checkpoint_inlier_size = checkpoint_data.get("inlier_size")
+            if checkpoint_inlier_size != DISENTANGLEMENT_INLIER_SIZE:
+                checkpoint_flag = False
+                checkpoint_data = None
+                print(
+                    f"Ignoring checkpoint for dataset '{dataset}' because "
+                    f"inlier_size={checkpoint_inlier_size} does not match "
+                    f"{DISENTANGLEMENT_INLIER_SIZE}."
+                )
+            else:
+                checkpoint_flag = True
+                print(f"Found checkpoint for dataset '{dataset}'. Resuming from iteration {resume_from}.")
         except Exception as e:
             print(f"Failed to load checkpoint '{chk_file}': {e}")
             checkpoint_data = None
@@ -434,6 +449,4 @@ if __name__ == "__main__":
                 os.rmdir(chk_dir)
     except Exception as e:
         print(f"Failed to delete checkpoint {chk_file}: {e}")
-
-
 

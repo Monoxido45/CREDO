@@ -1,197 +1,271 @@
-# Code for generating all data results
-import pandas as pd
-import os
-import numpy as np
-import seaborn as sns
+# Code for generating disentanglement result plots.
+from argparse import ArgumentParser
+from math import ceil
+from pathlib import Path
+
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
-original_path = os.getcwd()
-folder_path = "/results/"
+try:
+    from get_results import QNN_DATASET_ORDER
+except ImportError:
+    from comparisons.get_results import QNN_DATASET_ORDER
 
-def read_metrics_files(datasets):
-    # Create DataFrame with datasets names
+
+ROOT = Path.cwd()
+RESULTS_DIR = ROOT / "results"
+FIGURES_DIR = RESULTS_DIR / "figures"
+DEFAULT_DATASETS = QNN_DATASET_ORDER
+
+
+def available_disentanglement_datasets():
+    datasets = []
+    for path in RESULTS_DIR.glob("*_unc_summary"):
+        if path.is_dir():
+            datasets.append(path.name.removesuffix("_unc_summary"))
+    ordered = [dataset for dataset in DEFAULT_DATASETS if dataset in datasets]
+    ordered.extend(sorted(set(datasets) - set(ordered)))
+    return ordered
+
+
+def observation_file(dataset, kind):
+    return (
+        RESULTS_DIR
+        / f"{dataset}_unc_by_observation"
+        / f"{dataset}_epis_unc_{kind}_obs_mean.csv"
+    )
+
+
+def summary_file(dataset):
+    return RESULTS_DIR / f"{dataset}_unc_summary" / f"{dataset}_general_summary.csv"
+
+
+def datasets_with_disentanglement_results(datasets):
+    valid_datasets = []
+    missing_datasets = []
+    for dataset in datasets:
+        required_files = [
+            observation_file(dataset, "inlier"),
+            observation_file(dataset, "outlier"),
+            summary_file(dataset),
+        ]
+        if all(path.exists() for path in required_files):
+            valid_datasets.append(dataset)
+        else:
+            missing_datasets.append(dataset)
+    return valid_datasets, missing_datasets
+
+
+def read_metrics_files(datasets, n_rep=30):
     data_dict_boxplot = {}
     data_dict_barplot = {}
-    for file_name in datasets:
-        file_path_obs_inlier = (
-                original_path
-                + folder_path
-                + f"{file_name}_unc_by_observation/{file_name}_epis_unc_inlier_obs_mean.csv"
-            )
-        
-        file_path_obs_outlier = (
-                original_path
-                + folder_path
-                + f"{file_name}_unc_by_observation/{file_name}_epis_unc_outlier_obs_mean.csv"
-            )
+    for dataset in datasets:
+        inlier_obs = pd.read_csv(observation_file(dataset, "inlier")).iloc[:, 0].values
+        outlier_obs = pd.read_csv(observation_file(dataset, "outlier")).iloc[:, 0].values
 
-        # boxplot data — simply append rows (same columns) and keep two variables
-        inlier_obs = pd.read_csv(file_path_obs_inlier).iloc[:, 0].values
-        outlier_obs = pd.read_csv(file_path_obs_outlier).iloc[:, 0].values
+        data_dict_boxplot[dataset] = pd.DataFrame(
+            {
+                "epistemic_uncertainty": np.concatenate([inlier_obs, outlier_obs]),
+                "type": np.repeat(["inlier", "outlier"], [len(inlier_obs), len(outlier_obs)]),
+            }
+        )
 
-        inlier_lab = np.repeat("inlier", len(inlier_obs))
-        outlier_lab = np.repeat("outlier", len(outlier_obs))
-        data_boxplot = pd.DataFrame({"epistemic_uncertainty": np.concatenate([inlier_obs, outlier_obs]), 
-                                     "type": np.concatenate([inlier_lab, outlier_lab])})
-        data_dict_boxplot[file_name] = data_boxplot
+        data_summary = pd.read_csv(summary_file(dataset))
+        inlier_mean, inlier_std = data_summary.iloc[0]["mean"], data_summary.iloc[0]["sd"]
+        outlier_mean, outlier_std = data_summary.iloc[1]["mean"], data_summary.iloc[1]["sd"]
 
-        # barplot data
-        file_path_obs_summary = (
-                original_path
-                + folder_path
-                + f"{file_name}_unc_summary/{file_name}_general_summary.csv"
-            )
-        
-        data_summary = pd.read_csv(file_path_obs_summary)
-        inlier_mean, inlier_std = data_summary.iloc[0, 2], data_summary.iloc[0, 3]
-        outlier_mean, outlier_std = data_summary.iloc[1, 2], data_summary.iloc[1, 3]
+        data_dict_barplot[dataset] = pd.DataFrame(
+            {
+                "type": ["inlier", "outlier"],
+                "mean": [inlier_mean, outlier_mean],
+                "se": [
+                    2 * inlier_std / (n_rep**0.5),
+                    2 * outlier_std / (n_rep**0.5),
+                ],
+            }
+        )
 
-        data_barplot = pd.DataFrame({
-            "type": [inlier_lab, outlier_lab],
-            "mean": [inlier_mean, outlier_mean],
-            "se": [2*inlier_std/(30**0.5), 2*outlier_std/(30**0.5)]
-        })
-        data_dict_barplot[file_name] = data_barplot
-            
     return data_dict_boxplot, data_dict_barplot
 
-file_names = [
-    "concrete",
-    "airfoil",
-    "winewhite",
-    "star",
-    "winered",
-    "cycle",
-    "electric",
-    "meps19",
-    "superconductivity",
-    "homes",
-    "protein",
-    "WEC",
-]
 
-data_boxplot, data_barplot = read_metrics_files(file_names)
+def subplot_grid(n_plots, max_cols=4):
+    n_cols = min(max_cols, n_plots)
+    n_rows = ceil(n_plots / n_cols)
+    return n_rows, n_cols
 
-# pure matplotlib boxplots (no seaborn), scatter removed; show y-ticks only on subplot 0 and 5
-# increase fonts globally and tighten layout to remove extra white space
-plt.rcParams.update({
-    "font.size": 16,
-    "axes.titlesize": 18,
-    "axes.labelsize": 16,
-    "xtick.labelsize": 16,
-    "ytick.labelsize": 16,
-    "legend.fontsize": 16
-})
 
-fig_box, axes_box = plt.subplots(2, 6, figsize=(24, 10), sharex=False)
-axes_box = axes_box.flatten()
-colors = ["C0", "C1"]
-show_ytick_idxs = {0, 6}  # show y ticks only for the 1st and 6th subplot (0-based indices)
+def prepare_axes(n_plots, figsize_per_panel=(4.5, 3.8), max_cols=4):
+    n_rows, n_cols = subplot_grid(n_plots, max_cols=max_cols)
+    figsize = (figsize_per_panel[0] * n_cols, figsize_per_panel[1] * n_rows)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, squeeze=False)
+    return fig, axes.flatten(), n_rows, n_cols
 
-for i, (name, df) in enumerate(data_boxplot.items()):
-    ax = axes_box[i]
 
-    # normalize possible array-like 'type' cells to scalars
-    types = df["type"].apply(lambda x: x[0] if isinstance(x, (list, tuple, np.ndarray)) else x)
+def style_plot_fonts():
+    plt.rcParams.update(
+        {
+            "font.size": 14,
+            "axes.titlesize": 16,
+            "axes.labelsize": 14,
+            "xtick.labelsize": 13,
+            "ytick.labelsize": 13,
+            "legend.fontsize": 14,
+        }
+    )
 
-    inlier = df.loc[types == "inlier", "epistemic_uncertainty"].astype(float).values
-    outlier = df.loc[types == "outlier", "epistemic_uncertainty"].astype(float).values
 
-    # ensure non-empty arrays for boxplot (matplotlib can choke on empty lists)
-    data = [inlier if inlier.size > 0 else np.array([np.nan]),
-            outlier if outlier.size > 0 else np.array([np.nan])]
+def plot_boxplots(data_boxplot, output_path=None, show=True, max_cols=4):
+    fig, axes, _, n_cols = prepare_axes(len(data_boxplot), max_cols=max_cols)
+    colors = ["C0", "C1"]
+    show_ytick_idxs = {idx for idx in range(0, len(data_boxplot), n_cols)}
 
-    # horizontal boxplot
-    bp = ax.boxplot(data, vert=False, labels=["inlier", "outlier"], widths=0.6,
-                    patch_artist=True, showfliers=False)
+    for i, (name, df) in enumerate(data_boxplot.items()):
+        ax = axes[i]
+        inlier = df.loc[df["type"] == "inlier", "epistemic_uncertainty"].astype(float).values
+        outlier = df.loc[df["type"] == "outlier", "epistemic_uncertainty"].astype(float).values
+        data = [
+            inlier if inlier.size > 0 else np.array([np.nan]),
+            outlier if outlier.size > 0 else np.array([np.nan]),
+        ]
 
-    # style boxes and medians
-    for patch, color in zip(bp["boxes"], colors):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.6)
-        patch.set_linewidth(1.2)
-    for median in bp["medians"]:
-        median.set_color("k")
-        median.set_linewidth(1.6)
+        boxplot = ax.boxplot(
+            data,
+            vert=False,
+            tick_labels=["inlier", "outlier"],
+            widths=0.6,
+            patch_artist=True,
+            showfliers=False,
+        )
+        for patch, color in zip(boxplot["boxes"], colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.6)
+            patch.set_linewidth(1.2)
+        for median in boxplot["medians"]:
+            median.set_color("k")
+            median.set_linewidth(1.6)
 
-    # tighten vertical spacing for category positions and make titles/labels larger
-    ax.set_ylim(0.5, 2.5)
-    ax.set_title(name, fontsize=18)
-    ax.grid(axis="x", linestyle="--", alpha=0.5)
+        ax.set_ylim(0.5, 2.5)
+        ax.set_title(name)
+        ax.grid(axis="x", linestyle="--", alpha=0.5)
+        if i in show_ytick_idxs:
+            ax.set_yticks([1, 2])
+            ax.set_yticklabels(["inlier", "outlier"])
+        else:
+            ax.set_yticks([])
 
-    # show y-ticks (labels) only for specified subplots, hide for others
-    if i in show_ytick_idxs:
-        ax.set_yticks([1, 2])
-        ax.set_yticklabels(["inlier", "outlier"], fontsize=16)
+    for ax in axes[len(data_boxplot) :]:
+        ax.axis("off")
+
+    fig.text(0.5, 0.04, "Epistemic uncertainty", ha="center", va="center")
+    fig.tight_layout(rect=[0.02, 0.06, 1.0, 1.0])
+    if output_path:
+        fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    if show:
+        plt.show()
+    return fig
+
+
+def plot_barplots(data_barplot, output_path=None, show=True, max_cols=4):
+    fig, axes, _, n_cols = prepare_axes(
+        len(data_barplot), figsize_per_panel=(4.5, 3.4), max_cols=max_cols
+    )
+    show_ylabel_idxs = {idx for idx in range(0, len(data_barplot), n_cols)}
+
+    for i, (name, df) in enumerate(data_barplot.items()):
+        ax = axes[i]
+        types = df["type"].tolist()
+        means = np.array(df["mean"], dtype=float)
+        ses = np.array(df["se"], dtype=float)
+        positions = np.arange(len(types))
+
+        ax.bar(positions, means, color=["C0", "C1"][: len(types)], width=0.4)
+        for pos, mean, se in zip(positions, means, ses):
+            ax.errorbar(pos, mean, yerr=se, fmt="none", ecolor="k", capsize=5)
+
+        ax.set_xticks(positions)
+        ax.set_xticklabels(types)
+        if i < n_cols:
+            ax.tick_params(axis="x", labelbottom=False)
+        if i in show_ylabel_idxs:
+            ax.set_ylabel("Epistemic uncertainty", rotation=90, labelpad=6)
+        ax.set_title(name)
+
+    for ax in axes[len(data_barplot) :]:
+        ax.axis("off")
+
+    fig.tight_layout(rect=[0.02, 0.04, 1.0, 1.0])
+    if output_path:
+        fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    if show:
+        plt.show()
+    return fig
+
+
+def parse_args():
+    parser = ArgumentParser()
+    parser.add_argument(
+        "--datasets",
+        nargs="+",
+        default=None,
+        help="Datasets to plot. Defaults to the QNN table dataset order.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Plot all datasets with disentanglement result files.",
+    )
+    parser.add_argument("--n_rep", type=int, default=30)
+    parser.add_argument("--max_cols", type=int, default=4)
+    parser.add_argument("--save_dir", type=Path, default=FIGURES_DIR)
+    parser.add_argument("--no_save", action="store_true")
+    parser.add_argument("--no_show", action="store_true")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    style_plot_fonts()
+
+    if args.all:
+        datasets = available_disentanglement_datasets()
+    elif args.datasets:
+        datasets = args.datasets
     else:
-        ax.set_yticks([])
+        datasets = DEFAULT_DATASETS
 
-    # do not set per-axis x labels; we'll add one centralized xlabel below the last row
+    datasets, missing_datasets = datasets_with_disentanglement_results(datasets)
+    if missing_datasets:
+        print(
+            "Skipping datasets without complete disentanglement results: "
+            + ", ".join(missing_datasets)
+        )
+    if not datasets:
+        raise FileNotFoundError("No complete disentanglement results found.")
 
-# hide any unused subplots
-for j in range(len(data_boxplot), 12):
-    axes_box[j].axis("off")
+    print("Plotting disentanglement results for: " + ", ".join(datasets))
+    data_boxplot, data_barplot = read_metrics_files(datasets, n_rep=args.n_rep)
 
-# decrease bottom margin to bring the centralized xlabel closer to the last row
-fig_box.subplots_adjust(left=0.06, right=0.99, top=0.95, bottom=0.08, hspace=0.25, wspace=0.18)
+    boxplot_path = None
+    barplot_path = None
+    if not args.no_save:
+        args.save_dir.mkdir(parents=True, exist_ok=True)
+        boxplot_path = args.save_dir / "disentanglement_boxplots.png"
+        barplot_path = args.save_dir / "disentanglement_barplots.png"
 
-# add one centralized xlabel below the last row, moved closer and font size 16
-fig_box.text(0.5, 0.06, "Epistemic uncertainty", ha="center", va="center", fontsize=16)
+    plot_boxplots(
+        data_boxplot,
+        output_path=boxplot_path,
+        show=not args.no_show,
+        max_cols=args.max_cols,
+    )
+    plot_barplots(
+        data_barplot,
+        output_path=barplot_path,
+        show=not args.no_show,
+        max_cols=args.max_cols,
+    )
 
-# finalize layout and show
-fig_box.tight_layout(rect=[0.06, 0.08, 0.99, 0.95])
-plt.show()
 
-# --- Barplots with error bars: 2 rows x 6 columns (vertical bars, thinner) ---
-fig_bar, axes_bar = plt.subplots(2, 6, figsize=(24, 8), sharex=False)
-axes_bar = axes_bar.flatten()
-
-# reduce left margin so there's less extra space, use small labelpad for y-labels
-fig_bar.subplots_adjust(left=0.06, right=0.98, top=0.95, bottom=0.08, hspace=0.35, wspace=0.3)
-
-def _scalar_type(x):
-    if isinstance(x, (list, tuple, np.ndarray)):
-        return x[0]
-    return x
-
-# show y-axis label only for the 1st and 6th subplot (0-based indices: 0 and 6)
-show_ylabel_idxs = {0, 6}
-
-for i, (name, df) in enumerate(data_barplot.items()):
-    ax = axes_bar[i]
-    types_raw = df["type"].tolist()
-    types = [_scalar_type(t) for t in types_raw]
-    means = np.array(df["mean"], dtype=float)
-    ses = np.array(df["se"], dtype=float)
-
-    positions = np.arange(len(types))
-    colors = ["C0", "C1"][: len(types)]
-
-    # vertical bars, slightly thinner width
-    width = 0.4
-    bars = ax.bar(positions, means, color=colors, width=width, align="center")
-    for pos, mean, se in zip(positions, means, ses):
-        ax.errorbar(pos, mean, yerr=se, fmt="none", ecolor="k", capsize=5)
-
-    ax.set_xticks(positions)
-    ax.set_xticklabels(types)
-
-    # remove the x-axis (type) tick labels for the first row of subplots
-    if i < 6:
-        ax.tick_params(axis="x", labelbottom=False)
-
-    # set y-label only for selected subplots, use small labelpad to avoid extra left space
-    if i in show_ylabel_idxs:
-        ax.set_ylabel("Epistemic uncertainty", rotation=90, labelpad=6)
-    else:
-        ax.set_ylabel("")
-
-    ax.set_title(name)
-
-# Hide any unused subplots
-for j in range(len(data_barplot), 12):
-    axes_bar[j].axis("off")
-
-# apply tight layout taking into account the reduced left margin
-fig_bar.tight_layout(rect=[0.06, 0.05, 0.98, 0.95])
-plt.show()
+if __name__ == "__main__":
+    main()
