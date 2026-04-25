@@ -5,6 +5,7 @@ from pathlib import Path
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 
@@ -14,6 +15,10 @@ RESULTS_PATH = ROOT / "results"
 PLOTS_PATH = RESULTS_PATH / "gamma_ablation_plots"
 
 DEFAULT_DATASETS = ["airfoil", "concrete", "winered", "winewhite"]
+DEFAULT_FIXED_GAMMA = 0.1
+DEFAULT_ADAPTIVE_GAMMA_MIN = 0.1
+DEFAULT_ADAPTIVE_GAMMA_MAX = 0.75
+DEFAULT_ADAPTIVE_TAU = 1.0
 METRICS = [
     ("smis", "SMIS"),
     ("outlier_coverage", "Outlier coverage"),
@@ -53,6 +58,14 @@ def finish_figure(fig, output_name):
     print(f"Saved {pdf_path}")
 
 
+def dataset_suffix(datasets):
+    if datasets == DEFAULT_DATASETS:
+        return "main4"
+    if len(datasets) == 1:
+        return datasets[0]
+    return "_".join(datasets)
+
+
 def plot_fixed(datasets):
     summaries = {dataset: read_summary(dataset, "fixed") for dataset in datasets}
     summaries = {dataset: df for dataset, df in summaries.items() if df is not None}
@@ -81,6 +94,23 @@ def plot_fixed(datasets):
                 highs.append(high)
             ax.plot(x, y, marker="o", linewidth=2, color="C0")
             ax.fill_between(x, lows, highs, color="C0", alpha=0.15, linewidth=0)
+            if x.min() <= DEFAULT_FIXED_GAMMA <= x.max():
+                ax.axvline(
+                    DEFAULT_FIXED_GAMMA,
+                    color="black",
+                    linestyle=":",
+                    linewidth=1.4,
+                    alpha=0.85,
+                )
+                default_row = df[np.isclose(df["gamma"], DEFAULT_FIXED_GAMMA)]
+                if not default_row.empty:
+                    ax.scatter(
+                        [DEFAULT_FIXED_GAMMA],
+                        [default_row.iloc[0][f"{metric}_mean"]],
+                        color="black",
+                        s=42,
+                        zorder=5,
+                    )
             ax.set_xscale("log")
             ax.grid(True, alpha=0.25)
             if row_idx == 0:
@@ -90,7 +120,7 @@ def plot_fixed(datasets):
             if row_idx == len(METRICS) - 1:
                 ax.set_xlabel(r"Fixed $\gamma$")
 
-    finish_figure(fig, "gamma_fixed_ablation_curves")
+    finish_figure(fig, f"gamma_fixed_ablation_curves_{dataset_suffix(list(summaries.keys()))}")
 
 
 def plot_adaptive(datasets):
@@ -122,17 +152,42 @@ def plot_adaptive(datasets):
                 ].sort_values("tau_gamma")
                 x = subset["tau_gamma"].to_numpy()
                 y = subset[f"{metric}_mean"].to_numpy()
+                is_default_pair = (
+                    np.isclose(gamma_min, DEFAULT_ADAPTIVE_GAMMA_MIN)
+                    and np.isclose(gamma_max, DEFAULT_ADAPTIVE_GAMMA_MAX)
+                )
                 color = colors[config_idx % len(colors)]
                 linestyle = "-" if gamma_min == min(df["gamma_min"]) else "--"
-                label_text = rf"$\gamma_{{min}}={gamma_min}$, $\gamma_{{max}}={gamma_max}$"
                 ax.plot(
                     x,
                     y,
                     marker="o",
-                    linewidth=1.8,
+                    linewidth=2.8 if is_default_pair else 1.5,
                     linestyle=linestyle,
-                    color=color,
-                    label=label_text,
+                    color="black" if is_default_pair else color,
+                    alpha=1.0 if is_default_pair else 0.65,
+                    zorder=4 if is_default_pair else 2,
+                )
+                if is_default_pair and x.min() <= DEFAULT_ADAPTIVE_TAU <= x.max():
+                    default_row = subset[np.isclose(subset["tau_gamma"], DEFAULT_ADAPTIVE_TAU)]
+                    if not default_row.empty:
+                        ax.scatter(
+                            [DEFAULT_ADAPTIVE_TAU],
+                            [default_row.iloc[0][f"{metric}_mean"]],
+                            color="black",
+                            edgecolor="white",
+                            linewidth=0.8,
+                            s=70,
+                            zorder=6,
+                        )
+            if df["tau_gamma"].min() <= DEFAULT_ADAPTIVE_TAU <= df["tau_gamma"].max():
+                ax.axvline(
+                    DEFAULT_ADAPTIVE_TAU,
+                    color="black",
+                    linestyle=":",
+                    linewidth=1.2,
+                    alpha=0.65,
+                    zorder=1,
                 )
             ax.grid(True, alpha=0.25)
             if row_idx == 0:
@@ -142,16 +197,25 @@ def plot_adaptive(datasets):
             if row_idx == len(METRICS) - 1:
                 ax.set_xlabel(r"$\tau_\gamma$")
 
-    handles, labels = axes[0, 0].get_legend_handles_labels()
+    handles = [
+        Line2D([0], [0], color="black", linewidth=2.8, marker="o"),
+        Line2D([0], [0], color="C0", linewidth=1.5, marker="o", alpha=0.65),
+        Line2D([0], [0], color="black", linestyle=":", linewidth=1.2),
+    ]
+    labels = [
+        r"default: $\gamma_{min}=0.1$, $\gamma_{max}=0.75$",
+        "tested configurations",
+        r"default: $\tau_\gamma=1.0$",
+    ]
     fig.legend(
         handles,
         labels,
         loc="upper center",
-        ncol=min(3, len(labels)),
+        ncol=3,
         frameon=False,
         bbox_to_anchor=(0.5, 1.04),
     )
-    finish_figure(fig, "gamma_adaptive_ablation_curves")
+    finish_figure(fig, f"gamma_adaptive_ablation_curves_{dataset_suffix(list(summaries.keys()))}")
 
 
 def parse_args():
