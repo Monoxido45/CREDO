@@ -41,7 +41,7 @@ QNN_DATASET_ORDER = [
     "winered",
     "cycle",
     "electric",
-   # "meps19",
+    "meps19",
 ]
 
 
@@ -51,6 +51,8 @@ def discover_datasets(model="qnn"):
     for path in RESULTS_DIR.glob(f"*{suffix}"):
         if path.is_dir():
             datasets.append(path.name.removesuffix(suffix))
+    if model == "qnn":
+        return [dataset for dataset in QNN_DATASET_ORDER if dataset in datasets]
     ordered = [dataset for dataset in QNN_DATASET_ORDER if dataset in datasets]
     ordered.extend(sorted(set(datasets) - set(ordered)))
     return ordered
@@ -204,9 +206,9 @@ def save_catboost_tables(datasets=CATBOOST_DATASETS, methods=METHODS, n_rep=30):
     return tables
 
 
-def save_qnn_tables(datasets=None, methods=METHODS, n_rep=30):
+def save_qnn_tables(datasets=QNN_DATASET_ORDER, methods=METHODS, n_rep=30):
     if datasets is None:
-        datasets = discover_datasets("qnn")
+        datasets = QNN_DATASET_ORDER
 
     smis_datasets = datasets_with_metric(datasets, "qnn", "isl")
     length_datasets = datasets_with_metric(datasets, "qnn", "interval_length")
