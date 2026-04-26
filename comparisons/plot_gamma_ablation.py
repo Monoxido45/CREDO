@@ -2,10 +2,11 @@ import argparse
 import os
 from pathlib import Path
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-cache")
 
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle
 import numpy as np
 import pandas as pd
 
@@ -14,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RESULTS_PATH = ROOT / "results"
 PLOTS_PATH = RESULTS_PATH / "gamma_ablation_plots"
 
-DEFAULT_DATASETS = ["airfoil", "concrete", "winered", "winewhite"]
+DEFAULT_DATASETS = ["airfoil", "concrete", "winered", "winewhite", "meps19"]
 DEFAULT_FIXED_GAMMA = 0.1
 DEFAULT_ADAPTIVE_GAMMA_MIN = 0.1
 DEFAULT_ADAPTIVE_GAMMA_MAX = 0.75
@@ -24,6 +25,10 @@ METRICS = [
     ("outlier_coverage", "Outlier coverage"),
     ("outlier_inlier_ratio", "Outlier/inlier ratio"),
 ]
+
+
+def format_gamma(value):
+    return f"{value:g}"
 
 
 def read_summary(dataset, study):
@@ -47,11 +52,12 @@ def metric_interval(row, metric):
     return mean - half_width, mean + half_width
 
 
-def finish_figure(fig, output_name):
+def finish_figure(fig, output_name, tight_layout=True):
     PLOTS_PATH.mkdir(parents=True, exist_ok=True)
     png_path = PLOTS_PATH / f"{output_name}.png"
     pdf_path = PLOTS_PATH / f"{output_name}.pdf"
-    fig.tight_layout()
+    if tight_layout:
+        fig.tight_layout()
     fig.savefig(png_path, dpi=300, bbox_inches="tight")
     fig.savefig(pdf_path, bbox_inches="tight")
     print(f"Saved {png_path}")
@@ -60,7 +66,7 @@ def finish_figure(fig, output_name):
 
 def dataset_suffix(datasets):
     if datasets == DEFAULT_DATASETS:
-        return "main4"
+        return "main5"
     if len(datasets) == 1:
         return datasets[0]
     return "_".join(datasets)
@@ -83,7 +89,8 @@ def plot_fixed(datasets):
 
     for col, (dataset, df) in enumerate(summaries.items()):
         df = df.sort_values("gamma")
-        x = df["gamma"].to_numpy()
+        x_values = df["gamma"].to_numpy()
+        x_positions = np.arange(len(x_values))
         for row_idx, (metric, label) in enumerate(METRICS):
             ax = axes[row_idx, col]
             y = df[f"{metric}_mean"].to_numpy()
@@ -92,26 +99,33 @@ def plot_fixed(datasets):
                 low, high = metric_interval(row, metric)
                 lows.append(low)
                 highs.append(high)
-            ax.plot(x, y, marker="o", linewidth=2, color="C0")
-            ax.fill_between(x, lows, highs, color="C0", alpha=0.15, linewidth=0)
-            if x.min() <= DEFAULT_FIXED_GAMMA <= x.max():
+            ax.plot(x_positions, y, marker="o", linewidth=2, color="C0")
+            ax.fill_between(x_positions, lows, highs, color="C0", alpha=0.15, linewidth=0)
+            default_positions = np.where(np.isclose(x_values, DEFAULT_FIXED_GAMMA))[0]
+            if len(default_positions) > 0:
+                default_position = default_positions[0]
                 ax.axvline(
-                    DEFAULT_FIXED_GAMMA,
+                    default_position,
                     color="black",
                     linestyle=":",
-                    linewidth=1.4,
-                    alpha=0.85,
+                    linewidth=1.6,
+                    alpha=0.9,
+                    zorder=1,
                 )
                 default_row = df[np.isclose(df["gamma"], DEFAULT_FIXED_GAMMA)]
                 if not default_row.empty:
                     ax.scatter(
-                        [DEFAULT_FIXED_GAMMA],
+                        [default_position],
                         [default_row.iloc[0][f"{metric}_mean"]],
                         color="black",
-                        s=42,
+                        edgecolor="white",
+                        linewidth=0.8,
+                        s=64,
                         zorder=5,
                     )
-            ax.set_xscale("log")
+            ax.set_xticks(x_positions)
+            ax.set_xticklabels([format_gamma(value) for value in x_values], rotation=30, ha="right")
+            ax.set_xlim(-0.35, len(x_positions) - 0.65)
             ax.grid(True, alpha=0.25)
             if row_idx == 0:
                 ax.set_title(dataset)
@@ -120,6 +134,32 @@ def plot_fixed(datasets):
             if row_idx == len(METRICS) - 1:
                 ax.set_xlabel(r"Fixed $\gamma$")
 
+    handles = [
+        Line2D([0], [0], color="C0", linewidth=2, marker="o"),
+        Line2D(
+            [0],
+            [0],
+            color="black",
+            linestyle=":",
+            linewidth=1.6,
+            marker="o",
+            markerfacecolor="black",
+            markeredgecolor="white",
+            markeredgewidth=0.8,
+        ),
+    ]
+    labels = [
+        r"tested fixed $\gamma$",
+        rf"default fixed $\gamma={format_gamma(DEFAULT_FIXED_GAMMA)}$",
+    ]
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        ncol=2,
+        frameon=False,
+        bbox_to_anchor=(0.5, 1.04),
+    )
     finish_figure(fig, f"gamma_fixed_ablation_curves_{dataset_suffix(list(summaries.keys()))}")
 
 
@@ -218,6 +258,136 @@ def plot_adaptive(datasets):
     finish_figure(fig, f"gamma_adaptive_ablation_curves_{dataset_suffix(list(summaries.keys()))}")
 
 
+def draw_default_cell(ax, x_values, y_values, tau):
+    if not np.isclose(tau, DEFAULT_ADAPTIVE_TAU):
+        return
+    x_match = np.where(np.isclose(x_values, DEFAULT_ADAPTIVE_GAMMA_MAX))[0]
+    y_match = np.where(np.isclose(y_values, DEFAULT_ADAPTIVE_GAMMA_MIN))[0]
+    if len(x_match) == 0 or len(y_match) == 0:
+        return
+    ax.add_patch(
+        Rectangle(
+            (x_match[0] - 0.5, y_match[0] - 0.5),
+            1,
+            1,
+            fill=False,
+            edgecolor="black",
+            linewidth=2.2,
+            zorder=5,
+        )
+    )
+
+
+def annotate_heatmap(ax, matrix, vmin, vmax):
+    span = vmax - vmin
+    for i in range(matrix.shape[0]):
+        for j in range(matrix.shape[1]):
+            value = matrix[i, j]
+            if not np.isfinite(value):
+                continue
+            normalized = 0.5 if span == 0 else (value - vmin) / span
+            color = "white" if normalized < 0.45 else "black"
+            ax.text(
+                j,
+                i,
+                f"{value:.3g}",
+                ha="center",
+                va="center",
+                fontsize=8,
+                color=color,
+            )
+
+
+def plot_adaptive_heatmaps(datasets):
+    summaries = {dataset: read_summary(dataset, "adaptive") for dataset in datasets}
+    summaries = {dataset: df for dataset, df in summaries.items() if df is not None}
+    if not summaries:
+        raise FileNotFoundError("No adaptive-gamma ablation summaries found.")
+
+    tau_values = sorted(
+        {
+            tau
+            for df in summaries.values()
+            for tau in df["tau_gamma"].dropna().unique()
+        }
+    )
+
+    for metric, label in METRICS:
+        fig, axes = plt.subplots(
+            len(summaries),
+            len(tau_values),
+            figsize=(3.2 * len(tau_values), 2.7 * len(summaries)),
+            sharex=False,
+            sharey=False,
+            layout="constrained",
+        )
+        if len(summaries) == 1 and len(tau_values) == 1:
+            axes = np.asarray([[axes]])
+        elif len(summaries) == 1:
+            axes = np.asarray(axes).reshape(1, len(tau_values))
+        elif len(tau_values) == 1:
+            axes = np.asarray(axes).reshape(len(summaries), 1)
+
+        for row_idx, (dataset, df) in enumerate(summaries.items()):
+            x_values = np.array(sorted(df["gamma_max"].dropna().unique()))
+            y_values = np.array(sorted(df["gamma_min"].dropna().unique()))
+            row_values = df[f"{metric}_mean"].dropna().to_numpy()
+            vmin = np.min(row_values)
+            vmax = np.max(row_values)
+            row_image = None
+            for col_idx, tau in enumerate(tau_values):
+                ax = axes[row_idx, col_idx]
+                subset = df[np.isclose(df["tau_gamma"], tau)]
+                pivot = subset.pivot_table(
+                    index="gamma_min",
+                    columns="gamma_max",
+                    values=f"{metric}_mean",
+                    aggfunc="mean",
+                )
+                matrix = pivot.reindex(index=y_values, columns=x_values).to_numpy()
+                masked = np.ma.masked_invalid(matrix)
+                row_image = ax.imshow(
+                    masked,
+                    aspect="auto",
+                    origin="lower",
+                    vmin=vmin,
+                    vmax=vmax,
+                )
+                annotate_heatmap(ax, matrix, vmin, vmax)
+                draw_default_cell(ax, x_values, y_values, tau)
+                ax.set_xticks(np.arange(len(x_values)))
+                ax.set_xticklabels([format_gamma(value) for value in x_values])
+                ax.set_yticks(np.arange(len(y_values)))
+                ax.set_yticklabels([format_gamma(value) for value in y_values])
+                if row_idx == 0:
+                    ax.set_title(rf"$\tau_\gamma={format_gamma(tau)}$")
+                if col_idx == 0:
+                    ax.set_ylabel(f"{dataset}\n" + r"$\gamma_{min}$")
+                if row_idx == len(summaries) - 1:
+                    ax.set_xlabel(r"$\gamma_{max}$")
+
+            if row_image is not None:
+                cbar = fig.colorbar(
+                    row_image,
+                    ax=axes[row_idx, :].ravel().tolist(),
+                    shrink=0.85,
+                    pad=0.02,
+                )
+                cbar.set_label(label)
+
+        fig.suptitle(
+            rf"Default outlined: $\gamma_{{min}}={format_gamma(DEFAULT_ADAPTIVE_GAMMA_MIN)}$, "
+            rf"$\gamma_{{max}}={format_gamma(DEFAULT_ADAPTIVE_GAMMA_MAX)}$, "
+            rf"$\tau_\gamma={format_gamma(DEFAULT_ADAPTIVE_TAU)}$",
+            y=1.03,
+        )
+        finish_figure(
+            fig,
+            f"gamma_adaptive_heatmap_{metric}_{dataset_suffix(list(summaries.keys()))}",
+            tight_layout=False,
+        )
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Plot gamma ablation summaries.")
     parser.add_argument("--datasets", nargs="+", default=DEFAULT_DATASETS)
@@ -231,6 +401,7 @@ def main():
         plot_fixed(args.datasets)
     if args.study in ["adaptive", "both"]:
         plot_adaptive(args.datasets)
+        plot_adaptive_heatmaps(args.datasets)
 
 
 if __name__ == "__main__":
