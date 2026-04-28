@@ -179,6 +179,26 @@ def plot_adaptive(datasets):
         axes = np.asarray(axes).reshape(len(METRICS), 1)
 
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    all_gamma_min = np.array(
+        sorted({value for df in summaries.values() for value in df["gamma_min"].dropna().unique()})
+    )
+    all_gamma_max = np.array(
+        sorted({value for df in summaries.values() for value in df["gamma_max"].dropna().unique()})
+    )
+    line_styles = ["-", "--", ":", "-."]
+    markers = ["o", "s", "^", "D", "P", "X"]
+    gamma_min_style = {
+        value: line_styles[idx % len(line_styles)]
+        for idx, value in enumerate(all_gamma_min)
+    }
+    gamma_max_marker = {
+        value: markers[idx % len(markers)]
+        for idx, value in enumerate(all_gamma_max)
+    }
+    gamma_max_color = {
+        value: colors[idx % len(colors)]
+        for idx, value in enumerate(all_gamma_max)
+    }
 
     for col, (dataset, df) in enumerate(summaries.items()):
         df = df.sort_values(["gamma_min", "gamma_max", "tau_gamma"])
@@ -196,16 +216,19 @@ def plot_adaptive(datasets):
                     np.isclose(gamma_min, DEFAULT_ADAPTIVE_GAMMA_MIN)
                     and np.isclose(gamma_max, DEFAULT_ADAPTIVE_GAMMA_MAX)
                 )
-                color = colors[config_idx % len(colors)]
-                linestyle = "-" if gamma_min == min(df["gamma_min"]) else "--"
+                color = gamma_max_color[gamma_max]
+                linestyle = gamma_min_style[gamma_min]
+                marker = gamma_max_marker[gamma_max]
                 ax.plot(
                     x,
                     y,
-                    marker="o",
+                    marker=marker,
                     linewidth=2.8 if is_default_pair else 1.5,
                     linestyle=linestyle,
                     color="black" if is_default_pair else color,
                     alpha=1.0 if is_default_pair else 0.65,
+                    markeredgecolor="white",
+                    markeredgewidth=0.7,
                     zorder=4 if is_default_pair else 2,
                 )
                 if is_default_pair and x.min() <= DEFAULT_ADAPTIVE_TAU <= x.max():
@@ -238,22 +261,59 @@ def plot_adaptive(datasets):
                 ax.set_xlabel(r"$\tau_\gamma$")
 
     handles = [
-        Line2D([0], [0], color="black", linewidth=2.8, marker="o"),
-        Line2D([0], [0], color="C0", linewidth=1.5, marker="o", alpha=0.65),
+        Line2D(
+            [0],
+            [0],
+            color="black",
+            linewidth=2.8,
+            linestyle=gamma_min_style.get(DEFAULT_ADAPTIVE_GAMMA_MIN, "-"),
+            marker=gamma_max_marker.get(DEFAULT_ADAPTIVE_GAMMA_MAX, "o"),
+            markerfacecolor="black",
+            markeredgecolor="white",
+            markeredgewidth=0.7,
+        ),
         Line2D([0], [0], color="black", linestyle=":", linewidth=1.2),
     ]
     labels = [
-        r"default: $\gamma_{min}=0.1$, $\gamma_{max}=0.75$",
-        "tested configurations",
-        r"default: $\tau_\gamma=1.0$",
+        rf"default: $\gamma_{{min}}={format_gamma(DEFAULT_ADAPTIVE_GAMMA_MIN)}$, "
+        rf"$\gamma_{{max}}={format_gamma(DEFAULT_ADAPTIVE_GAMMA_MAX)}$",
+        rf"default: $\tau_\gamma={format_gamma(DEFAULT_ADAPTIVE_TAU)}$",
     ]
+
+    for value in all_gamma_min:
+        handles.append(
+            Line2D(
+                [0],
+                [0],
+                color="0.25",
+                linewidth=1.8,
+                linestyle=gamma_min_style[value],
+            )
+        )
+        labels.append(rf"$\gamma_{{min}}={format_gamma(value)}$")
+
+    for value in all_gamma_max:
+        handles.append(
+            Line2D(
+                [0],
+                [0],
+                color=gamma_max_color[value],
+                linewidth=0,
+                marker=gamma_max_marker[value],
+                markersize=7,
+                markeredgecolor="white",
+                markeredgewidth=0.7,
+            )
+        )
+        labels.append(rf"$\gamma_{{max}}={format_gamma(value)}$")
+
     fig.legend(
         handles,
         labels,
         loc="upper center",
-        ncol=3,
+        ncol=min(5, len(handles)),
         frameon=False,
-        bbox_to_anchor=(0.5, 1.04),
+        bbox_to_anchor=(0.5, 1.08),
     )
     finish_figure(fig, f"gamma_adaptive_ablation_curves_{dataset_suffix(list(summaries.keys()))}")
 

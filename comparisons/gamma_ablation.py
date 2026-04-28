@@ -392,7 +392,7 @@ def parse_args():
     parser.add_argument(
         "--gamma_min_grid",
         type=parse_float_grid,
-        default=parse_float_grid("0.05,0.1"),
+        default=parse_float_grid("0.01, 0.05,0.1"),
     )
     parser.add_argument(
         "--gamma_max_grid",
