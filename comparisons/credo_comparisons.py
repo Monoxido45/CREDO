@@ -29,14 +29,23 @@ with install_import_hook("gpjax", "beartype.beartype"):
 from uacqr import uacqr
 # EPIC part
 from epic import QuantileScore, EPIC_split
+from outlier_detection import detector_suffix, select_outlier_inlier_indices
 import pickle
 import os
 
-# Importing outlier to inlier ratio auxiliary functions
-from sklearn.neighbors import LocalOutlierFactor
-from sklearn.manifold import TSNE
-
 os.chdir(original_path)
+
+
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    value = value.lower()
+    if value in ("yes", "true", "t", "1", "y"):
+        return True
+    if value in ("no", "false", "f", "0", "n"):
+        return False
+    raise ValueError("Boolean value expected.")
+
 
 parser = ArgumentParser()
 parser.add_argument("-alpha", "--alpha",type=float, default=0.1, help="miscoverage level for conformal prediction")
@@ -48,7 +57,7 @@ parser.add_argument("-seed_initial", "--seed_initial", type=int, default=125,
 parser.add_argument("-dataset", "--dataset", type=str, default="airfoil", help="dataset to use for the experiment")
 parser.add_argument("-base_model", "--base_model", type=str, default="qnn", help="Base quantile model for competitors: 'qnn', 'rfqr', or 'catboost'")
 parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default=None, help="Deprecated alias for --base_model")
-parser.add_argument("-outlier_analysis", "--outlier_analysis", type=bool, help="whether to perform outlier analysis using LOF and t-SNE")
+parser.add_argument("-outlier_analysis", "--outlier_analysis", type=str2bool, default=False, help="whether to perform outlier/inlier analysis using the selected detector")
 parser.add_argument("-n_cores", "--n_cores", type=int, default=4, help="number of cores to use for parallel processing")
 parser.add_argument("-kernel", "--kernel", type=str, default="RBF + Matern52", 
                     help="kernel to use for Gaussian Process regression in CREDO: 'RBF', 'Matern32', 'Matern52' or 'RationalQuadratic'")
@@ -56,7 +65,7 @@ parser.add_argument("-kernel_noise", "--kernel_noise", type=str, default="RBF",
                     help="kernel to use for Gaussian Process noise in CREDO: 'RBF', 'Matern32', 'Matern52' or 'RationalQuadratic'")
 parser.add_argument("-activation_noise", "--activation_noise", type=str, default="softplus", 
                     help="activation function for noise in Gaussian Process")
-parser.add_argument("-outlier_same_time", "--outlier_same_time", type=bool, default=False, 
+parser.add_argument("-outlier_same_time", "--outlier_same_time", type=str2bool, default=False, 
                     help="whether to analyze outliers at the same time as fitting the models or as a separate step after fitting")
 parser.add_argument("-gamma_max", "--gamma_max", type=float, default=0.75, help="maximum adaptive gamma value")
 parser.add_argument("-gamma_min", "--gamma_min", type=float, default=None, help="minimum adaptive gamma value; defaults to --gamma")
@@ -68,6 +77,16 @@ parser.add_argument("-wsc_min_fraction", "--wsc_min_fraction", type=float, defau
 parser.add_argument("-scarcity_bins", "--scarcity_bins", type=int, default=4, help="number of scarcity-score quantile bins for stratified coverage")
 parser.add_argument("-scarcity_k", "--scarcity_k", type=int, default=None, help="fixed k for diagnostic kNN scarcity score; defaults to --scarcity_heuristic")
 parser.add_argument("-scarcity_heuristic", "--scarcity_heuristic", type=str, default="log", help="k heuristic for diagnostic scarcity score: 'log' or 'exp'")
+parser.add_argument("-outlier_detector", "--outlier_detector", choices=["lof", "isolation_forest"], default="lof", help="Detector used for outlier/inlier diagnostics.")
+parser.add_argument("-outlier_contamination", "--outlier_contamination", type=float, default=0.05)
+parser.add_argument("-outlier_neighbors", "--outlier_neighbors", type=int, default=15)
+parser.add_argument("-inlier_size", "--inlier_size", type=float, default=0.2)
+parser.add_argument("-tsne_components", "--tsne_components", type=int, default=2)
+parser.add_argument("-tsne_random_state", "--tsne_random_state", type=int, default=120)
+parser.add_argument("-iforest_n_estimators", "--iforest_n_estimators", type=int, default=200)
+parser.add_argument("-iforest_max_samples", "--iforest_max_samples", default="auto")
+parser.add_argument("-iforest_max_features", "--iforest_max_features", type=float, default=1.0)
+parser.add_argument("-iforest_bootstrap", "--iforest_bootstrap", action="store_true")
 args = parser.parse_args()
 
 alpha = args.alpha
@@ -108,6 +127,17 @@ wsc_min_fraction = args.wsc_min_fraction
 scarcity_bins = args.scarcity_bins
 scarcity_k = args.scarcity_k
 scarcity_heuristic = args.scarcity_heuristic
+outlier_detector = args.outlier_detector
+outlier_result_suffix = detector_suffix(outlier_detector)
+outlier_contamination = args.outlier_contamination
+outlier_neighbors = args.outlier_neighbors
+outlier_inlier_size = args.inlier_size
+outlier_tsne_components = args.tsne_components
+outlier_tsne_random_state = args.tsne_random_state
+iforest_n_estimators = args.iforest_n_estimators
+iforest_max_samples = args.iforest_max_samples
+iforest_max_features = args.iforest_max_features
+iforest_bootstrap = args.iforest_bootstrap
 
 QNN_HIDDEN_LAYERS = [128, 128, 64]
 QNN_DROPOUT_CREDO = 0.3
@@ -163,6 +193,11 @@ def fit_methods(
         contamination = 0.05,
         tsne_random_state=120,
         n_components = 2,
+        outlier_detector = "lof",
+        iforest_n_estimators = 200,
+        iforest_max_samples = "auto",
+        iforest_max_features = 1.0,
+        iforest_bootstrap = False,
 ): 
     if scale_y:
         y_scaler = StandardScaler().set_output(transform="pandas")
@@ -369,8 +404,9 @@ def fit_methods(
     upper_uacqrp = uacqr_pred_test["UACQR-P"]["upper"]
     uacqrp_int = np.column_stack((lower_uacqrp, upper_uacqrp))
 
-    # checking if there are any infinite bounds in UACQR-S or UACQR-P and removing 
-    # those indices from all methods to ensure fair comparison
+    # UACQR-P can produce infinite sentinel intervals when the calibrated
+    # ensemble rank exceeds all finite quantile predictions. Filter S/P
+    # independently so an invalid P interval does not invalidate S.
     lower_s = np.asarray(uacqr_pred_test["UACQR-S"]["lower"])
     upper_s = np.asarray(uacqr_pred_test["UACQR-S"]["upper"])
     finite_s = np.isfinite(lower_s) & np.isfinite(upper_s)
@@ -651,29 +687,22 @@ def fit_methods(
         for row in scarcity_cover_array
     ])
     if outlier_same_time and outlier_analysis:
-        # Detecting outliers using t-SNE and Local Outlier Factor
-        print(f"Performing outlier detection with t-SNE and Local Outlier Factor")
-        tsne = TSNE(n_components=n_components, random_state=tsne_random_state)
-        X_tsne_test = tsne.fit_transform(X_test)
-
-        # Standardize the features
-        scaler = StandardScaler()
-        X_test_scaled = scaler.fit_transform(X_tsne_test)
-        # Use Local Outlier Factor for anomaly detection on scaled data
-        lof = LocalOutlierFactor(
-            n_neighbors=n_neighbors,
+        print(f"Performing outlier detection with t-SNE and {outlier_detector}")
+        outlier_indexes, most_inlier_idxs = select_outlier_inlier_indices(
+            X_test,
+            y_test,
+            outlier_detector=outlier_detector,
             contamination=contamination,
+            inlier_size=inlier_size,
+            n_neighbors=n_neighbors,
+            n_components=n_components,
+            tsne_random_state=tsne_random_state,
+            iforest_n_estimators=iforest_n_estimators,
+            iforest_max_samples=iforest_max_samples,
+            iforest_max_features=iforest_max_features,
+            iforest_bootstrap=iforest_bootstrap,
+            random_state=i,
         )
-        out_pred = lof.fit_predict(X_test_scaled)
-
-        outlier_obs = y_test[out_pred == -1]
-        outlier_indexes = np.where(out_pred == -1)[0]
-        # selecting 20% top inliers
-        inlier_indexes = np.setdiff1d(np.arange(len(y_test)), outlier_indexes)
-        inlier_scores = lof.negative_outlier_factor_[inlier_indexes]
-        # computing inlier scores
-        size = int((y_test.shape[0] - outlier_obs.shape[0]) * inlier_size)
-        most_inlier_idxs = inlier_indexes[np.argsort(inlier_scores)[::-1][:size]]
 
         # selecting prediction intervals for inliers and outliers
         credo_qnn_outliers = credo_CP_qnn_pred[outlier_indexes]
@@ -710,63 +739,63 @@ def fit_methods(
             combined_idxs = np.concatenate([outlier_indexes, most_inlier_idxs])
             finite_s_combined = finite_s[combined_idxs]
             finite_p_combined = finite_p[combined_idxs]
-            good_combined_mask = finite_s_combined & finite_p_combined
-    
+
             n_total_combined = combined_idxs.shape[0]
-            n_removed_combined = int((~good_combined_mask).sum())
-            print(f"Combined removal: excluding {n_removed_combined} of {n_total_combined} selected points with infinite bounds in either UACQR-S or UACQR-P")
+            n_removed_s = int((~finite_s_combined).sum())
+            n_removed_p = int((~finite_p_combined).sum())
+            print(
+                "UACQR finite-bound check on selected points: "
+                f"UACQR-S removes {n_removed_s}/{n_total_combined}; "
+                f"UACQR-P removes {n_removed_p}/{n_total_combined}"
+            )
 
-            valid_combined_idxs = combined_idxs[good_combined_mask]
-    
-            # filter the previously sliced outlier / inlier arrays to keep only valid entries
-            outlier_keep_pos = np.isin(outlier_indexes, valid_combined_idxs)
-            inlier_keep_pos = np.isin(most_inlier_idxs, valid_combined_idxs)
-    
-            uacqrs_outliers = uacqrs_outliers[outlier_keep_pos]
-            uacqrp_outliers = uacqrp_outliers[outlier_keep_pos]
-            y_test_out_uacqr = y_test_out[outlier_keep_pos]
-    
-            uacqrs_inliers = uacqrs_inliers[inlier_keep_pos]
-            uacqrp_inliers = uacqrp_inliers[inlier_keep_pos]
-            y_test_in_uacqr = y_test_in[inlier_keep_pos]
+            valid_s_idxs = combined_idxs[finite_s_combined]
+            valid_p_idxs = combined_idxs[finite_p_combined]
 
-            if not (n_removed_combined == n_total_combined):
+            outlier_keep_pos_s = np.isin(outlier_indexes, valid_s_idxs)
+            inlier_keep_pos_s = np.isin(most_inlier_idxs, valid_s_idxs)
+            outlier_keep_pos_p = np.isin(outlier_indexes, valid_p_idxs)
+            inlier_keep_pos_p = np.isin(most_inlier_idxs, valid_p_idxs)
+
+            uacqrs_outliers = uacqrs_outliers[outlier_keep_pos_s]
+            y_test_out_uacqrs = y_test_out[outlier_keep_pos_s]
+            uacqrs_inliers = uacqrs_inliers[inlier_keep_pos_s]
+
+            uacqrp_outliers = uacqrp_outliers[outlier_keep_pos_p]
+            y_test_out_uacqrp = y_test_out[outlier_keep_pos_p]
+            uacqrp_inliers = uacqrp_inliers[inlier_keep_pos_p]
+
+            if len(uacqrs_outliers) > 0:
                 cover_uacqrs_out = average_coverage(
-                uacqrs_outliers[:, 1], uacqrs_outliers[:, 0],
-                y_test_out_uacqr
+                    uacqrs_outliers[:, 1], uacqrs_outliers[:, 0], y_test_out_uacqrs
                 )
-                cover_uacqrp_out = average_coverage(
-                uacqrp_outliers[:, 1], uacqrp_outliers[:, 0],
-                y_test_out_uacqr
-                )
+            else:
+                cover_uacqrs_out = np.nan
 
-                
-            if not (n_removed_combined == n_total_combined):
-                uacqrs_ratio = np.mean(
-                        compute_interval_length(
-                            uacqrs_outliers[:, 1], uacqrs_outliers[:, 0]
-                        )
-                    ) / np.mean(
-                        compute_interval_length(
-                            uacqrs_inliers[:, 1], uacqrs_inliers[:, 0]
-                        )
-                    )
-                uacqrp_ratio = np.mean(
-                        compute_interval_length(
-                            uacqrp_outliers[:, 1], uacqrp_outliers[:, 0]
-                        )
-                    ) / np.mean(
-                        compute_interval_length(
-                            uacqrp_inliers[:, 1], uacqrp_inliers[:, 0]
-                        )
-                    )
-            
-            if n_removed_combined == n_total_combined:
-                cover_uacqrs_out, cover_uacqrp_out = np.nan, np.nan
-                uacqrs_ratio, uacqrp_ratio = np.nan, np.nan
+            if len(uacqrp_outliers) > 0:
+                cover_uacqrp_out = average_coverage(
+                    uacqrp_outliers[:, 1], uacqrp_outliers[:, 0], y_test_out_uacqrp
+                )
+            else:
+                cover_uacqrp_out = np.nan
+
+        if len(uacqrs_outliers) > 0 and len(uacqrs_inliers) > 0:
+            uacqrs_ratio = np.mean(
+                compute_interval_length(uacqrs_outliers[:, 1], uacqrs_outliers[:, 0])
+            ) / np.mean(
+                compute_interval_length(uacqrs_inliers[:, 1], uacqrs_inliers[:, 0])
+            )
         else:
-            cover_uacqrs_out, cover_uacqrp_out = np.nan, np.nan
-            uacqrs_ratio, uacqrp_ratio = np.nan, np.nan
+            uacqrs_ratio = np.nan
+
+        if len(uacqrp_outliers) > 0 and len(uacqrp_inliers) > 0:
+            uacqrp_ratio = np.mean(
+                compute_interval_length(uacqrp_outliers[:, 1], uacqrp_outliers[:, 0])
+            ) / np.mean(
+                compute_interval_length(uacqrp_inliers[:, 1], uacqrp_inliers[:, 0])
+            )
+        else:
+            uacqrp_ratio = np.nan
     
           
         del uacqr_results
@@ -885,6 +914,11 @@ def fit_methods_outlier(
         contamination = 0.05,
         tsne_random_state=120,
         n_components = 2,
+        outlier_detector = "lof",
+        iforest_n_estimators = 200,
+        iforest_max_samples = "auto",
+        iforest_max_features = 1.0,
+        iforest_bootstrap = False,
 ): 
     if scale_y:
         y_scaler = StandardScaler().set_output(transform="pandas")
@@ -1092,29 +1126,22 @@ def fit_methods_outlier(
     upper_uacqrp = uacqr_pred_test["UACQR-P"]["upper"]
     uacqrp_int = np.column_stack((lower_uacqrp, upper_uacqrp))
 
-    # Detecting outliers using t-SNE and Local Outlier Factor
-    print(f"Performing outlier detection with t-SNE and Local Outlier Factor")
-    tsne = TSNE(n_components=n_components, random_state=tsne_random_state)
-    X_tsne_test = tsne.fit_transform(X_test)
-
-    # Standardize the features
-    scaler = StandardScaler()
-    X_test_scaled = scaler.fit_transform(X_tsne_test)
-    # Use Local Outlier Factor for anomaly detection on scaled data
-    lof = LocalOutlierFactor(
-        n_neighbors=n_neighbors,
+    print(f"Performing outlier detection with t-SNE and {outlier_detector}")
+    outlier_indexes, most_inlier_idxs = select_outlier_inlier_indices(
+        X_test,
+        y_test,
+        outlier_detector=outlier_detector,
         contamination=contamination,
+        inlier_size=inlier_size,
+        n_neighbors=n_neighbors,
+        n_components=n_components,
+        tsne_random_state=tsne_random_state,
+        iforest_n_estimators=iforest_n_estimators,
+        iforest_max_samples=iforest_max_samples,
+        iforest_max_features=iforest_max_features,
+        iforest_bootstrap=iforest_bootstrap,
+        random_state=i,
     )
-    out_pred = lof.fit_predict(X_test_scaled)
-
-    outlier_obs = y_test[out_pred == -1]
-    outlier_indexes = np.where(out_pred == -1)[0]
-    # selecting 20% top inliers
-    inlier_indexes = np.setdiff1d(np.arange(len(y_test)), outlier_indexes)
-    inlier_scores = lof.negative_outlier_factor_[inlier_indexes]
-    # computing inlier scores
-    size = int((y_test.shape[0] - outlier_obs.shape[0]) * inlier_size)
-    most_inlier_idxs = inlier_indexes[np.argsort(inlier_scores)[::-1][:size]]
 
     # selecting prediction intervals for inliers and outliers
     credo_qnn_outliers = credo_CP_qnn_pred[outlier_indexes]
@@ -1148,25 +1175,31 @@ def fit_methods_outlier(
     combined_idxs = np.concatenate([outlier_indexes, most_inlier_idxs])
     finite_s_combined = finite_s[combined_idxs]
     finite_p_combined = finite_p[combined_idxs]
-    good_combined_mask = finite_s_combined & finite_p_combined
 
     n_total_combined = combined_idxs.shape[0]
-    n_removed_combined = int((~good_combined_mask).sum())
-    print(f"Combined removal: excluding {n_removed_combined} of {n_total_combined} selected points with infinite bounds in either UACQR-S or UACQR-P")
+    n_removed_s = int((~finite_s_combined).sum())
+    n_removed_p = int((~finite_p_combined).sum())
+    print(
+        "UACQR finite-bound check on selected points: "
+        f"UACQR-S removes {n_removed_s}/{n_total_combined}; "
+        f"UACQR-P removes {n_removed_p}/{n_total_combined}"
+    )
 
-    valid_combined_idxs = combined_idxs[good_combined_mask]
+    valid_s_idxs = combined_idxs[finite_s_combined]
+    valid_p_idxs = combined_idxs[finite_p_combined]
 
-    # filter the previously sliced outlier / inlier arrays to keep only valid entries
-    outlier_keep_pos = np.isin(outlier_indexes, valid_combined_idxs)
-    inlier_keep_pos = np.isin(most_inlier_idxs, valid_combined_idxs)
+    outlier_keep_pos_s = np.isin(outlier_indexes, valid_s_idxs)
+    inlier_keep_pos_s = np.isin(most_inlier_idxs, valid_s_idxs)
+    outlier_keep_pos_p = np.isin(outlier_indexes, valid_p_idxs)
+    inlier_keep_pos_p = np.isin(most_inlier_idxs, valid_p_idxs)
 
-    uacqrs_outliers = uacqrs_outliers[outlier_keep_pos]
-    uacqrp_outliers = uacqrp_outliers[outlier_keep_pos]
-    y_test_out_uacqr = y_test_out[outlier_keep_pos]
+    uacqrs_outliers = uacqrs_outliers[outlier_keep_pos_s]
+    y_test_out_uacqrs = y_test_out[outlier_keep_pos_s]
+    uacqrs_inliers = uacqrs_inliers[inlier_keep_pos_s]
 
-    uacqrs_inliers = uacqrs_inliers[inlier_keep_pos]
-    uacqrp_inliers = uacqrp_inliers[inlier_keep_pos]
-    y_test_in_uacqr = y_test_in[inlier_keep_pos]
+    uacqrp_outliers = uacqrp_outliers[outlier_keep_pos_p]
+    y_test_out_uacqrp = y_test_out[outlier_keep_pos_p]
+    uacqrp_inliers = uacqrp_inliers[inlier_keep_pos_p]
     del uacqr_results
     gc.collect()
     
@@ -1188,14 +1221,20 @@ def fit_methods_outlier(
     cover_cqrr_out = average_coverage(
         cqrr_outliers[:, 1], cqrr_outliers[:, 0], y_test_out
     )
-    cover_uacqrs_out = average_coverage(
-        uacqrs_outliers[:, 1], uacqrs_outliers[:, 0],
-        y_test_out_uacqr
-    )
-    cover_uacqrp_out = average_coverage(
-        uacqrp_outliers[:, 1], uacqrp_outliers[:, 0],
-        y_test_out_uacqr
-    )
+    if len(uacqrs_outliers) > 0:
+        cover_uacqrs_out = average_coverage(
+            uacqrs_outliers[:, 1], uacqrs_outliers[:, 0],
+            y_test_out_uacqrs
+        )
+    else:
+        cover_uacqrs_out = np.nan
+    if len(uacqrp_outliers) > 0:
+        cover_uacqrp_out = average_coverage(
+            uacqrp_outliers[:, 1], uacqrp_outliers[:, 0],
+            y_test_out_uacqrp
+        )
+    else:
+        cover_uacqrp_out = np.nan
     cover_epic_mdn_out = average_coverage(
         epic_mdn_outliers[:, 1], epic_mdn_outliers[:, 0],
         y_test_out
@@ -1251,7 +1290,7 @@ def fit_methods_outlier(
                 epic_mdn_inliers[:, 1], epic_mdn_inliers[:, 0]
             )
         )
-    if not (n_removed_combined == n_total_combined):
+    if len(uacqrs_outliers) > 0 and len(uacqrs_inliers) > 0:
         uacqrs_ratio = np.mean(
                 compute_interval_length(
                     uacqrs_outliers[:, 1], uacqrs_outliers[:, 0]
@@ -1261,6 +1300,10 @@ def fit_methods_outlier(
                     uacqrs_inliers[:, 1], uacqrs_inliers[:, 0]
                 )
             )
+    else:
+        uacqrs_ratio = np.nan
+
+    if len(uacqrp_outliers) > 0 and len(uacqrp_inliers) > 0:
         uacqrp_ratio = np.mean(
                 compute_interval_length(
                     uacqrp_outliers[:, 1], uacqrp_outliers[:, 0]
@@ -1270,9 +1313,8 @@ def fit_methods_outlier(
                     uacqrp_inliers[:, 1], uacqrp_inliers[:, 0]
                 )
             )
-    if n_removed_combined == n_total_combined:
-        cover_uacqrs_out, cover_uacqrp_out = np.nan, np.nan
-        uacqrs_ratio, uacqrp_ratio = np.nan, np.nan
+    else:
+        uacqrp_ratio = np.nan
     
     cover_array = np.array([
         cover_credo_qnn_out,
@@ -1302,19 +1344,24 @@ def run_experiment_outlier(
     prop_test = 0.2,
     inlier_size=0.2,
     contamination=0.05,
-    n_neighbors=20,
+    n_neighbors=15,
     n_components=2,
     tsne_random_state=120,
-    seed_initial=145,
+    seed_initial=125,
     checkpoint_flag = False,
     checkpoint_data = None,
-    scale_y = True,
+    scale_y = False,
+    outlier_detector = "lof",
+    iforest_n_estimators = 200,
+    iforest_max_samples = "auto",
+    iforest_max_features = 1.0,
+    iforest_bootstrap = False,
 ):
     data = pd.read_csv(os.path.join(DATA_PATH, f"{dataset}.csv"))
 
     # EPICSCORE params
     mdn_params = {
-    "num_components": 3,
+    "num_components": 5,
     "dropout_rate": 0.5,
     "epistemic_model": "MC_dropout",
     "hidden_layers": [64, 64],
@@ -1327,10 +1374,14 @@ def run_experiment_outlier(
     "type": "gaussian",
     }
 
+    batch_size = 32
+
     if data.shape[0] > 10000:
-        mdn_params["batch_size"] = 130
+        mdn_params["batch_size"] = 120
+        batch_size = 125
     if dataset == "WEC":
         mdn_params["batch_size"] = 250
+        batch_size = 250
 
     if checkpoint_flag:
         resume_from = int(checkpoint_data.get("iteration", -1)) + 1
@@ -1344,64 +1395,73 @@ def run_experiment_outlier(
         coverage_results = []
         ratio_results = []
 
-        for i in tqdm(range(resume_from, n_rep), desc = f"Running methods for dataset: {dataset}"):
-            print(f"Repetition {i+1}/{n_rep}")
-            seed = seeds[i]
-            X = data.drop(columns=[target_column])
-            y = data[target_column]
+    for i in tqdm(range(resume_from, n_rep), desc = f"Running methods for dataset: {dataset}"):
+        print(f"Repetition {i+1}/{n_rep}")
+        seed = seeds[i]
+        X = data.drop(columns=[target_column])
+        y = data[target_column]
 
-            X_train_calib, X_test, y_train_calib, y_test = train_test_split(
-            X, y, test_size=prop_test, random_state=seed
+        X_train_calib, X_test, y_train_calib, y_test = train_test_split(
+        X, y, test_size=prop_test, random_state=seed
+    )
+        prop_train = 0.7
+        X_train, X_calib, y_train, y_calib = train_test_split(
+            X_train_calib, y_train_calib, test_size=1-prop_train, random_state=seed
         )
-            if X.shape[0] < 5000:
-                prop_train = 0.5
-            else:
-                prop_train = 0.7
-            X_train, X_calib, y_train, y_calib = train_test_split(
-                X_train_calib, y_train_calib, test_size=1-prop_train, random_state=seed
-            )
 
-            cover_array, ratio_array = fit_methods_outlier(
-                X_train,
-                y_train,
-                X_calib,
-                y_calib,
-                X_test,
-                y_test,
-                mdn_params,
-                i,
-                scale_y = scale_y,
-                inlier_size = inlier_size,
-                n_neighbors = n_neighbors,
-                contamination = contamination,
-                tsne_random_state=tsne_random_state,
-                n_components = n_components,
-            )
-            coverage_results.append(cover_array)
-            ratio_results.append(ratio_array)
+        if dataset in ["blog"]:
+            scale_y_current = True
+        else:
+            scale_y_current = scale_y
 
-            def save_checkpoint(iteration, seeds):
-                try:
-                    checkpoint = {
-                        "coverage_results": coverage_results,
-                        "ratio_results": ratio_results,
-                        "iteration": iteration,
-                        "seeds": seeds,
-                        "alpha": alpha,
-                        "gamma": gamma,
-                        "dataset": dataset,
-                        "base_model": base_model_label,
-                    }
-                    chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
-                    os.makedirs(chk_dir, exist_ok=True)
-                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier.pkl")
-                    with open(filepath, "wb") as f:
-                        pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
-                except Exception as e:
-                    print(f"Failed saving checkpoint at iter {iteration+1}: {e}")
+        cover_array, ratio_array = fit_methods_outlier(
+            X_train,
+            y_train,
+            X_calib,
+            y_calib,
+            X_test,
+            y_test,
+            mdn_params,
+            i,
+            batch_size = batch_size,
+            scale_y = scale_y_current,
+            inlier_size = inlier_size,
+            n_neighbors = n_neighbors,
+            contamination = contamination,
+            tsne_random_state=tsne_random_state,
+            n_components = n_components,
+            outlier_detector = outlier_detector,
+            iforest_n_estimators = iforest_n_estimators,
+            iforest_max_samples = iforest_max_samples,
+            iforest_max_features = iforest_max_features,
+            iforest_bootstrap = iforest_bootstrap,
+        )
+        coverage_results.append(cover_array)
+        ratio_results.append(ratio_array)
 
-            # save checkpoint after each repetition
-            save_checkpoint(i, seeds)
+        def save_checkpoint(iteration, seeds):
+            try:
+                checkpoint = {
+                    "coverage_results": coverage_results,
+                    "ratio_results": ratio_results,
+                    "iteration": iteration,
+                    "seeds": seeds,
+                    "alpha": alpha,
+                    "gamma": gamma,
+                    "dataset": dataset,
+                    "base_model": base_model_label,
+                    "outlier_detector": outlier_detector,
+                }
+                chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
+                os.makedirs(chk_dir, exist_ok=True)
+                filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier{detector_suffix(outlier_detector)}.pkl")
+                with open(filepath, "wb") as f:
+                    pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
+            except Exception as e:
+                print(f"Failed saving checkpoint at iter {iteration+1}: {e}")
+
+        # save checkpoint after each repetition
+        save_checkpoint(i, seeds)
         # summarize results: convert lists to arrays and compute mean and sd (sample sd if n_rep>1)
     coverage_results = np.array(coverage_results)
     ratio_results = np.array(ratio_results)
@@ -1430,8 +1490,9 @@ def run_experiment_outlier(
     data_dir = os.path.join(RESULTS_PATH, f"{dataset}_{base_model_slug}_summary")
     os.makedirs(data_dir, exist_ok=True)
 
-    df_cover.to_csv(os.path.join(data_dir, f"{dataset}_coverage_outlier_summary.csv"))
-    df_ratio.to_csv(os.path.join(data_dir, f"{dataset}_ratio_outlier_summary.csv"))
+    suffix = detector_suffix(outlier_detector)
+    df_cover.to_csv(os.path.join(data_dir, f"{dataset}_coverage_outlier{suffix}_summary.csv"))
+    df_ratio.to_csv(os.path.join(data_dir, f"{dataset}_ratio_outlier{suffix}_summary.csv"))
     return np.array(coverage_results), np.array(ratio_results)
 
 def run_experiment(dataset, 
@@ -1443,6 +1504,12 @@ def run_experiment(dataset,
                    checkpoint_data_outlier = None,
                    outlier_same_time = False,
                    outlier_analysis = False,
+                   outlier_detector = "lof",
+                   inlier_size = 0.2,
+                   contamination = 0.05,
+                   n_neighbors = 15,
+                   n_components = 2,
+                   tsne_random_state = 120,
 ):
     data = pd.read_csv(os.path.join(DATA_PATH, f"{dataset}.csv"))
 
@@ -1608,6 +1675,16 @@ def run_experiment(dataset,
             batch_size = batch_size,
             scale_y = scale_y,
             outlier_same_time = outlier_same_time, 
+            inlier_size = inlier_size,
+            n_neighbors = n_neighbors,
+            contamination = contamination,
+            tsne_random_state = tsne_random_state,
+            n_components = n_components,
+            outlier_detector = outlier_detector,
+            iforest_n_estimators = iforest_n_estimators,
+            iforest_max_samples = iforest_max_samples,
+            iforest_max_features = iforest_max_features,
+            iforest_bootstrap = iforest_bootstrap,
             )
             cover_results.append(cover_array)
             isl_results.append(isl_array)
@@ -1635,6 +1712,7 @@ def run_experiment(dataset,
                         "gamma": gamma,
                         "dataset": dataset,
                         "base_model": base_model_label,
+                        "outlier_detector": outlier_detector,
                     }
                     chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
                     os.makedirs(chk_dir, exist_ok=True)
@@ -1651,8 +1729,9 @@ def run_experiment(dataset,
                         "gamma": gamma,
                         "dataset": dataset,
                         "base_model": base_model_label,
+                        "outlier_detector": outlier_detector,
                     }
-                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier.pkl")
+                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier{detector_suffix(outlier_detector)}.pkl")
                     with open(filepath, "wb") as f:
                         pickle.dump(checkpoint_outlier, f, protocol=pickle.HIGHEST_PROTOCOL)
                         
@@ -1761,8 +1840,9 @@ def run_experiment(dataset,
         df_cover_out = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": cover_mean_outlier, "sd": cover_sd_outlier})
         df_ratio_out = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": ratio_mean_outlier, "sd": ratio_sd_outlier})
 
-        df_cover_out.to_csv(os.path.join(data_dir, f"{dataset}_coverage_outlier_summary.csv"))
-        df_ratio_out.to_csv(os.path.join(data_dir, f"{dataset}_ratio_outlier_summary.csv"))
+        suffix = detector_suffix(outlier_detector)
+        df_cover_out.to_csv(os.path.join(data_dir, f"{dataset}_coverage_outlier{suffix}_summary.csv"))
+        df_ratio_out.to_csv(os.path.join(data_dir, f"{dataset}_ratio_outlier{suffix}_summary.csv"))
 
 
         return np.array(cover_results), np.array(isl_results), \
@@ -1816,10 +1896,10 @@ if __name__ == "__main__":
     # Check for an existing checkpoint to optionally resume the experiment
     chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
     if outlier_analysis and not(outlier_same_time):
-        chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier.pkl")
+        chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier{outlier_result_suffix}.pkl")
     elif outlier_same_time and outlier_analysis:    
         chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}.pkl")
-        chk_file_outlier = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier.pkl")
+        chk_file_outlier = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier{outlier_result_suffix}.pkl")
     else:
         chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}.pkl")
     resume_from = 0
@@ -1902,6 +1982,12 @@ if __name__ == "__main__":
             checkpoint_data_outlier=checkpoint_data_outlier, 
             outlier_same_time=outlier_same_time, 
             outlier_analysis=outlier_analysis,
+            outlier_detector=outlier_detector,
+            inlier_size=outlier_inlier_size,
+            contamination=outlier_contamination,
+            n_neighbors=outlier_neighbors,
+            n_components=outlier_tsne_components,
+            tsne_random_state=outlier_tsne_random_state,
             )
             
         raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}")
@@ -1913,8 +1999,8 @@ if __name__ == "__main__":
                    "scarcity_cover": scarcity_cover,
                    "scarcity_worst_cover": scarcity_worst_cover,
                    "wsc_min_fraction": wsc_min_fraction_used,
-                   "cover_out": cover_out,
-                   "ratio_out": ratio_out
+                   f"cover_out{outlier_result_suffix}": cover_out,
+                   f"ratio_out{outlier_result_suffix}": ratio_out
                    }
         for name, arr in to_save.items(): 
             filepath = os.path.join(
@@ -1923,7 +2009,7 @@ if __name__ == "__main__":
                 pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
         
         chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{base_model_slug}.pkl")
-        chk_file_out = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{base_model_slug}_outlier.pkl")
+        chk_file_out = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{base_model_slug}_outlier{outlier_result_suffix}.pkl")
         try:
             if os.path.exists(chk_file):
                 os.remove(chk_file)
@@ -1949,19 +2035,29 @@ if __name__ == "__main__":
             target_column = "target",
             checkpoint_flag = checkpoint_flag,
             checkpoint_data = checkpoint_data,
-            outlier_analysis= outlier_analysis,
+            outlier_detector=outlier_detector,
+            inlier_size=outlier_inlier_size,
+            contamination=outlier_contamination,
+            n_neighbors=outlier_neighbors,
+            n_components=outlier_tsne_components,
+            tsne_random_state=outlier_tsne_random_state,
+            seed_initial=seed_initial,
+            iforest_n_estimators=iforest_n_estimators,
+            iforest_max_samples=iforest_max_samples,
+            iforest_max_features=iforest_max_features,
+            iforest_bootstrap=iforest_bootstrap,
         )
     
-        raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}_outlier")
+        raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}_outlier{outlier_result_suffix}")
         os.makedirs(raw_dir, exist_ok=True)
     
         to_save = {"cover_out": cover_out, "ratio_out": ratio_out}
         for name, arr in to_save.items():
-            filepath = os.path.join(raw_dir, f"{dataset}_{name}_{base_model_slug}_raw.pkl")
+            filepath = os.path.join(raw_dir, f"{dataset}_{name}{outlier_result_suffix}_{base_model_slug}_raw.pkl")
             with open(filepath, "wb") as f:
                 pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
     
-        chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{base_model_slug}_outlier.pkl")
+        chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{base_model_slug}_outlier{outlier_result_suffix}.pkl")
         try:
             if os.path.exists(chk_file):
                 os.remove(chk_file)

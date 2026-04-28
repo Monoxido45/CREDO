@@ -19,10 +19,7 @@ with install_import_hook("gpjax", "beartype.beartype"):
 
 import pickle
 import os
-
-# Importing outlier to inlier ratio auxiliary functions
-from sklearn.neighbors import LocalOutlierFactor
-from sklearn.manifold import TSNE
+from outlier_detection import detector_suffix, select_outlier_inlier_indices
 
 os.chdir(original_path)
 
@@ -41,6 +38,16 @@ parser.add_argument("-kernel_noise", "--kernel_noise", type=str, default="RBF",
                     help="kernel to use for Gaussian Process noise in CREDO: 'RBF', 'Matern32', 'Matern52' or 'RationalQuadratic'")
 parser.add_argument("-activation_noise", "--activation_noise", type=str, default="softplus", 
                     help="activation function for noise in Gaussian Process")
+parser.add_argument("-outlier_detector", "--outlier_detector", choices=["lof", "isolation_forest"], default="lof")
+parser.add_argument("-outlier_contamination", "--outlier_contamination", type=float, default=0.05)
+parser.add_argument("-outlier_neighbors", "--outlier_neighbors", type=int, default=15)
+parser.add_argument("-inlier_size", "--inlier_size", type=float, default=0.2)
+parser.add_argument("-tsne_components", "--tsne_components", type=int, default=2)
+parser.add_argument("-tsne_random_state", "--tsne_random_state", type=int, default=120)
+parser.add_argument("-iforest_n_estimators", "--iforest_n_estimators", type=int, default=200)
+parser.add_argument("-iforest_max_samples", "--iforest_max_samples", default="auto")
+parser.add_argument("-iforest_max_features", "--iforest_max_features", type=float, default=1.0)
+parser.add_argument("-iforest_bootstrap", "--iforest_bootstrap", action="store_true")
 args = parser.parse_args()
 
 alpha = args.alpha
@@ -53,6 +60,16 @@ n_cores = args.n_cores
 kernel = args.kernel
 kernel_noise = args.kernel_noise
 activation_noise = args.activation_noise
+outlier_detector = args.outlier_detector
+outlier_contamination = args.outlier_contamination
+outlier_neighbors = args.outlier_neighbors
+inlier_size_arg = args.inlier_size
+tsne_components = args.tsne_components
+tsne_random_state = args.tsne_random_state
+iforest_n_estimators = args.iforest_n_estimators
+iforest_max_samples = args.iforest_max_samples
+iforest_max_features = args.iforest_max_features
+iforest_bootstrap = args.iforest_bootstrap
 
 DISENTANGLEMENT_INLIER_SIZE = 0.2
 
@@ -77,6 +94,11 @@ def fit_methods(
         contamination = 0.05,
         tsne_random_state=120,
         n_components = 2,
+        outlier_detector = "lof",
+        iforest_n_estimators = 200,
+        iforest_max_samples = "auto",
+        iforest_max_features = 1.0,
+        iforest_bootstrap = False,
 ): 
     if scale_y:
         y_scaler = StandardScaler().set_output(transform="pandas")
@@ -119,30 +141,22 @@ def fit_methods(
 
     credal_CP_qnn.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
 
-    # Detecting outliers using t-SNE and Local Outlier Factor
-    print(f"Performing outlier detection with t-SNE and Local Outlier Factor")
-    tsne = TSNE(n_components=n_components, random_state=tsne_random_state)
-    X_tsne_test = tsne.fit_transform(X_test)
-
-    # Standardize the features
-    scaler = StandardScaler()
-    X_test_scaled = scaler.fit_transform(X_tsne_test)
-    # Use Local Outlier Factor for anomaly detection on scaled data
-    lof = LocalOutlierFactor(
-        n_neighbors=n_neighbors,
+    print(f"Performing outlier detection with t-SNE and {outlier_detector}")
+    outlier_indexes, most_inlier_idxs = select_outlier_inlier_indices(
+        X_test,
+        y_test,
+        outlier_detector=outlier_detector,
         contamination=contamination,
+        inlier_size=inlier_size,
+        n_neighbors=n_neighbors,
+        n_components=n_components,
+        tsne_random_state=tsne_random_state,
+        iforest_n_estimators=iforest_n_estimators,
+        iforest_max_samples=iforest_max_samples,
+        iforest_max_features=iforest_max_features,
+        iforest_bootstrap=iforest_bootstrap,
+        random_state=i,
     )
-    out_pred = lof.fit_predict(X_test_scaled)
-
-    outlier_obs = y_test[out_pred == -1]
-    outlier_indexes = np.where(out_pred == -1)[0]
-
-    # selecting 20% top inliers
-    inlier_indexes = np.setdiff1d(np.arange(len(y_test)), outlier_indexes)
-    inlier_scores = lof.negative_outlier_factor_[inlier_indexes]
-    # computing inlier scores
-    size = int((y_test.shape[0] - outlier_obs.shape[0]) * inlier_size)
-    most_inlier_idxs = inlier_indexes[np.argsort(inlier_scores)[::-1][:size]]
 
     print("Disentangling uncertainties for inliers and outliers for CREDO QNN")
     _, aleat_unc_inlier_qnn, epis_unc_inlier_qnn_total = credal_CP_qnn.predict(X_test[most_inlier_idxs, :], disentangle=True)
@@ -174,6 +188,15 @@ def run_experiment(dataset,
                    checkpoint_data = None,
                    batch_size = 40,
                    inlier_size = DISENTANGLEMENT_INLIER_SIZE,
+                   outlier_detector = "lof",
+                   n_neighbors = 15,
+                   contamination = 0.05,
+                   tsne_random_state = 120,
+                   n_components = 2,
+                   iforest_n_estimators = 200,
+                   iforest_max_samples = "auto",
+                   iforest_max_features = 1.0,
+                   iforest_bootstrap = False,
 ):
     data = pd.read_csv(os.path.join(DATA_PATH, f"{dataset}.csv"))
     
@@ -236,6 +259,15 @@ def run_experiment(dataset,
             batch_size=batch_size,
             scale_y = scale_y,
             inlier_size = inlier_size,
+            outlier_detector = outlier_detector,
+            n_neighbors = n_neighbors,
+            contamination = contamination,
+            tsne_random_state = tsne_random_state,
+            n_components = n_components,
+            iforest_n_estimators = iforest_n_estimators,
+            iforest_max_samples = iforest_max_samples,
+            iforest_max_features = iforest_max_features,
+            iforest_bootstrap = iforest_bootstrap,
         )
         epis_unc_inlier_qnn_results.append(epis_unc_inlier_qnn_mean)
         epis_unc_outlier_qnn_results.append(epis_unc_outlier_qnn_mean)
@@ -255,10 +287,12 @@ def run_experiment(dataset,
                     "gamma": gamma,
                     "dataset": dataset,
                     "inlier_size": inlier_size,
+                    "outlier_detector": outlier_detector,
+                    "contamination": contamination,
                 }
                 chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
                 os.makedirs(chk_dir, exist_ok=True)
-                filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_unc.pkl")
+                filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_unc{detector_suffix(outlier_detector)}.pkl")
                 with open(filepath, "wb") as f:
                     pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
             except Exception as e:
@@ -326,7 +360,8 @@ def run_experiment(dataset,
     epis_unc_outlier_qnn_byobs_mean = np.nanmean(epis_unc_outlier_qnn_all, axis=0)
 
     # save per-observation means
-    obs_dir = os.path.join(RESULTS_PATH, f"{dataset}_unc_by_observation")
+    suffix = detector_suffix(outlier_detector)
+    obs_dir = os.path.join(RESULTS_PATH, f"{dataset}_unc_by_observation{suffix}")
     os.makedirs(obs_dir, exist_ok=True)
 
     df_inliers_byobs = pd.DataFrame({"mean_epistemic_unc_inlier": epis_unc_inlier_qnn_byobs_mean})
@@ -343,7 +378,7 @@ def run_experiment(dataset,
       "sd": sd_all_combined,
       "type": types,
       })
-    data_dir = os.path.join(RESULTS_PATH, f"{dataset}_unc_summary")
+    data_dir = os.path.join(RESULTS_PATH, f"{dataset}_unc_summary{suffix}")
     os.makedirs(data_dir, exist_ok=True)
 
     general_df.to_csv(os.path.join(data_dir, f"{dataset}_general_summary.csv"))
@@ -387,7 +422,8 @@ if __name__ == "__main__":
     
     # Check for an existing checkpoint to optionally resume the experiment
     chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
-    chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_unc.pkl")
+    outlier_suffix = detector_suffix(outlier_detector)
+    chk_file = os.path.join(chk_dir, f"{dataset}_checkpoint_unc{outlier_suffix}.pkl")
 
     resume_from = 0
     checkpoint_data = None
@@ -397,13 +433,15 @@ if __name__ == "__main__":
             with open(chk_file, "rb") as f:
                 checkpoint_data = pickle.load(f)
             checkpoint_inlier_size = checkpoint_data.get("inlier_size")
-            if checkpoint_inlier_size != DISENTANGLEMENT_INLIER_SIZE:
+            checkpoint_detector = checkpoint_data.get("outlier_detector", "lof")
+            if checkpoint_inlier_size != inlier_size_arg or checkpoint_detector != outlier_detector:
                 checkpoint_flag = False
                 checkpoint_data = None
                 print(
                     f"Ignoring checkpoint for dataset '{dataset}' because "
-                    f"inlier_size={checkpoint_inlier_size} does not match "
-                    f"{DISENTANGLEMENT_INLIER_SIZE}."
+                    f"inlier_size={checkpoint_inlier_size} or "
+                    f"outlier_detector={checkpoint_detector} does not match "
+                    f"the current configuration."
                 )
             else:
                 checkpoint_flag = True
@@ -424,6 +462,16 @@ if __name__ == "__main__":
             target_column = "target",
             checkpoint_flag = checkpoint_flag,
             checkpoint_data = checkpoint_data,
+            inlier_size = inlier_size_arg,
+            outlier_detector = outlier_detector,
+            n_neighbors = outlier_neighbors,
+            contamination = outlier_contamination,
+            tsne_random_state = tsne_random_state,
+            n_components = tsne_components,
+            iforest_n_estimators = iforest_n_estimators,
+            iforest_max_samples = iforest_max_samples,
+            iforest_max_features = iforest_max_features,
+            iforest_bootstrap = iforest_bootstrap,
             )
     
     raw_dir = os.path.join(RESULTS_PATH, f"raw/{dataset}")
@@ -436,11 +484,11 @@ if __name__ == "__main__":
         "epis_unc_outlier_qnn_all": epis_unc_outlier_qnn_all,
         }
     for name, arr in to_save.items():
-        filepath = os.path.join(raw_dir, f"{dataset}_{name}_raw_unc.pkl")
+        filepath = os.path.join(raw_dir, f"{dataset}_{name}{outlier_suffix}_raw_unc.pkl")
         with open(filepath, "wb") as f:
             pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-    chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_unc.pkl")
+    chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_unc{outlier_suffix}.pkl")
     try:
         if os.path.exists(chk_file):
             os.remove(chk_file)
@@ -449,4 +497,3 @@ if __name__ == "__main__":
                 os.rmdir(chk_dir)
     except Exception as e:
         print(f"Failed to delete checkpoint {chk_file}: {e}")
-

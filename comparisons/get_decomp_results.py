@@ -19,36 +19,43 @@ FIGURES_DIR = RESULTS_DIR / "figures"
 DEFAULT_DATASETS = QNN_DATASET_ORDER
 
 
-def available_disentanglement_datasets():
+def detector_suffix(outlier_detector):
+    return "" if outlier_detector == "lof" else f"_{outlier_detector}"
+
+
+def available_disentanglement_datasets(outlier_detector="lof"):
     datasets = []
-    for path in RESULTS_DIR.glob("*_unc_summary"):
+    suffix = detector_suffix(outlier_detector)
+    for path in RESULTS_DIR.glob(f"*_unc_summary{suffix}"):
         if path.is_dir():
-            datasets.append(path.name.removesuffix("_unc_summary"))
+            datasets.append(path.name.removesuffix(f"_unc_summary{suffix}"))
     ordered = [dataset for dataset in DEFAULT_DATASETS if dataset in datasets]
     ordered.extend(sorted(set(datasets) - set(ordered)))
     return ordered
 
 
-def observation_file(dataset, kind):
+def observation_file(dataset, kind, outlier_detector="lof"):
+    suffix = detector_suffix(outlier_detector)
     return (
         RESULTS_DIR
-        / f"{dataset}_unc_by_observation"
+        / f"{dataset}_unc_by_observation{suffix}"
         / f"{dataset}_epis_unc_{kind}_obs_mean.csv"
     )
 
 
-def summary_file(dataset):
-    return RESULTS_DIR / f"{dataset}_unc_summary" / f"{dataset}_general_summary.csv"
+def summary_file(dataset, outlier_detector="lof"):
+    suffix = detector_suffix(outlier_detector)
+    return RESULTS_DIR / f"{dataset}_unc_summary{suffix}" / f"{dataset}_general_summary.csv"
 
 
-def datasets_with_disentanglement_results(datasets):
+def datasets_with_disentanglement_results(datasets, outlier_detector="lof"):
     valid_datasets = []
     missing_datasets = []
     for dataset in datasets:
         required_files = [
-            observation_file(dataset, "inlier"),
-            observation_file(dataset, "outlier"),
-            summary_file(dataset),
+            observation_file(dataset, "inlier", outlier_detector),
+            observation_file(dataset, "outlier", outlier_detector),
+            summary_file(dataset, outlier_detector),
         ]
         if all(path.exists() for path in required_files):
             valid_datasets.append(dataset)
@@ -57,12 +64,12 @@ def datasets_with_disentanglement_results(datasets):
     return valid_datasets, missing_datasets
 
 
-def read_metrics_files(datasets, n_rep=30):
+def read_metrics_files(datasets, n_rep=30, outlier_detector="lof"):
     data_dict_boxplot = {}
     data_dict_barplot = {}
     for dataset in datasets:
-        inlier_obs = pd.read_csv(observation_file(dataset, "inlier")).iloc[:, 0].values
-        outlier_obs = pd.read_csv(observation_file(dataset, "outlier")).iloc[:, 0].values
+        inlier_obs = pd.read_csv(observation_file(dataset, "inlier", outlier_detector)).iloc[:, 0].values
+        outlier_obs = pd.read_csv(observation_file(dataset, "outlier", outlier_detector)).iloc[:, 0].values
 
         data_dict_boxplot[dataset] = pd.DataFrame(
             {
@@ -71,7 +78,7 @@ def read_metrics_files(datasets, n_rep=30):
             }
         )
 
-        data_summary = pd.read_csv(summary_file(dataset))
+        data_summary = pd.read_csv(summary_file(dataset, outlier_detector))
         inlier_mean, inlier_std = data_summary.iloc[0]["mean"], data_summary.iloc[0]["sd"]
         outlier_mean, outlier_std = data_summary.iloc[1]["mean"], data_summary.iloc[1]["sd"]
 
@@ -216,6 +223,7 @@ def parse_args():
         help="Plot all datasets with disentanglement result files.",
     )
     parser.add_argument("--n_rep", type=int, default=30)
+    parser.add_argument("--outlier_detector", choices=["lof", "isolation_forest"], default="lof")
     parser.add_argument("--max_cols", type=int, default=4)
     parser.add_argument("--save_dir", type=Path, default=FIGURES_DIR)
     parser.add_argument("--no_save", action="store_true")
@@ -228,13 +236,13 @@ def main():
     style_plot_fonts()
 
     if args.all:
-        datasets = available_disentanglement_datasets()
+        datasets = available_disentanglement_datasets(args.outlier_detector)
     elif args.datasets:
         datasets = args.datasets
     else:
         datasets = DEFAULT_DATASETS
 
-    datasets, missing_datasets = datasets_with_disentanglement_results(datasets)
+    datasets, missing_datasets = datasets_with_disentanglement_results(datasets, args.outlier_detector)
     if missing_datasets:
         print(
             "Skipping datasets without complete disentanglement results: "
@@ -244,14 +252,19 @@ def main():
         raise FileNotFoundError("No complete disentanglement results found.")
 
     print("Plotting disentanglement results for: " + ", ".join(datasets))
-    data_boxplot, data_barplot = read_metrics_files(datasets, n_rep=args.n_rep)
+    data_boxplot, data_barplot = read_metrics_files(
+        datasets,
+        n_rep=args.n_rep,
+        outlier_detector=args.outlier_detector,
+    )
 
     boxplot_path = None
     barplot_path = None
     if not args.no_save:
         args.save_dir.mkdir(parents=True, exist_ok=True)
-        boxplot_path = args.save_dir / "disentanglement_boxplots.png"
-        barplot_path = args.save_dir / "disentanglement_barplots.png"
+        suffix = detector_suffix(args.outlier_detector)
+        boxplot_path = args.save_dir / f"disentanglement_boxplots{suffix}.png"
+        barplot_path = args.save_dir / f"disentanglement_barplots{suffix}.png"
 
     plot_boxplots(
         data_boxplot,
