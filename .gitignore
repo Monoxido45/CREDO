@@ -12,5 +12,13 @@ data/data_scripts/__pycache__/
 catboost_info/
 comparisons/__pycache__/
 *log_*
-*.png*
-*.pdf*
+
+# Local LaTeX render artifacts
+/.conda_tex/
+/.tectonic-cache/
+/rebutal_images_and_tables/interval_length_table*
+/rebutal_images_and_tables/worst_scarcity_coverage_table*
+/rebutal_images_and_tables/interval_ratio_outliers_inliers_table*
+/rebutal_images_and_tables/coverage_outliers_table*
+/rebutal_images_and_tables/scarcity_q4_coverage_table*
+/rebutal_images_and_tables/new_smis_table*
