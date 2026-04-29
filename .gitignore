@@ -12,7 +12,12 @@ data/data_scripts/__pycache__/
 catboost_info/
 comparisons/__pycache__/
 *log_*
-
+*.tex*
+src/credal_cp/__pycache__/
 # Local LaTeX render artifacts
 /.conda_tex/
 /.tectonic-cache/
+/results/*qnn_summary*
+/results/*ablation*
+/results/*cutoff*
+/results
