@@ -13,12 +13,12 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS_PATH = ROOT / "results"
-PLOTS_PATH = RESULTS_PATH / "gamma_ablation_plots"
+PLOTS_PATH = ROOT / "paper_results" / "figures"
 
 DEFAULT_DATASETS = ["airfoil", "concrete", "winered", "winewhite", "meps19"]
-DEFAULT_FIXED_GAMMA = 0.1
-DEFAULT_ADAPTIVE_GAMMA_MIN = 0.1
-DEFAULT_ADAPTIVE_GAMMA_MAX = 0.75
+DEFAULT_FIXED_GAMMA = 0.2
+DEFAULT_ADAPTIVE_GAMMA_MIN = 0.05
+DEFAULT_ADAPTIVE_GAMMA_MAX = 0.9
 DEFAULT_ADAPTIVE_TAU = 1.0
 METRICS = [
     ("smis", "SMIS"),
@@ -66,7 +66,7 @@ def finish_figure(fig, output_name, tight_layout=True):
 
 def dataset_suffix(datasets):
     if datasets == DEFAULT_DATASETS:
-        return "main5"
+        return "main"
     if len(datasets) == 1:
         return datasets[0]
     return "_".join(datasets)
@@ -452,6 +452,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Plot gamma ablation summaries.")
     parser.add_argument("--datasets", nargs="+", default=DEFAULT_DATASETS)
     parser.add_argument("--study", choices=["fixed", "adaptive", "both"], default="both")
+    parser.add_argument("--heatmaps", action="store_true", help="Also generate adaptive-gamma heatmaps.")
     return parser.parse_args()
 
 
@@ -461,7 +462,8 @@ def main():
         plot_fixed(args.datasets)
     if args.study in ["adaptive", "both"]:
         plot_adaptive(args.datasets)
-        plot_adaptive_heatmaps(args.datasets)
+        if args.heatmaps:
+            plot_adaptive_heatmaps(args.datasets)
 
 
 if __name__ == "__main__":

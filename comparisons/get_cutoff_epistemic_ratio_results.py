@@ -18,7 +18,7 @@ except ImportError:
 
 ROOT = Path.cwd()
 RESULTS_DIR = ROOT / "results"
-FIGURES_DIR = RESULTS_DIR / "figures"
+FIGURES_DIR = ROOT / "paper_results" / "figures"
 DEFAULT_DATASETS = QNN_DATASET_ORDER
 METHOD_LABELS = {
     "credo_QNN": "CREDO fixed",

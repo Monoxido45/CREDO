@@ -13,6 +13,7 @@ catboost_info/
 comparisons/__pycache__/
 *log_*
 *.tex*
+!/paper_results/**/*.tex
 src/credal_cp/__pycache__/
 # Local LaTeX render artifacts
 /.conda_tex/

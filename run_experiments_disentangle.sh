@@ -1,6 +1,10 @@
 #!/bin/bash
 
 N_REP=30
+GAMMA=0.2
+GAMMA_MIN=0.05
+GAMMA_MAX=0.9
+TAU_GAMMA=1.0
 OUTLIER_DETECTOR="lof"
 OUTLIER_CONTAMINATION=0.05
 INLIER_SIZE=0.2
@@ -17,6 +21,22 @@ while [[ $# -gt 0 ]]; do
             ;;
         --outlier-detector|--detector)
             OUTLIER_DETECTOR="$2"
+            shift 2
+            ;;
+        --gamma)
+            GAMMA="$2"
+            shift 2
+            ;;
+        --gamma-min|--gamma_min)
+            GAMMA_MIN="$2"
+            shift 2
+            ;;
+        --gamma-max|--gamma_max)
+            GAMMA_MAX="$2"
+            shift 2
+            ;;
+        --tau-gamma|--tau_gamma)
+            TAU_GAMMA="$2"
             shift 2
             ;;
         --outlier-contamination|--contamination)
@@ -43,6 +63,10 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [options] dataset1 [dataset2 ...]"
             echo "Options:"
             echo "  --n-rep N                         Number of repetitions (default: 30)"
+            echo "  --gamma VALUE                     Fixed CREDO gamma (default: 0.2)"
+            echo "  --gamma-min VALUE                 Adaptive CREDO gamma_min (default: 0.05)"
+            echo "  --gamma-max VALUE                 Adaptive CREDO gamma_max (default: 0.9)"
+            echo "  --tau-gamma VALUE                 Adaptive CREDO tau_gamma (default: 1.0)"
             echo "  --outlier-detector METHOD         lof or isolation_forest (default: lof)"
             echo "  --outlier-contamination VALUE     Detector contamination (default: 0.05)"
             echo "  --inlier-size VALUE               Fraction of non-outliers used as inliers (default: 0.2)"
@@ -96,6 +120,10 @@ for i in "${!DATASETS[@]}"; do
     taskset -c $CORE_RANGE python comparisons/decomp_comparison.py \
         -n_rep $N_REP \
         -dataset "$DATASET" \
+        -gamma "$GAMMA" \
+        -gamma_min "$GAMMA_MIN" \
+        -gamma_max "$GAMMA_MAX" \
+        -tau_gamma "$TAU_GAMMA" \
         -outlier_detector "$OUTLIER_DETECTOR" \
         -outlier_contamination "$OUTLIER_CONTAMINATION" \
         -inlier_size "$INLIER_SIZE" \

@@ -32,7 +32,7 @@ DEFAULT_DATASETS = [
 ]
 
 QNN_HIDDEN_LAYERS = [128, 128, 64]
-QNN_DROPOUT_CREDO = 0.3
+QNN_DROPOUT_CREDO = 0.2
 METHODS = {
     "credo_QNN": {"adaptive_gamma": False},
     "credo_QNN_adaptive": {"adaptive_gamma": True},
@@ -325,9 +325,9 @@ def parse_args():
     parser.add_argument("--datasets", nargs="+", default=DEFAULT_DATASETS)
     parser.add_argument("--target_column", default="target")
     parser.add_argument("--alpha", type=float, default=0.1)
-    parser.add_argument("--gamma", type=float, default=0.1)
-    parser.add_argument("--gamma_min", type=float, default=None)
-    parser.add_argument("--gamma_max", type=float, default=0.75)
+    parser.add_argument("--gamma", type=float, default=0.2)
+    parser.add_argument("--gamma_min", type=float, default=0.05)
+    parser.add_argument("--gamma_max", type=float, default=0.9)
     parser.add_argument("--tau_gamma", type=float, default=1.0)
     parser.add_argument("--n_rep", type=int, default=30)
     parser.add_argument("--n_mcmc", type=int, default=1000)

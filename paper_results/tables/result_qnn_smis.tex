@@ -1,0 +1,31 @@
+\documentclass[border=6pt]{standalone}
+\usepackage{adjustbox}
+\usepackage{amsmath}
+\begin{document}
+\begin{adjustbox}{max width=\linewidth}
+\begin{tabular}{c}
+{\small\textbf{SMIS (QNN Base Model)}}\\[-1pt]
+{\scriptsize Lower is better; bold = methods whose 95\% CI intersects the best method.}\\[2pt]
+\scriptsize\begin{tabular}{lccccccc}
+\hline
+Dataset (n) & \textbf{CREDO} & \textbf{CREDO (adap.)} & \textbf{CQR} & \textbf{CQR-r} & \textbf{UACQRS} & \textbf{UACQRP} & \textbf{EPIC}\\ \hline
+qsar fish toxicity (908) & \textbf{3.927 (0.092)} & \textbf{3.936 (0.092)} & \textbf{4.094 (0.112)} & 4.134 (0.11) & \textbf{4.019 (0.107)} & \textbf{3.938 (0.111)} & \textbf{4.094 (0.105)}\\
+concrete (1030) & 26.975 (0.57) & \textbf{26.435 (0.468)} & \textbf{26.415 (0.731)} & \textbf{26.577 (0.737)} & \textbf{26.26 (0.715)} & \textbf{25.598 (0.594)} & \textbf{26.092 (0.669)}\\
+airfoil (1503) & 10.634 (0.23) & 10.74 (0.21) & \textbf{9.025 (0.214)} & \textbf{9.025 (0.214)} & \textbf{9.059 (0.215)} & \textbf{8.996 (0.205)} & \textbf{8.881 (0.195)}\\
+winered (1599) & \textbf{2.694 (0.038)} & \textbf{2.669 (0.039)} & \textbf{2.729 (0.043)} & \textbf{2.747 (0.044)} & \textbf{2.72 (0.042)} & \textbf{2.698 (0.043)} & 2.756 (0.042)\\
+communities (1994) & \textbf{0.543 (0.011)} & \textbf{0.543 (0.01)} & 0.582 (0.014) & 0.586 (0.014) & 0.574 (0.013) & \textbf{0.549 (0.011)} & 0.586 (0.014)\\
+star $\times 10^2$ (2161) & \textbf{9.888 (0.103)} & \textbf{9.883 (0.1)} & \textbf{9.999 (0.099)} & 10.219 (0.1) & 10.17 (0.106) & \textbf{9.914 (0.109)} & 10.138 (0.106)\\
+abalone (4177) & \textbf{8.419 (0.094)} & \textbf{8.261 (0.105)} & \textbf{8.392 (0.129)} & \textbf{8.396 (0.127)} & \textbf{8.369 (0.123)} & \textbf{8.226 (0.104)} & \textbf{8.409 (0.118)}\\
+winewhite (4898) & 2.923 (0.023) & \textbf{2.871 (0.026)} & 2.956 (0.026) & 2.967 (0.027) & 2.954 (0.025) & \textbf{2.896 (0.026)} & 2.96 (0.026)\\
+cycle (9568) & 17.449 (0.133) & 17.267 (0.127) & \textbf{15.935 (0.136)} & \textbf{15.927 (0.137)} & \textbf{15.939 (0.135)} & \textbf{15.691 (0.124)} & \textbf{15.932 (0.131)}\\
+electric (10000) & 0.036 (0) & 0.035 (0) & 0.033 (0) & 0.033 (0) & 0.034 (0) & 0.033 (0) & \textbf{0.031 (0)}\\
+meps19 (15785) & \textbf{58.36 (1.118)} & \textbf{57.633 (1.174)} & 64.301 (1.738) & 64.325 (1.703) & 64.477 (1.777) & 69.605 (1.81) & 63.504 (1.621)\\
+superconductivity (21263) & 44.064 (0.288) & 41.149 (0.293) & 39.736 (0.356) & 39.608 (0.328) & 39.264 (0.324) & \textbf{38.222 (0.358)} & \textbf{38.818 (0.318)}\\
+homes (21613) & 429721.66 (3664.069) & \textbf{421955.61 (3130.275)} & 443417.929 (5046.616) & 441955.547 (4668.508) & 440908.989 (4514.982) & 435837.565 (4742.096) & 431063.887 (3387.903)\\
+protein (45730) & 14.512 (0.047) & \textbf{14.203 (0.048)} & 14.421 (0.079) & 14.373 (0.074) & 14.309 (0.066) & \textbf{14.146 (0.068)} & \textbf{14.26 (0.067)}\\
+WEC (54007) & 81551.919 (636.007) & 78227.369 (680.555) & 78864.949 (863.639) & 79590.899 (833.966) & 79550.642 (839.538) & 80184.342 (770.926) & \textbf{67319.113 (653.442)}\\
+\hline
+\end{tabular}
+\end{tabular}
+\end{adjustbox}
+\end{document}

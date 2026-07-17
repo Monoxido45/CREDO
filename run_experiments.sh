@@ -1,7 +1,12 @@
 #!/bin/bash
 
-N_REP=30
+N_REP=50
 BASE_MODEL="qnn"
+GAMMA=0.2
+GAMMA_MIN=0.05
+GAMMA_MAX=0.9
+TAU_GAMMA=1.0
+RESULTS_TAG=""
 OUTLIER_ANALYSIS=True
 OUTLIER_SAME_TIME=False
 RUN_LABEL="outlier_only"
@@ -21,6 +26,26 @@ while [[ $# -gt 0 ]]; do
             ;;
         --base-model)
             BASE_MODEL="$2"
+            shift 2
+            ;;
+        --gamma)
+            GAMMA="$2"
+            shift 2
+            ;;
+        --gamma-min|--gamma_min)
+            GAMMA_MIN="$2"
+            shift 2
+            ;;
+        --gamma-max|--gamma_max)
+            GAMMA_MAX="$2"
+            shift 2
+            ;;
+        --tau-gamma|--tau_gamma)
+            TAU_GAMMA="$2"
+            shift 2
+            ;;
+        --results-tag|--results_tag)
+            RESULTS_TAG="$2"
             shift 2
             ;;
         --outlier-detector|--detector)
@@ -48,22 +73,36 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --same-time)
+            OUTLIER_ANALYSIS=True
             OUTLIER_SAME_TIME=True
             RUN_LABEL="same_time"
             shift
             ;;
         --outlier-only)
+            OUTLIER_ANALYSIS=True
             OUTLIER_SAME_TIME=False
             RUN_LABEL="outlier_only"
+            shift
+            ;;
+        --full)
+            OUTLIER_ANALYSIS=False
+            OUTLIER_SAME_TIME=False
+            RUN_LABEL="full"
             shift
             ;;
         --help|-h)
             echo "Usage: $0 [options] dataset1 [dataset2 ...]"
             echo "Options:"
-            echo "  --n-rep N                         Number of repetitions (default: 30)"
-            echo "  --base-model MODEL                Base model for competitors (default: qnn)"
+            echo "  --n-rep N                         Number of repetitions (default: 50)"
+            echo "  --base-model MODEL                Base model for competitors: qnn, qnn_mc, catboost, rfqr (default: qnn)"
+            echo "  --gamma VALUE                     Fixed CREDO gamma (default: 0.2)"
+            echo "  --gamma-min VALUE                 Adaptive CREDO gamma_min (default: 0.05)"
+            echo "  --gamma-max VALUE                 Adaptive CREDO gamma_max (default: 0.9)"
+            echo "  --tau-gamma VALUE                 Adaptive CREDO tau_gamma (default: 1.0)"
+            echo "  --results-tag TAG                 Optional suffix for result files/folders"
             echo "  --outlier-only                    Run only outlier coverage/ratio metrics (default)"
             echo "  --same-time                       Run full experiment plus outlier metrics"
+            echo "  --full                            Run full experiment only, including SMIS and coverage"
             echo "  --outlier-detector METHOD         lof or isolation_forest (default: lof)"
             echo "  --outlier-contamination VALUE     Detector contamination (default: 0.05)"
             echo "  --inlier-size VALUE               Fraction of non-outliers used as inliers (default: 0.2)"
@@ -114,6 +153,11 @@ for i in "${!DATASETS[@]}"; do
         -n_rep $N_REP \
         -dataset "$DATASET" \
         -base_model "$BASE_MODEL" \
+        -gamma "$GAMMA" \
+        -gamma_min "$GAMMA_MIN" \
+        -gamma_max "$GAMMA_MAX" \
+        -tau_gamma "$TAU_GAMMA" \
+        -results_tag "$RESULTS_TAG" \
         -outlier_analysis $OUTLIER_ANALYSIS \
         -outlier_same_time $OUTLIER_SAME_TIME \
         -outlier_detector "$OUTLIER_DETECTOR" \

@@ -7,7 +7,14 @@ import pandas as pd
 
 ROOT = Path.cwd()
 RESULTS_DIR = ROOT / "results"
-FINAL_TABLES_DIR = RESULTS_DIR / "final_tables"
+FINAL_TABLES_DIR = RESULTS_DIR / "legacy_tables"
+WRITE_PICKLE = False
+DEFAULT_CATBOOST_N_REP = 30
+DEFAULT_QNN_N_REP = 50
+EXCLUDED_DISCOVERY_DATASETS = {
+    "bike",
+    "news",
+}
 
 METHODS = [
     "credo_QNN",
@@ -20,29 +27,57 @@ METHODS = [
 ]
 
 CATBOOST_DATASETS = [
-    "airfoil",
     "concrete",
+    "airfoil",
+    "winered",
+    "communities",
+    "star",
+    "winewhite",
     "cycle",
     "electric",
-    "homes",
     "meps19",
-    "protein",
-    "star",
     "superconductivity",
+    "homes",
+    "protein",
     "WEC",
-    "winered",
-    "winewhite",
 ]
 
 QNN_DATASET_ORDER = [
+    "qsar_fish_toxicity",
     "concrete",
     "airfoil",
-    "winewhite",
-    "star",
     "winered",
+    "communities",
+    "star",
+    "abalone",
+    "winewhite",
     "cycle",
     "electric",
     "meps19",
+    "superconductivity",
+    "homes",
+    "protein",
+    "WEC",
+]
+
+DATASET_SIZE_ORDER = [
+    "qsar_fish_toxicity",
+    "concrete",
+    "airfoil",
+    "winered",
+    "communities",
+    "star",
+    "abalone",
+    "winewhite",
+    "cycle",
+    "electric",
+    "meps19",
+    "superconductivity",
+    "homes",
+    "protein",
+    "blog",
+    "WEC",
+    "kernel",
 ]
 
 
@@ -50,20 +85,30 @@ def detector_suffix(outlier_detector):
     return "" if outlier_detector == "lof" else f"_{outlier_detector}"
 
 
+def dataset_sort_key(dataset):
+    try:
+        size_rank = DATASET_SIZE_ORDER.index(dataset)
+    except ValueError:
+        size_rank = len(DATASET_SIZE_ORDER)
+    return size_rank, dataset.lower()
+
+
+def sort_datasets_by_size(datasets):
+    return sorted(datasets, key=dataset_sort_key)
+
+
 def discover_datasets(model="qnn"):
     suffix = f"_{model}_summary"
     datasets = []
     for path in RESULTS_DIR.glob(f"*{suffix}"):
         if path.is_dir():
-            datasets.append(path.name.removesuffix(suffix))
-    if model == "qnn":
-        return [dataset for dataset in QNN_DATASET_ORDER if dataset in datasets]
-    ordered = [dataset for dataset in QNN_DATASET_ORDER if dataset in datasets]
-    ordered.extend(sorted(set(datasets) - set(ordered)))
-    return ordered
+            dataset = path.name.removesuffix(suffix)
+            if dataset not in EXCLUDED_DISCOVERY_DATASETS:
+                datasets.append(dataset)
+    return sort_datasets_by_size(datasets)
 
 
-def format_mean_se(mean, sd, n_rep=30, digits=3):
+def format_mean_se(mean, sd, n_rep=DEFAULT_CATBOOST_N_REP, digits=3):
     if pd.isna(mean):
         return None
     if pd.isna(sd):
@@ -100,7 +145,7 @@ def read_metrics_files(
     model="catboost",
     metric="isl",
     outlier=False,
-    n_rep=30,
+    n_rep=DEFAULT_CATBOOST_N_REP,
     outlier_detector="lof",
 ):
     dataframe = pd.DataFrame({"Dataset": datasets})
@@ -135,7 +180,13 @@ def read_metrics_files(
     return dataframe
 
 
-def read_scarcity_coverage_files(datasets, methods, model="qnn", bins=("Q3", "Q4"), n_rep=30):
+def read_scarcity_coverage_files(
+    datasets,
+    methods,
+    model="qnn",
+    bins=("Q3", "Q4"),
+    n_rep=DEFAULT_QNN_N_REP,
+):
     tables = {}
     for bin_name in bins:
         dataframe = pd.DataFrame({"Dataset": datasets})
@@ -211,92 +262,151 @@ def latex_table(dataframe, methods, caption=None, label=None):
 
 def save_table(dataframe, name, methods=METHODS, caption=None, label=None):
     FINAL_TABLES_DIR.mkdir(parents=True, exist_ok=True)
-    dataframe.to_pickle(FINAL_TABLES_DIR / f"{name}.pkl")
+    if WRITE_PICKLE:
+        dataframe.to_pickle(FINAL_TABLES_DIR / f"{name}.pkl")
     dataframe.to_csv(FINAL_TABLES_DIR / f"{name}.csv", index=False)
     (FINAL_TABLES_DIR / f"{name}.tex").write_text(
         latex_table(dataframe, methods, caption=caption, label=label) + "\n"
     )
 
 
-def save_catboost_tables(datasets=CATBOOST_DATASETS, methods=METHODS, n_rep=30, outlier_detector="lof"):
+def save_catboost_tables(
+    datasets=None,
+    methods=METHODS,
+    n_rep=DEFAULT_CATBOOST_N_REP,
+    outlier_detector="lof",
+    include_outlier=True,
+):
+    if datasets is None:
+        datasets = discover_datasets("catboost")
+    else:
+        datasets = sort_datasets_by_size(datasets)
+
     suffix = detector_suffix(outlier_detector)
     tables = {
         "result_aisl": read_metrics_files(datasets, methods, "catboost", metric="isl", n_rep=n_rep),
         "result_cover": read_metrics_files(datasets, methods, "catboost", metric="coverage", n_rep=n_rep),
-        f"result_ratio_outlier{suffix}": read_metrics_files(
-            datasets, methods, "catboost", metric="ratio", outlier=True, n_rep=n_rep, outlier_detector=outlier_detector
-        ),
-        f"result_cover_outlier{suffix}": read_metrics_files(
-            datasets, methods, "catboost", metric="coverage", outlier=True, n_rep=n_rep, outlier_detector=outlier_detector
-        ),
     }
+    if include_outlier:
+        coverage_outlier_datasets = datasets_with_metric(
+            datasets, "catboost", "coverage", outlier=True, outlier_detector=outlier_detector
+        )
+        ratio_outlier_datasets = datasets_with_metric(
+            datasets, "catboost", "ratio", outlier=True, outlier_detector=outlier_detector
+        )
+        tables[f"result_cover_outlier{suffix}"] = read_metrics_files(
+            coverage_outlier_datasets,
+            methods,
+            "catboost",
+            metric="coverage",
+            outlier=True,
+            n_rep=n_rep,
+            outlier_detector=outlier_detector,
+        )
+        tables[f"result_ratio_outlier{suffix}"] = read_metrics_files(
+            ratio_outlier_datasets,
+            methods,
+            "catboost",
+            metric="ratio",
+            outlier=True,
+            n_rep=n_rep,
+            outlier_detector=outlier_detector,
+        )
     for name, dataframe in tables.items():
         save_table(dataframe, name, methods=methods)
     return tables
 
 
-def save_qnn_tables(datasets=QNN_DATASET_ORDER, methods=METHODS, n_rep=30, outlier_detector="lof"):
+def save_qnn_tables(
+    datasets=None,
+    methods=METHODS,
+    n_rep=DEFAULT_QNN_N_REP,
+    outlier_detector="lof",
+    model="qnn",
+    table_prefix=None,
+    model_label=None,
+    include_outlier=True,
+    include_wsc=False,
+    scarcity_bins=("Q4",),
+):
+    if table_prefix is None:
+        table_prefix = f"result_{model}"
+    if model_label is None:
+        model_label = model.upper()
     if datasets is None:
-        datasets = QNN_DATASET_ORDER
+        datasets = discover_datasets(model)
+    else:
+        datasets = sort_datasets_by_size(datasets)
 
-    smis_datasets = datasets_with_metric(datasets, "qnn", "isl")
-    length_datasets = datasets_with_metric(datasets, "qnn", "interval_length")
-    wsc_datasets = datasets_with_metric(datasets, "qnn", "wsc")
-    scarcity_worst_datasets = datasets_with_metric(datasets, "qnn", "scarcity_worst_coverage")
-    scarcity_datasets = datasets_with_metric(datasets, "qnn", "scarcity_coverage")
-    coverage_outlier_datasets = datasets_with_metric(
-        datasets, "qnn", "coverage", outlier=True, outlier_detector=outlier_detector
-    )
-    ratio_outlier_datasets = datasets_with_metric(
-        datasets, "qnn", "ratio", outlier=True, outlier_detector=outlier_detector
-    )
+    smis_datasets = datasets_with_metric(datasets, model, "isl")
+    length_datasets = datasets_with_metric(datasets, model, "interval_length")
+    coverage_datasets = datasets_with_metric(datasets, model, "coverage")
+    scarcity_worst_datasets = datasets_with_metric(datasets, model, "scarcity_worst_coverage")
+    scarcity_datasets = datasets_with_metric(datasets, model, "scarcity_coverage")
     suffix = detector_suffix(outlier_detector)
 
     tables = {
-        "result_qnn_smis": read_metrics_files(smis_datasets, methods, "qnn", metric="isl", n_rep=n_rep),
-        "result_qnn_interval_length": read_metrics_files(
-            length_datasets, methods, "qnn", metric="interval_length", n_rep=n_rep
+        f"{table_prefix}_smis": read_metrics_files(smis_datasets, methods, model, metric="isl", n_rep=n_rep),
+        f"{table_prefix}_interval_length": read_metrics_files(
+            length_datasets, methods, model, metric="interval_length", n_rep=n_rep
         ),
-        "result_qnn_wsc": read_metrics_files(wsc_datasets, methods, "qnn", metric="wsc", n_rep=n_rep),
-        "result_qnn_scarcity_worst_coverage": read_metrics_files(
-            scarcity_worst_datasets, methods, "qnn", metric="scarcity_worst_coverage", n_rep=n_rep
+        f"{table_prefix}_coverage": read_metrics_files(
+            coverage_datasets, methods, model, metric="coverage", n_rep=n_rep
         ),
-        f"result_qnn_coverage_outlier{suffix}": read_metrics_files(
+        f"{table_prefix}_scarcity_worst_coverage": read_metrics_files(
+            scarcity_worst_datasets, methods, model, metric="scarcity_worst_coverage", n_rep=n_rep
+        ),
+    }
+    if include_wsc:
+        wsc_datasets = datasets_with_metric(datasets, model, "wsc")
+        tables[f"{table_prefix}_wsc"] = read_metrics_files(wsc_datasets, methods, model, metric="wsc", n_rep=n_rep)
+    if include_outlier:
+        coverage_outlier_datasets = datasets_with_metric(
+            datasets, model, "coverage", outlier=True, outlier_detector=outlier_detector
+        )
+        ratio_outlier_datasets = datasets_with_metric(
+            datasets, model, "ratio", outlier=True, outlier_detector=outlier_detector
+        )
+        tables[f"{table_prefix}_coverage_outlier{suffix}"] = read_metrics_files(
             coverage_outlier_datasets,
             methods,
-            "qnn",
+            model,
             metric="coverage",
             outlier=True,
             n_rep=n_rep,
             outlier_detector=outlier_detector,
-        ),
-        f"result_qnn_ratio_outlier{suffix}": read_metrics_files(
+        )
+        tables[f"{table_prefix}_ratio_outlier{suffix}"] = read_metrics_files(
             ratio_outlier_datasets,
             methods,
-            "qnn",
+            model,
             metric="ratio",
             outlier=True,
             n_rep=n_rep,
             outlier_detector=outlier_detector,
-        ),
-    }
+        )
 
     scarcity_tables = read_scarcity_coverage_files(
-        scarcity_datasets, methods, model="qnn", bins=("Q3", "Q4"), n_rep=n_rep
+        scarcity_datasets, methods, model=model, bins=scarcity_bins, n_rep=n_rep
     )
-    tables["result_qnn_scarcity_coverage_Q3"] = scarcity_tables["Q3"]
-    tables["result_qnn_scarcity_coverage_Q4"] = scarcity_tables["Q4"]
+    for scarcity_bin, table in scarcity_tables.items():
+        tables[f"{table_prefix}_scarcity_coverage_{scarcity_bin}"] = table
 
     captions = {
-        "result_qnn_smis": "SMIS results with QNN base models.",
-        "result_qnn_interval_length": "Interval length results with QNN base models.",
-        "result_qnn_wsc": "Worst-slab coverage results with QNN base models.",
-        "result_qnn_scarcity_worst_coverage": "Worst scarcity-bin coverage results with QNN base models.",
-        "result_qnn_scarcity_coverage_Q3": "Scarcity coverage in the third scarcity quantile with QNN base models.",
-        "result_qnn_scarcity_coverage_Q4": "Scarcity coverage in the fourth scarcity quantile with QNN base models.",
-        f"result_qnn_coverage_outlier{suffix}": "Outlier coverage results with QNN base models.",
-        f"result_qnn_ratio_outlier{suffix}": "Outlier-to-inlier interval-length ratio results with QNN base models.",
+        f"{table_prefix}_smis": f"SMIS results with {model_label} base models.",
+        f"{table_prefix}_interval_length": f"Interval length results with {model_label} base models.",
+        f"{table_prefix}_coverage": f"Marginal coverage results with {model_label} base models.",
+        f"{table_prefix}_scarcity_worst_coverage": f"Worst scarcity-bin coverage results with {model_label} base models.",
+        f"{table_prefix}_scarcity_coverage_Q4": f"Scarcity coverage in the fourth scarcity quantile with {model_label} base models.",
+        f"{table_prefix}_coverage_outlier{suffix}": f"Outlier coverage results with {model_label} base models.",
+        f"{table_prefix}_ratio_outlier{suffix}": f"Outlier-to-inlier interval-length ratio results with {model_label} base models.",
     }
+    if include_wsc:
+        captions[f"{table_prefix}_wsc"] = f"Worst-slab coverage results with {model_label} base models."
+    if "Q3" in scarcity_bins:
+        captions[f"{table_prefix}_scarcity_coverage_Q3"] = (
+            f"Scarcity coverage in the third scarcity quantile with {model_label} base models."
+        )
     for name, dataframe in tables.items():
         save_table(
             dataframe,
@@ -311,18 +421,60 @@ def save_qnn_tables(datasets=QNN_DATASET_ORDER, methods=METHODS, n_rep=30, outli
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--outlier_detector", choices=["lof", "isolation_forest"], default="lof")
+    parser.add_argument("--model", choices=["qnn", "qnn_mc"], default="qnn")
+    parser.add_argument("--output-dir", type=Path, default=FINAL_TABLES_DIR)
+    parser.add_argument("--write-pickle", action="store_true", help="Also write legacy pickle table files.")
+    parser.add_argument("--include-catboost", action="store_true", help="Also generate legacy CatBoost tables.")
+    parser.add_argument("--include-wsc", action="store_true", help="Also generate the legacy worst-slab coverage table.")
+    parser.add_argument("--include-q3", action="store_true", help="Also generate scarcity Q3 coverage tables.")
+    parser.add_argument(
+        "--n_rep",
+        type=int,
+        default=DEFAULT_QNN_N_REP,
+        help="Number of repetitions used for the selected QNN table standard errors.",
+    )
+    parser.add_argument(
+        "--catboost_n_rep",
+        type=int,
+        default=DEFAULT_CATBOOST_N_REP,
+        help="Number of repetitions used for CatBoost table standard errors.",
+    )
+    parser.add_argument(
+        "--main_only",
+        action="store_true",
+        help="Save only main tables, skipping outlier coverage/ratio tables.",
+    )
     args = parser.parse_args()
 
-    catboost_tables = save_catboost_tables(outlier_detector=args.outlier_detector)
-    qnn_tables = save_qnn_tables(outlier_detector=args.outlier_detector)
+    FINAL_TABLES_DIR = args.output_dir
+    WRITE_PICKLE = args.write_pickle
 
-    print("Saved CatBoost tables:")
-    for name in catboost_tables:
-        print(f"- {FINAL_TABLES_DIR / name}")
+    catboost_tables = {}
+    if args.include_catboost:
+        catboost_tables = save_catboost_tables(
+            outlier_detector=args.outlier_detector,
+            n_rep=args.catboost_n_rep,
+            include_outlier=not args.main_only,
+        )
+    qnn_tables = save_qnn_tables(
+        outlier_detector=args.outlier_detector,
+        model=args.model,
+        n_rep=args.n_rep,
+        table_prefix=f"result_{args.model}",
+        model_label="QNN_MC" if args.model == "qnn_mc" else "QNN",
+        include_outlier=not args.main_only,
+        include_wsc=args.include_wsc,
+        scarcity_bins=("Q3", "Q4") if args.include_q3 else ("Q4",),
+    )
 
-    print("\nSaved QNN tables:")
+    if catboost_tables:
+        print("Saved CatBoost tables:")
+        for name in catboost_tables:
+            print(f"- {FINAL_TABLES_DIR / name}")
+
+    print(f"\nSaved {args.model.upper()} tables:")
     for name, dataframe in qnn_tables.items():
         print(f"- {FINAL_TABLES_DIR / name} ({len(dataframe)} datasets)")
 
-    print("\nPreview: QNN SMIS")
-    print(latex_table(qnn_tables["result_qnn_smis"], METHODS))
+    print(f"\nPreview: {args.model.upper()} SMIS")
+    print(latex_table(qnn_tables[f"result_{args.model}_smis"], METHODS))

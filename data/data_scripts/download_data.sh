@@ -1,9 +1,12 @@
 #!/bin/bash
 
 # Download datasets
+python3 data/data_scripts/download.py -d abalone
 python3 data/data_scripts/download.py -d protein
 python3 data/data_scripts/download.py -d concrete
+python3 data/data_scripts/download.py -d communities
 python3 data/data_scripts/download.py -d news
+python3 data/data_scripts/download.py -d qsar_fish_toxicity
 python3 data/data_scripts/download.py -d superconductivity
 python3 data/data_scripts/download.py -d airfoil
 python3 data/data_scripts/download.py -d electric
@@ -12,9 +15,12 @@ python3 data/data_scripts/download.py -d winered
 python3 data/data_scripts/download.py -d winewhite
 
 # Process datasets
+python3 data/data_scripts/process.py -d abalone
 python3 data/data_scripts/process.py -d protein
 python3 data/data_scripts/process.py -d concrete
+python3 data/data_scripts/process.py -d communities
 python3 data/data_scripts/process.py -d news
+python3 data/data_scripts/process.py -d qsar_fish_toxicity
 python3 data/data_scripts/process.py -d superconductivity
 python3 data/data_scripts/process.py -d airfoil
 python3 data/data_scripts/process.py -d electric

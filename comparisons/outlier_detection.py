@@ -25,6 +25,7 @@ def select_outlier_inlier_indices(
     X,
     y,
     outlier_detector="lof",
+    outlier_embedding="tsne",
     contamination=0.05,
     inlier_size=0.2,
     n_neighbors=15,
@@ -36,9 +37,15 @@ def select_outlier_inlier_indices(
     iforest_bootstrap=False,
     random_state=None,
 ):
-    tsne = TSNE(n_components=n_components, random_state=tsne_random_state)
-    X_embedded = tsne.fit_transform(X)
-    X_scaled = StandardScaler().fit_transform(X_embedded)
+    if outlier_embedding == "tsne":
+        tsne = TSNE(n_components=n_components, random_state=tsne_random_state)
+        X_detector = tsne.fit_transform(X)
+    elif outlier_embedding == "original":
+        X_detector = X
+    else:
+        raise ValueError(f"Unknown outlier_embedding={outlier_embedding}")
+
+    X_scaled = StandardScaler().fit_transform(X_detector)
 
     if outlier_detector == "lof":
         detector = LocalOutlierFactor(

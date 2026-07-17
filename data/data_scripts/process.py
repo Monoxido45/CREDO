@@ -1,6 +1,7 @@
 import argparse
 import zipfile
 import re
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import pandas as pd
@@ -24,7 +25,61 @@ parser.add_argument(
 args = parser.parse_args()
 
 
+def read_simple_xlsx(path):
+    namespaces = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with zipfile.ZipFile(path, "r") as file:
+        shared_strings = []
+        if "xl/sharedStrings.xml" in file.namelist():
+            root = ET.fromstring(file.read("xl/sharedStrings.xml"))
+            for item in root.findall("main:si", namespaces):
+                text = "".join(node.text or "" for node in item.findall(".//main:t", namespaces))
+                shared_strings.append(text)
+
+        root = ET.fromstring(file.read("xl/worksheets/sheet1.xml"))
+        rows = []
+        for row in root.findall(".//main:sheetData/main:row", namespaces):
+            values = {}
+            for cell in row.findall("main:c", namespaces):
+                ref = cell.attrib.get("r", "")
+                column = re.sub(r"\d+", "", ref)
+                value_node = cell.find("main:v", namespaces)
+                if value_node is None:
+                    continue
+                value = value_node.text
+                if cell.attrib.get("t") == "s":
+                    value = shared_strings[int(value)]
+                else:
+                    value = float(value)
+                values[column] = value
+            if values:
+                rows.append(values)
+
+    columns = sorted(rows[0], key=lambda column: sum((ord(char) - 64) * 26**idx for idx, char in enumerate(reversed(column))))
+    header = [rows[0][column] for column in columns]
+    records = [[row.get(column) for column in columns] for row in rows[1:]]
+    return pd.DataFrame(records, columns=header)
+
+
 def process(dataset, n_samples=None, seed=125):
+    if dataset == "abalone":
+        columns = [
+            "sex",
+            "length",
+            "diameter",
+            "height",
+            "whole_weight",
+            "shucked_weight",
+            "viscera_weight",
+            "shell_weight",
+            "rings",
+        ]
+        df = pd.read_csv("data/raw/abalone/abalone.data", header=None, names=columns)
+        sex = pd.get_dummies(df["sex"], prefix="sex", dtype=float)
+        X = pd.concat([df.drop(["sex", "rings"], axis=1), sex], axis=1)
+        y = df["rings"]
+        data = pd.DataFrame(X)
+        data["target"] = y
+
     # Based on https://github.com/AIgen/QOOB/blob/master/MATLAB/data/loadBlogData.m
     if dataset == "blog":
         with zipfile.ZipFile(f"data/raw/blog/BlogFeedback.zip", "r") as file:
@@ -55,6 +110,38 @@ def process(dataset, n_samples=None, seed=125):
     if dataset == "concrete":
         df = pd.read_excel(f"data/raw/concrete/Concrete_Data.xls")
         X, y = df.iloc[:, :8], df.iloc[:, 8]
+        data = pd.DataFrame(X)
+        data["target"] = y
+
+    if dataset == "communities":
+        with open("data/raw/communities/communities.names") as file:
+            columns = [
+                line.split()[1]
+                for line in file
+                if line.lower().startswith("@attribute")
+            ]
+        df = pd.read_csv(
+            "data/raw/communities/communities.data",
+            header=None,
+            names=columns,
+            na_values="?",
+        )
+        y = pd.to_numeric(df["ViolentCrimesPerPop"])
+        X = df.drop(
+            [
+                "state",
+                "county",
+                "community",
+                "communityname",
+                "fold",
+                "ViolentCrimesPerPop",
+            ],
+            axis=1,
+        )
+        categorical_columns = X.select_dtypes(include=["object"]).columns
+        X = pd.get_dummies(X, columns=categorical_columns, dtype=float)
+        X = X.apply(pd.to_numeric, errors="coerce")
+        X = X.fillna(X.median())
         data = pd.DataFrame(X)
         data["target"] = y
 
@@ -99,6 +186,12 @@ def process(dataset, n_samples=None, seed=125):
     if dataset == "electric":
         df = pd.read_csv("data/raw/electric/Data_for_UCI_named.csv")
         X, y = df.iloc[:, :12], df.iloc[:, 12]
+        data = pd.DataFrame(X)
+        data["target"] = y
+
+    if dataset == "qsar_fish_toxicity":
+        df = pd.read_csv("data/raw/qsar_fish_toxicity/qsar_fish_toxicity.csv", sep=";", header=None)
+        X, y = df.iloc[:, :6], df.iloc[:, 6]
         data = pd.DataFrame(X)
         data["target"] = y
 
@@ -475,5 +568,3 @@ data = process(DATASET, N_SAMPLES, SEED)
 output_folder = get_folder("data")
 data.to_csv(f"{output_folder}/{DATASET}.csv", index=False)
 print(f"-saved: {output_folder}/{DATASET}.csv")
-
-

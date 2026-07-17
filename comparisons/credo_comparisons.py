@@ -49,14 +49,15 @@ def str2bool(value):
 
 parser = ArgumentParser()
 parser.add_argument("-alpha", "--alpha",type=float, default=0.1, help="miscoverage level for conformal prediction")
-parser.add_argument("-gamma","--gamma", type=float, default=0.1, help="adaptive gamma parameter")
-parser.add_argument("-n_rep", "--n_rep", type=int, default=30, help="number of repetitions for the experiment")
+parser.add_argument("-gamma","--gamma", type=float, default=0.2, help="fixed CREDO gamma parameter")
+parser.add_argument("-n_rep", "--n_rep", type=int, default=50, help="number of repetitions for the experiment")
 parser.add_argument("-n_MCMC", "--n_MCMC", type=int, default=1000, help="number of MCMC samples")
 parser.add_argument("-seed_initial", "--seed_initial", type=int, default=125,
                      help="initial seed for random generator to create seeds for repetitions")
 parser.add_argument("-dataset", "--dataset", type=str, default="airfoil", help="dataset to use for the experiment")
-parser.add_argument("-base_model", "--base_model", type=str, default="qnn", help="Base quantile model for competitors: 'qnn', 'rfqr', or 'catboost'")
+parser.add_argument("-base_model", "--base_model", type=str, default="qnn", help="Base quantile model for competitors: 'qnn', 'qnn_mc', 'rfqr', or 'catboost'")
 parser.add_argument("-uacqr_model", "--uacqr_model", type=str, default=None, help="Deprecated alias for --base_model")
+parser.add_argument("-results_tag", "--results_tag", type=str, default="", help="Optional suffix for result folders/files, useful for sensitivity tests.")
 parser.add_argument("-outlier_analysis", "--outlier_analysis", type=str2bool, default=False, help="whether to perform outlier/inlier analysis using the selected detector")
 parser.add_argument("-n_cores", "--n_cores", type=int, default=4, help="number of cores to use for parallel processing")
 parser.add_argument("-kernel", "--kernel", type=str, default="RBF + Matern52", 
@@ -67,8 +68,8 @@ parser.add_argument("-activation_noise", "--activation_noise", type=str, default
                     help="activation function for noise in Gaussian Process")
 parser.add_argument("-outlier_same_time", "--outlier_same_time", type=str2bool, default=False, 
                     help="whether to analyze outliers at the same time as fitting the models or as a separate step after fitting")
-parser.add_argument("-gamma_max", "--gamma_max", type=float, default=0.75, help="maximum adaptive gamma value")
-parser.add_argument("-gamma_min", "--gamma_min", type=float, default=None, help="minimum adaptive gamma value; defaults to --gamma")
+parser.add_argument("-gamma_max", "--gamma_max", type=float, default=0.9, help="maximum adaptive gamma value")
+parser.add_argument("-gamma_min", "--gamma_min", type=float, default=0.05, help="minimum adaptive gamma value; defaults to --gamma")
 parser.add_argument("-tau_gamma", "--tau_gamma", type=float, default=1.0, help="temperature for the scarcity-to-gamma map")
 parser.add_argument("-k_gamma", "--k_gamma", type=int, default=None, help="fixed k for kNN scarcity; defaults to the selected heuristic")
 parser.add_argument("-heuristic_gamma", "--heuristic_gamma", type=str, default="log", help="k heuristic for adaptive gamma: 'log' or 'exp'")
@@ -101,6 +102,10 @@ if base_model_arg in ["qnn", "neural_net"]:
     uacqr_model = "neural_net"
     base_model_label = "QNN"
     base_model_slug = "qnn"
+elif base_model_arg in ["qnn_mc", "qnn-mc", "qnn_dropout", "qnn-dropout"]:
+    uacqr_model = "neural_net"
+    base_model_label = "QNN_MC"
+    base_model_slug = "qnn_mc"
 elif base_model_arg == "catboost":
     uacqr_model = "catboost"
     base_model_label = "CatBoost"
@@ -111,6 +116,13 @@ elif base_model_arg == "rfqr":
     base_model_slug = "rfqr"
 else:
     raise ValueError(f"Unknown base_model={base_model_arg}")
+base_model_is_qnn_mc = base_model_slug == "qnn_mc"
+results_tag = "".join(
+    char if char.isalnum() or char == "_" else "_"
+    for char in args.results_tag.strip()
+)
+if results_tag:
+    base_model_slug = f"{base_model_slug}_{results_tag}"
 outlier_analysis = args.outlier_analysis
 n_cores = args.n_cores
 kernel = args.kernel
@@ -140,8 +152,9 @@ iforest_max_features = args.iforest_max_features
 iforest_bootstrap = args.iforest_bootstrap
 
 QNN_HIDDEN_LAYERS = [128, 128, 64]
-QNN_DROPOUT_CREDO = 0.3
-QNN_DROPOUT_COMPETITORS = 0.0
+QNN_DROPOUT_CREDO = 0.2
+QNN_DROPOUT_COMPETITORS = QNN_DROPOUT_CREDO if base_model_is_qnn_mc else 0.0
+QNN_COMPETITOR_EPOCH_MODEL_TRACKING = base_model_is_qnn_mc
 
 def make_competitor_qnn_params(batch_size, B=100):
     return {
@@ -149,6 +162,7 @@ def make_competitor_qnn_params(batch_size, B=100):
         "epochs": 2000,
         "batch_size": batch_size,
         "dropout": QNN_DROPOUT_COMPETITORS,
+        "epoch_model_tracking": QNN_COMPETITOR_EPOCH_MODEL_TRACKING,
         "normalize": True,
         "weight_decay": 1e-6,
         "hidden_layers": QNN_HIDDEN_LAYERS,
@@ -176,6 +190,34 @@ def generate_seeds(seed_initial, n_rep):
     seeds = np.random.randint(0, 2**31 - 1, size=n_rep)
     return seeds
 
+
+def resolve_iforest_max_samples(dataset, outlier_detector, iforest_max_samples):
+    if (
+        dataset == "WEC"
+        and outlier_detector == "isolation_forest"
+        and str(iforest_max_samples).lower() == "auto"
+    ):
+        print(
+            "Using WEC-specific Isolation Forest max_samples=2048 "
+            "instead of auto to better capture the large test-set geometry."
+        )
+        return 2048
+    return iforest_max_samples
+
+
+def resolve_outlier_embedding(dataset, outlier_detector, outlier_embedding="tsne"):
+    if (
+        dataset == "WEC"
+        and outlier_detector == "isolation_forest"
+        and outlier_embedding == "tsne"
+    ):
+        print(
+            "Using WEC-specific Isolation Forest detector on standardized "
+            "original features instead of the t-SNE embedding."
+        )
+        return "original"
+    return outlier_embedding
+
 def fit_methods(
         X_train,
         y_train,
@@ -194,6 +236,7 @@ def fit_methods(
         tsne_random_state=120,
         n_components = 2,
         outlier_detector = "lof",
+        outlier_embedding = "tsne",
         iforest_n_estimators = 200,
         iforest_max_samples = "auto",
         iforest_max_features = 1.0,
@@ -687,11 +730,13 @@ def fit_methods(
         for row in scarcity_cover_array
     ])
     if outlier_same_time and outlier_analysis:
-        print(f"Performing outlier detection with t-SNE and {outlier_detector}")
+        outlier_space = "t-SNE" if outlier_embedding == "tsne" else "standardized original feature space"
+        print(f"Performing outlier detection with {outlier_space} and {outlier_detector}")
         outlier_indexes, most_inlier_idxs = select_outlier_inlier_indices(
             X_test,
             y_test,
             outlier_detector=outlier_detector,
+            outlier_embedding=outlier_embedding,
             contamination=contamination,
             inlier_size=inlier_size,
             n_neighbors=n_neighbors,
@@ -718,6 +763,15 @@ def fit_methods(
         cqrr_inliers = cqrr_int[most_inlier_idxs]
         epic_mdn_inliers = pred_epic_mdn_test[most_inlier_idxs]
         y_test_in = y_test[most_inlier_idxs]
+
+        uacqrs_outliers = np.empty((0, 2))
+        uacqrp_outliers = np.empty((0, 2))
+        uacqrs_inliers = np.empty((0, 2))
+        uacqrp_inliers = np.empty((0, 2))
+        y_test_out_uacqrs = np.asarray([])
+        y_test_out_uacqrp = np.asarray([])
+        cover_uacqrs_out = np.nan
+        cover_uacqrp_out = np.nan
         
         if not n_removed == n_total:
             uacqrs_outliers = uacqrs_int[outlier_indexes]
@@ -915,6 +969,7 @@ def fit_methods_outlier(
         tsne_random_state=120,
         n_components = 2,
         outlier_detector = "lof",
+        outlier_embedding = "tsne",
         iforest_n_estimators = 200,
         iforest_max_samples = "auto",
         iforest_max_features = 1.0,
@@ -1126,11 +1181,13 @@ def fit_methods_outlier(
     upper_uacqrp = uacqr_pred_test["UACQR-P"]["upper"]
     uacqrp_int = np.column_stack((lower_uacqrp, upper_uacqrp))
 
-    print(f"Performing outlier detection with t-SNE and {outlier_detector}")
+    outlier_space = "t-SNE" if outlier_embedding == "tsne" else "standardized original feature space"
+    print(f"Performing outlier detection with {outlier_space} and {outlier_detector}")
     outlier_indexes, most_inlier_idxs = select_outlier_inlier_indices(
         X_test,
         y_test,
         outlier_detector=outlier_detector,
+        outlier_embedding=outlier_embedding,
         contamination=contamination,
         inlier_size=inlier_size,
         n_neighbors=n_neighbors,
@@ -1352,6 +1409,7 @@ def run_experiment_outlier(
     checkpoint_data = None,
     scale_y = False,
     outlier_detector = "lof",
+    outlier_embedding = "tsne",
     iforest_n_estimators = 200,
     iforest_max_samples = "auto",
     iforest_max_features = 1.0,
@@ -1382,6 +1440,16 @@ def run_experiment_outlier(
     if dataset == "WEC":
         mdn_params["batch_size"] = 250
         batch_size = 250
+    iforest_max_samples = resolve_iforest_max_samples(
+        dataset,
+        outlier_detector,
+        iforest_max_samples,
+    )
+    outlier_embedding = resolve_outlier_embedding(
+        dataset,
+        outlier_detector,
+        outlier_embedding,
+    )
 
     if checkpoint_flag:
         resume_from = int(checkpoint_data.get("iteration", -1)) + 1
@@ -1431,6 +1499,7 @@ def run_experiment_outlier(
             tsne_random_state=tsne_random_state,
             n_components = n_components,
             outlier_detector = outlier_detector,
+            outlier_embedding = outlier_embedding,
             iforest_n_estimators = iforest_n_estimators,
             iforest_max_samples = iforest_max_samples,
             iforest_max_features = iforest_max_features,
@@ -1505,11 +1574,16 @@ def run_experiment(dataset,
                    outlier_same_time = False,
                    outlier_analysis = False,
                    outlier_detector = "lof",
+                   outlier_embedding = "tsne",
                    inlier_size = 0.2,
                    contamination = 0.05,
                    n_neighbors = 15,
                    n_components = 2,
                    tsne_random_state = 120,
+                   iforest_n_estimators = 200,
+                   iforest_max_samples = "auto",
+                   iforest_max_features = 1.0,
+                   iforest_bootstrap = False,
 ):
     data = pd.read_csv(os.path.join(DATA_PATH, f"{dataset}.csv"))
 
@@ -1536,6 +1610,17 @@ def run_experiment(dataset,
     if dataset == "WEC":
         mdn_params["batch_size"] = 250
         batch_size = 250
+    if outlier_analysis:
+        iforest_max_samples = resolve_iforest_max_samples(
+            dataset,
+            outlier_detector,
+            iforest_max_samples,
+        )
+        outlier_embedding = resolve_outlier_embedding(
+            dataset,
+            outlier_detector,
+            outlier_embedding,
+        )
     
 
     if checkpoint_flag:
@@ -1681,6 +1766,7 @@ def run_experiment(dataset,
             tsne_random_state = tsne_random_state,
             n_components = n_components,
             outlier_detector = outlier_detector,
+            outlier_embedding = outlier_embedding,
             iforest_n_estimators = iforest_n_estimators,
             iforest_max_samples = iforest_max_samples,
             iforest_max_features = iforest_max_features,
@@ -1932,6 +2018,34 @@ if __name__ == "__main__":
     else:
         print(f"No checkpoint found at '{chk_file}'. Starting a new run.")
         checkpoint_flag = False
+        checkpoint_data_outlier = None
+
+    def checkpoint_has_enough_seeds(checkpoint, required_n_rep):
+        if checkpoint is None:
+            return False
+        seeds = checkpoint.get("seeds")
+        return seeds is not None and len(seeds) >= required_n_rep
+
+    if checkpoint_flag and not checkpoint_has_enough_seeds(checkpoint_data, n_rep):
+        print(
+            f"Ignoring checkpoint '{chk_file}' because it has fewer seeds than n_rep={n_rep}. "
+            "Starting a new run."
+        )
+        checkpoint_flag = False
+        checkpoint_data = None
+        checkpoint_data_outlier = None
+    elif (
+        checkpoint_flag
+        and outlier_same_time
+        and outlier_analysis
+        and not checkpoint_has_enough_seeds(checkpoint_data_outlier, n_rep)
+    ):
+        print(
+            f"Ignoring outlier checkpoint '{chk_file_outlier}' because it has fewer seeds than n_rep={n_rep}. "
+            "Starting a new run."
+        )
+        checkpoint_flag = False
+        checkpoint_data = None
         checkpoint_data_outlier = None
 
     if not outlier_analysis:

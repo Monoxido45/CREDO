@@ -1,0 +1,31 @@
+\documentclass[border=6pt]{standalone}
+\usepackage{adjustbox}
+\usepackage{amsmath}
+\begin{document}
+\begin{adjustbox}{max width=\linewidth}
+\begin{tabular}{c}
+{\small\textbf{Coverage (QNN Base Model)}}\\[-1pt]
+{\scriptsize Target = 0.9; bold = CI contains 0.9 or mean $\geq$ 0.9; if none, intersects the closest CI.}\\[2pt]
+\scriptsize\begin{tabular}{lccccccc}
+\hline
+Dataset (n) & \textbf{CREDO} & \textbf{CREDO (adap.)} & \textbf{CQR} & \textbf{CQR-r} & \textbf{UACQRS} & \textbf{UACQRP} & \textbf{EPIC}\\ \hline
+qsar fish toxicity (908) & \textbf{0.909 (0.006)} & \textbf{0.905 (0.007)} & \textbf{0.909 (0.009)} & \textbf{0.906 (0.009)} & \textbf{0.904 (0.008)} & \textbf{0.907 (0.008)} & \textbf{0.92 (0.011)}\\
+concrete (1030) & \textbf{0.905 (0.008)} & \textbf{0.902 (0.007)} & \textbf{0.903 (0.007)} & \textbf{0.902 (0.007)} & \textbf{0.902 (0.008)} & \textbf{0.904 (0.008)} & \textbf{0.903 (0.01)}\\
+airfoil (1503) & \textbf{0.902 (0.007)} & \textbf{0.903 (0.007)} & \textbf{0.902 (0.007)} & \textbf{0.903 (0.007)} & \textbf{0.899 (0.007)} & \textbf{0.899 (0.007)} & \textbf{0.904 (0.009)}\\
+winered (1599) & \textbf{0.902 (0.006)} & \textbf{0.898 (0.005)} & \textbf{0.904 (0.006)} & \textbf{0.903 (0.006)} & \textbf{0.901 (0.006)} & \textbf{0.902 (0.006)} & \textbf{0.899 (0.009)}\\
+communities (1994) & \textbf{0.9 (0.006)} & \textbf{0.9 (0.006)} & \textbf{0.903 (0.005)} & \textbf{0.902 (0.006)} & \textbf{0.903 (0.006)} & \textbf{0.907 (0.005)} & \textbf{0.907 (0.008)}\\
+star $\times 10^2$ (2161) & \textbf{0.899 (0.006)} & \textbf{0.901 (0.006)} & \textbf{0.896 (0.005)} & \textbf{0.898 (0.005)} & \textbf{0.896 (0.004)} & \textbf{0.903 (0.005)} & \textbf{0.903 (0.007)}\\
+abalone (4177) & \textbf{0.899 (0.004)} & \textbf{0.9 (0.004)} & \textbf{0.901 (0.004)} & \textbf{0.899 (0.004)} & \textbf{0.899 (0.004)} & \textbf{0.9 (0.004)} & \textbf{0.9 (0.006)}\\
+winewhite (4898) & \textbf{0.902 (0.003)} & \textbf{0.903 (0.004)} & \textbf{0.903 (0.004)} & \textbf{0.902 (0.003)} & \textbf{0.902 (0.004)} & \textbf{0.904 (0.003)} & \textbf{0.903 (0.005)}\\
+cycle (9568) & \textbf{0.898 (0.003)} & \textbf{0.901 (0.002)} & \textbf{0.899 (0.003)} & \textbf{0.898 (0.003)} & \textbf{0.899 (0.003)} & \textbf{0.901 (0.002)} & \textbf{0.899 (0.004)}\\
+electric (10000) & \textbf{0.898 (0.002)} & \textbf{0.899 (0.002)} & \textbf{0.897 (0.003)} & \textbf{0.898 (0.003)} & \textbf{0.898 (0.003)} & \textbf{0.903 (0.003)} & \textbf{0.898 (0.004)}\\
+meps19 (15785) & \textbf{0.9 (0.002)} & \textbf{0.899 (0.002)} & \textbf{0.899 (0.002)} & \textbf{0.9 (0.002)} & \textbf{0.899 (0.002)} & \textbf{0.903 (0.002)} & \textbf{0.897 (0.003)}\\
+superconductivity (21263) & \textbf{0.903 (0.002)} & \textbf{0.902 (0.002)} & \textbf{0.901 (0.002)} & \textbf{0.901 (0.002)} & \textbf{0.901 (0.002)} & \textbf{0.902 (0.002)} & \textbf{0.902 (0.003)}\\
+homes (21613) & \textbf{0.901 (0.002)} & \textbf{0.901 (0.002)} & \textbf{0.901 (0.002)} & \textbf{0.901 (0.002)} & \textbf{0.902 (0.002)} & \textbf{0.903 (0.002)} & \textbf{0.901 (0.003)}\\
+protein (45730) & \textbf{0.9 (0.001)} & \textbf{0.9 (0.001)} & \textbf{0.9 (0.001)} & \textbf{0.9 (0.001)} & \textbf{0.9 (0.001)} & \textbf{0.9 (0.001)} & \textbf{0.898 (0.004)}\\
+WEC (54007) & \textbf{0.899 (0.001)} & \textbf{0.9 (0.001)} & \textbf{0.901 (0.001)} & \textbf{0.9 (0.001)} & \textbf{0.9 (0.001)} & \textbf{0.901 (0.001)} & \textbf{0.899 (0.004)}\\
+\hline
+\end{tabular}
+\end{tabular}
+\end{adjustbox}
+\end{document}

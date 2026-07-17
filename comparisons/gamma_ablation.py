@@ -33,7 +33,7 @@ DEFAULT_DATASETS = ["airfoil", "concrete", "winered", "winewhite"]
 HIGH_DIM_DATASETS = ["meps19"]
 
 QNN_HIDDEN_LAYERS = [128, 128, 64]
-QNN_DROPOUT_CREDO = 0.3
+QNN_DROPOUT_CREDO = 0.2
 
 
 def parse_float_grid(value):

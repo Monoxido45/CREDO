@@ -9,15 +9,18 @@ args = parser.parse_args()
 DATASET = args.dataset
 
 URL = {
+    "abalone": "https://archive.ics.uci.edu/ml/machine-learning-databases/abalone",
     "blog": "http://archive.ics.uci.edu/ml/machine-learning-databases/00304/",
     "protein": "http://archive.ics.uci.edu/ml/machine-learning-databases/00265/",
     "concrete": "http://archive.ics.uci.edu/ml/machine-learning-databases/concrete/compressive/",
+    "communities": "https://archive.ics.uci.edu/ml/machine-learning-databases/communities",
     "news": "http://archive.ics.uci.edu/ml/machine-learning-databases/00332/",
     "kernel": "http://archive.ics.uci.edu/ml/machine-learning-databases/00440/",
     "superconductivity": "http://archive.ics.uci.edu/ml/machine-learning-databases/00464/",
     "airfoil": "http://archive.ics.uci.edu/ml/machine-learning-databases/00291/",
     "electric": "http://archive.ics.uci.edu/ml/machine-learning-databases/00471/",
     "cycle": "http://archive.ics.uci.edu/ml/machine-learning-databases/00294/",
+    "qsar_fish_toxicity": "https://archive.ics.uci.edu/ml/machine-learning-databases/00504",
     "winered": "https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/",
     "winewhite": "https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/",
     "amazon": "https://www.kaggle.com/datasets/snap/amazon-fine-food-reviews",
@@ -26,15 +29,18 @@ URL = {
     "WEC": "http://archive.ics.uci.edu/dataset/882/large-scale+wave+energy+farm",
 }
 FILES = {
+    "abalone": ["abalone.data", "abalone.names"],
     "blog": ["BlogFeedback.zip"],
     "protein": ["CASP.csv"],
     "concrete": ["Concrete_Data.xls", "Concrete_Readme.txt"],
+    "communities": ["communities.data", "communities.names"],
     "news": ["OnlineNewsPopularity.zip"],
     "kernel": ["sgemm_product_dataset.zip"],
     "superconductivity": ["superconduct.zip"],
     "airfoil": ["airfoil_self_noise.dat"],
     "electric": ["Data_for_UCI_named.csv"],
     "cycle": ["CCPP.zip"],
+    "qsar_fish_toxicity": ["qsar_fish_toxicity.csv"],
     "winered": ["winequality-red.csv", "winequality.names"],
     "winewhite": ["winequality-white.csv", "winequality.names"],
     "WEC": [""],

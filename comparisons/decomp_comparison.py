@@ -25,7 +25,7 @@ os.chdir(original_path)
 
 parser = ArgumentParser()
 parser.add_argument("-alpha", "--alpha",type=float, default=0.1, help="miscoverage level for conformal prediction")
-parser.add_argument("-gamma","--gamma", type=float, default=0.1, help="adaptive gamma parameter")
+parser.add_argument("-gamma","--gamma", type=float, default=0.2, help="fixed CREDO gamma parameter")
 parser.add_argument("-n_rep", "--n_rep", type=int, default=30, help="number of repetitions for the experiment")
 parser.add_argument("-n_MCMC", "--n_MCMC", type=int, default=1000, help="number of MCMC samples")
 parser.add_argument("-seed_initial", "--seed_initial", type=int, default=125,
@@ -38,6 +38,9 @@ parser.add_argument("-kernel_noise", "--kernel_noise", type=str, default="RBF",
                     help="kernel to use for Gaussian Process noise in CREDO: 'RBF', 'Matern32', 'Matern52' or 'RationalQuadratic'")
 parser.add_argument("-activation_noise", "--activation_noise", type=str, default="softplus", 
                     help="activation function for noise in Gaussian Process")
+parser.add_argument("-gamma_max", "--gamma_max", type=float, default=0.9, help="maximum adaptive gamma value")
+parser.add_argument("-gamma_min", "--gamma_min", type=float, default=0.05, help="minimum adaptive gamma value")
+parser.add_argument("-tau_gamma", "--tau_gamma", type=float, default=1.0, help="temperature for the scarcity-to-gamma map")
 parser.add_argument("-outlier_detector", "--outlier_detector", choices=["lof", "isolation_forest"], default="lof")
 parser.add_argument("-outlier_contamination", "--outlier_contamination", type=float, default=0.05)
 parser.add_argument("-outlier_neighbors", "--outlier_neighbors", type=int, default=15)
@@ -60,6 +63,9 @@ n_cores = args.n_cores
 kernel = args.kernel
 kernel_noise = args.kernel_noise
 activation_noise = args.activation_noise
+gamma_max = args.gamma_max
+gamma_min = args.gamma_min
+tau_gamma = args.tau_gamma
 outlier_detector = args.outlier_detector
 outlier_contamination = args.outlier_contamination
 outlier_neighbors = args.outlier_neighbors
@@ -130,7 +136,7 @@ def fit_methods(
         step_size=5,
         gamma=0.99,
         hidden_layers=[64, 64],
-        dropout=0.3,
+        dropout=0.2,
         epochs=2000,
         patience=50,
         lr=1e-3, 
@@ -139,7 +145,14 @@ def fit_methods(
         random_seed_fit=i,
     )
 
-    credal_CP_qnn.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
+    credal_CP_qnn.calibrate(
+        X_calib,
+        y_calib,
+        N_samples_MC=n_MCMC,
+        gamma_max=gamma_max,
+        gamma_min=gamma_min,
+        tau=tau_gamma,
+    )
 
     print(f"Performing outlier detection with t-SNE and {outlier_detector}")
     outlier_indexes, most_inlier_idxs = select_outlier_inlier_indices(

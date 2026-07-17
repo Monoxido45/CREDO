@@ -1,7 +1,10 @@
 # Code for generating disentanglement result plots.
 from argparse import ArgumentParser
 from math import ceil
+import os
 from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-cache")
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,7 +18,7 @@ except ImportError:
 
 ROOT = Path.cwd()
 RESULTS_DIR = ROOT / "results"
-FIGURES_DIR = RESULTS_DIR / "figures"
+FIGURES_DIR = ROOT / "paper_results" / "figures"
 DEFAULT_DATASETS = QNN_DATASET_ORDER
 
 
