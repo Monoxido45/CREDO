@@ -208,6 +208,7 @@ def coverage_by_score_quantile(
     return coverages, counts, bin_edges
 
 
+
 ########## All CQR functions for toy examples ##########
 def _coerce_interval_predictions(predictions):
     if isinstance(predictions, np.ndarray):
