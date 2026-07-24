@@ -112,21 +112,29 @@ def prepare_axes(n_plots, figsize_per_panel=(4.5, 3.8), max_cols=4):
     return fig, axes.flatten(), n_rows, n_cols
 
 
+def display_dataset_name(name):
+    return name.replace("_", " ")
+
+
 def style_plot_fonts():
     plt.rcParams.update(
         {
-            "font.size": 14,
-            "axes.titlesize": 16,
-            "axes.labelsize": 14,
-            "xtick.labelsize": 13,
-            "ytick.labelsize": 13,
-            "legend.fontsize": 14,
+            "font.size": 19,
+            "axes.titlesize": 21,
+            "axes.labelsize": 20,
+            "xtick.labelsize": 18,
+            "ytick.labelsize": 18,
+            "legend.fontsize": 19,
         }
     )
 
 
 def plot_boxplots(data_boxplot, output_path=None, show=True, max_cols=4):
-    fig, axes, _, n_cols = prepare_axes(len(data_boxplot), max_cols=max_cols)
+    fig, axes, _, n_cols = prepare_axes(
+        len(data_boxplot),
+        figsize_per_panel=(5.65, 4.45),
+        max_cols=max_cols,
+    )
     colors = ["C0", "C1"]
     show_ytick_idxs = {idx for idx in range(0, len(data_boxplot), n_cols)}
 
@@ -142,7 +150,7 @@ def plot_boxplots(data_boxplot, output_path=None, show=True, max_cols=4):
         boxplot = ax.boxplot(
             data,
             vert=False,
-            tick_labels=["inlier", "outlier"],
+            tick_labels=["Inlier", "Outlier"],
             widths=0.6,
             patch_artist=True,
             showfliers=False,
@@ -156,19 +164,19 @@ def plot_boxplots(data_boxplot, output_path=None, show=True, max_cols=4):
             median.set_linewidth(1.6)
 
         ax.set_ylim(0.5, 2.5)
-        ax.set_title(name)
+        ax.set_title(display_dataset_name(name), pad=10)
         ax.grid(axis="x", linestyle="--", alpha=0.5)
         if i in show_ytick_idxs:
             ax.set_yticks([1, 2])
-            ax.set_yticklabels(["inlier", "outlier"])
+            ax.set_yticklabels(["Inlier", "Outlier"], fontsize=18)
         else:
             ax.set_yticks([])
 
     for ax in axes[len(data_boxplot) :]:
         ax.axis("off")
 
-    fig.text(0.5, 0.04, "Epistemic uncertainty", ha="center", va="center")
-    fig.tight_layout(rect=[0.02, 0.06, 1.0, 1.0])
+    fig.text(0.5, 0.035, "Epistemic uncertainty", ha="center", va="center", fontsize=22)
+    fig.tight_layout(rect=[0.02, 0.065, 1.0, 1.0])
     if output_path:
         fig.savefig(output_path, dpi=300, bbox_inches="tight")
     if show:
@@ -194,12 +202,12 @@ def plot_barplots(data_barplot, output_path=None, show=True, max_cols=4):
             ax.errorbar(pos, mean, yerr=se, fmt="none", ecolor="k", capsize=5)
 
         ax.set_xticks(positions)
-        ax.set_xticklabels(types)
+        ax.set_xticklabels([label.title() for label in types])
         if i < n_cols:
             ax.tick_params(axis="x", labelbottom=False)
         if i in show_ylabel_idxs:
             ax.set_ylabel("Epistemic uncertainty", rotation=90, labelpad=6)
-        ax.set_title(name)
+        ax.set_title(display_dataset_name(name))
 
     for ax in axes[len(data_barplot) :]:
         ax.axis("off")
