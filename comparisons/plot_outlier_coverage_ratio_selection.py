@@ -228,6 +228,7 @@ def plot_scatter(
     n_rep: int,
     target: float,
     extra_formats: bool,
+    save_scatter: bool,
 ) -> pd.DataFrame:
     panel_data = []
     selection_rows = []
@@ -242,6 +243,10 @@ def plot_scatter(
 
     if not panel_data:
         raise FileNotFoundError("No complete outlier coverage/ratio summaries found.")
+
+    selected = pd.concat(selection_rows, ignore_index=True)
+    if not save_scatter:
+        return selected
 
     n_cols = 4
     n_rows = math.ceil(len(panel_data) / n_cols)
@@ -348,7 +353,6 @@ def plot_scatter(
     pdf_path = FIGURES_DIR / f"outlier_coverage_ratio_selection{suffix}.pdf"
     fig.savefig(png_path, dpi=300, bbox_inches="tight")
 
-    selected = pd.concat(selection_rows, ignore_index=True)
     csv_path = FIGURES_DIR / f"outlier_coverage_ratio_selection{suffix}.csv"
     print(f"Saved {png_path}")
     if extra_formats:
@@ -453,6 +457,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-rep", type=int, default=50)
     parser.add_argument("--target", type=float, default=0.9)
     parser.add_argument("--extra-formats", action="store_true", help="Also save PDF and CSV outputs.")
+    parser.add_argument("--summary-only", action="store_true", help="Skip the scatter plot and save only the summary barplot.")
     return parser.parse_args()
 
 
@@ -466,6 +471,7 @@ def main() -> None:
         args.n_rep,
         args.target,
         args.extra_formats,
+        not args.summary_only,
     )
     plot_summary_barplot(selected, args.outlier_detector, args.target, args.extra_formats)
     print("\nSelected methods by dataset:")

@@ -21,6 +21,7 @@ Included tables:
 Included figures:
 
 - outlier coverage/ratio heatmaps and summary barplots
+- epistemic-uncertainty boxplots for inliers versus outliers, using LOF and Isolation Forest
 - scarcity-Q4 coverage/SMIS heatmap and summary barplot
 - fixed/adaptive gamma ablation curves
 

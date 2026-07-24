@@ -229,6 +229,7 @@ def parse_args():
     parser.add_argument("--outlier_detector", choices=["lof", "isolation_forest"], default="lof")
     parser.add_argument("--max_cols", type=int, default=4)
     parser.add_argument("--save_dir", type=Path, default=FIGURES_DIR)
+    parser.add_argument("--plots", choices=["both", "boxplots", "barplots"], default="both")
     parser.add_argument("--no_save", action="store_true")
     parser.add_argument("--no_show", action="store_true")
     return parser.parse_args()
@@ -269,18 +270,20 @@ def main():
         boxplot_path = args.save_dir / f"disentanglement_boxplots{suffix}.png"
         barplot_path = args.save_dir / f"disentanglement_barplots{suffix}.png"
 
-    plot_boxplots(
-        data_boxplot,
-        output_path=boxplot_path,
-        show=not args.no_show,
-        max_cols=args.max_cols,
-    )
-    plot_barplots(
-        data_barplot,
-        output_path=barplot_path,
-        show=not args.no_show,
-        max_cols=args.max_cols,
-    )
+    if args.plots in ["both", "boxplots"]:
+        plot_boxplots(
+            data_boxplot,
+            output_path=boxplot_path,
+            show=not args.no_show,
+            max_cols=args.max_cols,
+        )
+    if args.plots in ["both", "barplots"]:
+        plot_barplots(
+            data_barplot,
+            output_path=barplot_path,
+            show=not args.no_show,
+            max_cols=args.max_cols,
+        )
 
 
 if __name__ == "__main__":
