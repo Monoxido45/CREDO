@@ -74,6 +74,7 @@ METHOD_COLORS = {
     "UACQRP": "#56B4E9",
     "EPIC": "#6A3D9A",
 }
+EMPHASIZED_METHODS = {"CREDO", "CREDO adap."}
 
 
 def set_plot_style() -> None:
@@ -87,6 +88,12 @@ def set_plot_style() -> None:
             "legend.fontsize": 11.5,
         }
     )
+
+
+def emphasize_method_tick_labels(ax: plt.Axes) -> None:
+    for tick_label in [*ax.get_xticklabels(), *ax.get_yticklabels()]:
+        if tick_label.get_text() in EMPHASIZED_METHODS:
+            tick_label.set_fontweight("bold")
 
 
 def detector_suffix(outlier_detector: str) -> str:
@@ -410,6 +417,7 @@ def plot_summary_barplot(
 
     ax.set_xticks(x)
     ax.set_xticklabels(method_labels, rotation=25, ha="right", fontsize=13)
+    emphasize_method_tick_labels(ax)
     ax.set_ylabel("Number of datasets", fontsize=14)
     ax.set_ylim(0, max(15, int(coverage_counts.max()) + 2))
     ax.set_title(

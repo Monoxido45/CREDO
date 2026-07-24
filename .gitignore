@@ -22,3 +22,5 @@ src/credal_cp/__pycache__/
 /results/*ablation*
 /results/*cutoff*
 /results
+backups
+.vscode

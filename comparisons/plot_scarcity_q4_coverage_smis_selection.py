@@ -88,6 +88,7 @@ METHOD_COLORS = {
     "UACQRP": "#56B4E9",
     "EPIC": "#6A3D9A",
 }
+EMPHASIZED_METHODS = {"CREDO", "CREDO adap."}
 
 # Display SMIS values in dataset-specific units. A label "x10^4" means the
 # displayed value is the original SMIS divided by 10^4.
@@ -102,14 +103,20 @@ SMIS_SCALE_EXPONENTS = {
 def set_plot_style() -> None:
     plt.rcParams.update(
         {
-            "font.size": 13,
-            "axes.titlesize": 17,
-            "axes.labelsize": 16,
-            "xtick.labelsize": 12.2,
-            "ytick.labelsize": 14,
+            "font.size": 14,
+            "axes.titlesize": 19,
+            "axes.labelsize": 17,
+            "xtick.labelsize": 13.2,
+            "ytick.labelsize": 15,
             "legend.fontsize": 12.5,
         }
     )
+
+
+def emphasize_method_tick_labels(ax: plt.Axes) -> None:
+    for tick_label in [*ax.get_xticklabels(), *ax.get_yticklabels()]:
+        if tick_label.get_text() in EMPHASIZED_METHODS:
+            tick_label.set_fontweight("bold")
 
 
 def interval_intersects(
@@ -248,16 +255,18 @@ def draw_heatmap_panel(
     column_labels: list[str],
     row_labels: list[str],
     highlight_color: str,
+    show_ylabel: bool = True,
 ) -> None:
     cmap = ListedColormap(["#FFFFFF", highlight_color])
     ax.imshow(highlights.astype(int), cmap=cmap, vmin=0, vmax=1, aspect="auto")
-    ax.set_title(title, fontsize=18, pad=12, fontweight="bold")
+    ax.set_title(title, fontsize=19, pad=13, fontweight="bold")
     ax.set_xticks(np.arange(len(column_labels)))
     ax.set_xticklabels(column_labels, rotation=45, ha="right", rotation_mode="anchor")
     ax.set_yticks(np.arange(len(row_labels)))
     ax.set_yticklabels(row_labels)
-    ax.set_xlabel("Datasets", fontsize=16, labelpad=10)
-    ax.set_ylabel("Methods", fontsize=16, labelpad=10)
+    emphasize_method_tick_labels(ax)
+    ax.set_xlabel("Datasets", fontsize=17, labelpad=10)
+    ax.set_ylabel("Methods" if show_ylabel else "", fontsize=17, labelpad=10)
     ax.set_xticks(np.arange(-0.5, len(column_labels), 1), minor=True)
     ax.set_yticks(np.arange(-0.5, len(row_labels), 1), minor=True)
     ax.grid(which="minor", color="#555555", linestyle="-", linewidth=0.65, alpha=0.65)
@@ -272,7 +281,7 @@ def draw_heatmap_panel(
                 format_cell(values[row, col], half_widths[row, col]),
                 ha="center",
                 va="center",
-                fontsize=10.4,
+                fontsize=11.0,
                 color="black",
                 fontweight="bold" if highlights[row, col] else "normal",
                 linespacing=0.95,
@@ -325,7 +334,7 @@ def matrices(datasets: list[str], data: pd.DataFrame) -> dict[str, np.ndarray]:
 def plot_heatmap(datasets: list[str], data: pd.DataFrame, extra_formats: bool) -> None:
     method_labels = [label for _, label in METHODS]
     mats = matrices(datasets, data)
-    fig, axes = plt.subplots(1, 2, figsize=(22, 7.4), constrained_layout=False)
+    fig, axes = plt.subplots(1, 2, figsize=(23.5, 8.0), constrained_layout=False)
     draw_heatmap_panel(
         axes[0],
         mats["coverage_values"],
@@ -335,6 +344,7 @@ def plot_heatmap(datasets: list[str], data: pd.DataFrame, extra_formats: bool) -
         [dataset_label(dataset) for dataset in datasets],
         method_labels,
         "#D99AA5",
+        True,
     )
     draw_heatmap_panel(
         axes[1],
@@ -345,8 +355,9 @@ def plot_heatmap(datasets: list[str], data: pd.DataFrame, extra_formats: bool) -
         [dataset_label(dataset, include_smis_scale=True) for dataset in datasets],
         method_labels,
         "#74A9CF",
+        False,
     )
-    fig.tight_layout(rect=(0, 0.02, 1, 0.985), w_pad=2.2)
+    fig.tight_layout(rect=(0, 0.02, 1, 0.985), w_pad=1.5)
 
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     png_path = FIGURES_DIR / "scarcity_q4_coverage_smis_heatmap.png"
@@ -403,6 +414,7 @@ def plot_summary_barplot(datasets: list[str], data: pd.DataFrame, extra_formats:
 
     ax.set_xticks(x)
     ax.set_xticklabels(method_labels, rotation=25, ha="right", fontsize=13)
+    emphasize_method_tick_labels(ax)
     ax.set_ylabel("Number of datasets", fontsize=14)
     ax.set_ylim(0, max(denominator, int(coverage_counts.max()) + 2))
     ax.set_title("Scarcity-Q4 Coverage-Adjusted SMIS Summary", fontsize=17, fontweight="bold", pad=42)

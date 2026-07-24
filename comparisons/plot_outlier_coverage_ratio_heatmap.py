@@ -59,19 +59,26 @@ METHODS = [
     ("uacqrp", "UACQRP"),
     ("EPIC", "EPIC"),
 ]
+EMPHASIZED_METHODS = {"CREDO", "CREDO adap."}
 
 
 def set_plot_style() -> None:
     plt.rcParams.update(
         {
-            "font.size": 13,
-            "axes.titlesize": 17,
-            "axes.labelsize": 16,
-            "xtick.labelsize": 12.5,
-            "ytick.labelsize": 14,
+            "font.size": 14,
+            "axes.titlesize": 19,
+            "axes.labelsize": 17,
+            "xtick.labelsize": 13.2,
+            "ytick.labelsize": 15,
             "legend.fontsize": 12.5,
         }
     )
+
+
+def emphasize_method_tick_labels(ax: plt.Axes) -> None:
+    for tick_label in [*ax.get_xticklabels(), *ax.get_yticklabels()]:
+        if tick_label.get_text() in EMPHASIZED_METHODS:
+            tick_label.set_fontweight("bold")
 
 
 def detector_suffix(outlier_detector: str) -> str:
@@ -200,13 +207,14 @@ def draw_heatmap_panel(
     cmap = ListedColormap(["#FFFFFF", highlight_color])
     ax.imshow(highlights.astype(int), cmap=cmap, vmin=0, vmax=1, aspect="auto")
 
-    ax.set_title(title, fontsize=18, pad=12, fontweight="bold")
+    ax.set_title(title, fontsize=19, pad=13, fontweight="bold")
     ax.set_xticks(np.arange(len(column_labels)))
     ax.set_xticklabels(column_labels, rotation=45, ha="right", rotation_mode="anchor")
     ax.set_yticks(np.arange(len(row_labels)))
     ax.set_yticklabels(row_labels)
-    ax.set_xlabel(xlabel, fontsize=16, labelpad=10)
-    ax.set_ylabel(ylabel, fontsize=16, labelpad=10)
+    emphasize_method_tick_labels(ax)
+    ax.set_xlabel(xlabel, fontsize=17, labelpad=10)
+    ax.set_ylabel(ylabel, fontsize=17, labelpad=10)
 
     ax.set_xticks(np.arange(-0.5, len(column_labels), 1), minor=True)
     ax.set_yticks(np.arange(-0.5, len(row_labels), 1), minor=True)
@@ -222,7 +230,7 @@ def draw_heatmap_panel(
                 format_cell(values[row, col], half_widths[row, col]),
                 ha="center",
                 va="center",
-                fontsize=10.4,
+                fontsize=11.0,
                 color="black",
                 fontweight="bold" if highlights[row, col] else "normal",
                 linespacing=0.95,
@@ -309,7 +317,7 @@ def plot_heatmap(
             ),
         ]
     else:
-        fig, axes = plt.subplots(1, 2, figsize=(22, 7.4), constrained_layout=False)
+        fig, axes = plt.subplots(1, 2, figsize=(23.5, 8.0), constrained_layout=False)
         panel_specs = [
             (
                 axes[0],
@@ -332,7 +340,7 @@ def plot_heatmap(
                 datasets,
                 method_labels,
                 "Datasets",
-                "Methods",
+                "",
                 ratio_color,
             ),
         ]
@@ -340,7 +348,7 @@ def plot_heatmap(
     for spec in panel_specs:
         draw_heatmap_panel(*spec)
 
-    fig.tight_layout(rect=(0, 0.02, 1, 0.985), w_pad=2.2)
+    fig.tight_layout(rect=(0, 0.02, 1, 0.985), w_pad=1.5)
 
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     suffix = detector_suffix(outlier_detector) or "_lof"
