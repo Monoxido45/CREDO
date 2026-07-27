@@ -235,7 +235,7 @@ def parse_args():
     )
     parser.add_argument("--n_rep", type=int, default=30)
     parser.add_argument("--outlier_detector", choices=["lof", "isolation_forest"], default="lof")
-    parser.add_argument("--max_cols", type=int, default=4)
+    parser.add_argument("--max_cols", type=int, default=5)
     parser.add_argument("--save_dir", type=Path, default=FIGURES_DIR)
     parser.add_argument("--plots", choices=["both", "boxplots", "barplots"], default="both")
     parser.add_argument("--no_save", action="store_true")
