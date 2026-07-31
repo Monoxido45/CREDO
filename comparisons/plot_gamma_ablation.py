@@ -25,6 +25,10 @@ METRICS = [
     ("outlier_coverage", "Outlier coverage"),
     ("outlier_inlier_ratio", "Outlier/inlier ratio"),
 ]
+TITLE_FONTSIZE = 18
+LABEL_FONTSIZE = 17
+TICK_FONTSIZE = 14
+LEGEND_FONTSIZE = 15
 
 
 def format_gamma(value):
@@ -81,7 +85,7 @@ def plot_fixed(datasets):
     fig, axes = plt.subplots(
         len(METRICS),
         len(summaries),
-        figsize=(4.2 * len(summaries), 8.5),
+        figsize=(4.9 * len(summaries), 9.8),
         sharex=False,
     )
     if len(summaries) == 1:
@@ -127,12 +131,13 @@ def plot_fixed(datasets):
             ax.set_xticklabels([format_gamma(value) for value in x_values], rotation=30, ha="right")
             ax.set_xlim(-0.35, len(x_positions) - 0.65)
             ax.grid(True, alpha=0.25)
+            ax.tick_params(axis="both", labelsize=TICK_FONTSIZE)
             if row_idx == 0:
-                ax.set_title(dataset)
+                ax.set_title(dataset, fontsize=TITLE_FONTSIZE)
             if col == 0:
-                ax.set_ylabel(label)
+                ax.set_ylabel(label, fontsize=LABEL_FONTSIZE)
             if row_idx == len(METRICS) - 1:
-                ax.set_xlabel(r"Fixed $\gamma$")
+                ax.set_xlabel(r"Fixed trimming level $\gamma$", fontsize=LABEL_FONTSIZE)
 
     handles = [
         Line2D([0], [0], color="C0", linewidth=2, marker="o"),
@@ -158,9 +163,12 @@ def plot_fixed(datasets):
         loc="upper center",
         ncol=2,
         frameon=False,
-        bbox_to_anchor=(0.5, 1.04),
+        bbox_to_anchor=(0.5, 1.005),
+        fontsize=LEGEND_FONTSIZE,
+        handlelength=2.2,
     )
-    finish_figure(fig, f"gamma_fixed_ablation_curves_{dataset_suffix(list(summaries.keys()))}")
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    finish_figure(fig, f"gamma_fixed_ablation_curves_{dataset_suffix(list(summaries.keys()))}", tight_layout=False)
 
 
 def plot_adaptive(datasets):
@@ -172,7 +180,7 @@ def plot_adaptive(datasets):
     fig, axes = plt.subplots(
         len(METRICS),
         len(summaries),
-        figsize=(4.6 * len(summaries), 8.5),
+        figsize=(5.2 * len(summaries), 9.8),
         sharex=False,
     )
     if len(summaries) == 1:
@@ -253,12 +261,13 @@ def plot_adaptive(datasets):
                     zorder=1,
                 )
             ax.grid(True, alpha=0.25)
+            ax.tick_params(axis="both", labelsize=TICK_FONTSIZE)
             if row_idx == 0:
-                ax.set_title(dataset)
+                ax.set_title(dataset, fontsize=TITLE_FONTSIZE)
             if col == 0:
-                ax.set_ylabel(label)
+                ax.set_ylabel(label, fontsize=LABEL_FONTSIZE)
             if row_idx == len(METRICS) - 1:
-                ax.set_xlabel(r"$\tau_\gamma$")
+                ax.set_xlabel(r"Temperature $\tau_\gamma$", fontsize=LABEL_FONTSIZE)
 
     handles = [
         Line2D(
@@ -311,11 +320,14 @@ def plot_adaptive(datasets):
         handles,
         labels,
         loc="upper center",
-        ncol=min(5, len(handles)),
+        ncol=4,
         frameon=False,
-        bbox_to_anchor=(0.5, 1.08),
+        bbox_to_anchor=(0.5, 1.01),
+        fontsize=LEGEND_FONTSIZE,
+        handlelength=2.2,
     )
-    finish_figure(fig, f"gamma_adaptive_ablation_curves_{dataset_suffix(list(summaries.keys()))}")
+    fig.tight_layout(rect=[0, 0, 1, 0.935])
+    finish_figure(fig, f"gamma_adaptive_ablation_curves_{dataset_suffix(list(summaries.keys()))}", tight_layout=False)
 
 
 def draw_default_cell(ax, x_values, y_values, tau):
