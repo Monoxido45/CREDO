@@ -133,6 +133,7 @@ class CredalCPRegressor(BaseEstimator):
             kernel = None,
             heuristic_gamma = "log",
             k = None,
+            dropout_during_fit = True,
             **fit_params):
         self.nn_type = nn_type
         if self.base_is_sklearn and not self.base_is_fitted:
@@ -216,6 +217,7 @@ class CredalCPRegressor(BaseEstimator):
                     patience=patience,
                     split_random_state=random_seed_split,
                     fit_random_state=random_seed_fit,
+                    dropout_during_fit=dropout_during_fit,
                 )
                 self.base_is_fitted = True
             

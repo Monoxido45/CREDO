@@ -1,8 +1,8 @@
 #!/bin/bash
 
-N_REP=30
+N_REP=50
 GAMMA=0.2
-GAMMA_MIN=0.05
+GAMMA_MIN=0.1
 GAMMA_MAX=0.9
 TAU_GAMMA=1.0
 OUTLIER_DETECTOR="lof"
@@ -55,16 +55,16 @@ while [[ $# -gt 0 ]]; do
             IFOREST_MAX_SAMPLES="$2"
             shift 2
             ;;
-        --iforest-max-features)
+            --iforest-max-features)
             IFOREST_MAX_FEATURES="$2"
             shift 2
             ;;
         --help|-h)
             echo "Usage: $0 [options] dataset1 [dataset2 ...]"
             echo "Options:"
-            echo "  --n-rep N                         Number of repetitions (default: 30)"
+            echo "  --n-rep N                         Number of repetitions (default: 50)"
             echo "  --gamma VALUE                     Fixed CREDO gamma (default: 0.2)"
-            echo "  --gamma-min VALUE                 Adaptive CREDO gamma_min (default: 0.05)"
+            echo "  --gamma-min VALUE                 Adaptive CREDO gamma_min (default: 0.1)"
             echo "  --gamma-max VALUE                 Adaptive CREDO gamma_max (default: 0.9)"
             echo "  --tau-gamma VALUE                 Adaptive CREDO tau_gamma (default: 1.0)"
             echo "  --outlier-detector METHOD         lof or isolation_forest (default: lof)"
@@ -97,6 +97,7 @@ fi
 
 # 8 blocks of 4 cores
 CORES=("0-3" "4-7" "8-11" "12-15" "16-19" "20-23" "24-27" "28-31")
+PIDS=()
 
 for i in "${!DATASETS[@]}"; do
     CORE_IDX=$((i % 8))
@@ -114,6 +115,8 @@ for i in "${!DATASETS[@]}"; do
     export MKL_NUM_THREADS=4
     export VECLIB_MAX_THREADS=4  # For some versions of Torch/NumPy
     export NUMEXPR_NUM_THREADS=4
+    export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib-cache}"
+    mkdir -p "$MPLCONFIGDIR"
     
     # taskset -c defines CPU affinity
     # The '&' at the end sends the process to the background to run in parallel
@@ -125,13 +128,17 @@ for i in "${!DATASETS[@]}"; do
         -gamma_max "$GAMMA_MAX" \
         -tau_gamma "$TAU_GAMMA" \
         -outlier_detector "$OUTLIER_DETECTOR" \
+        -credo_dropout_training False \
         -outlier_contamination "$OUTLIER_CONTAMINATION" \
         -inlier_size "$INLIER_SIZE" \
         -iforest_n_estimators "$IFOREST_N_ESTIMATORS" \
         -iforest_max_samples "$IFOREST_MAX_SAMPLES" \
         -iforest_max_features "$IFOREST_MAX_FEATURES" > "$LOG_FILE" 2>&1 &
+    PIDS+=("$!")
     
     echo "Process for $DATASET sent to the background (see $LOG_FILE)"
 done
 
-echo "All processes have been started. Use 'htop' to monitor the cores."
+echo "All processes have been started. Waiting for completion..."
+wait "${PIDS[@]}"
+echo "All disentanglement processes have finished."

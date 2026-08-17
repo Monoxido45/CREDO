@@ -39,6 +39,17 @@ METHODS = {
 }
 
 
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    value = value.lower()
+    if value in ("yes", "true", "t", "1", "y"):
+        return True
+    if value in ("no", "false", "f", "0", "n"):
+        return False
+    raise ValueError("Boolean value expected.")
+
+
 def generate_seeds(seed_initial, n_rep):
     np.random.seed(seed_initial)
     return np.random.randint(0, 2**31 - 1, size=n_rep)
@@ -99,6 +110,7 @@ def fit_credo_qnn(
     patience,
     step_size,
     verbose,
+    dropout_during_fit=False,
 ):
     model = CredalCPRegressor(
         nc_type="Quantile",
@@ -115,6 +127,7 @@ def fit_credo_qnn(
         gamma=0.99,
         hidden_layers=QNN_HIDDEN_LAYERS,
         dropout=QNN_DROPOUT_CREDO,
+        dropout_during_fit=dropout_during_fit,
         epochs=epochs,
         patience=patience,
         lr=1e-3,
@@ -252,6 +265,7 @@ def run_dataset(dataset, args, seeds):
                 patience=args.patience,
                 step_size=args.step_size,
                 verbose=args.verbose,
+                dropout_during_fit=args.credo_dropout_training,
             )
             model.calibrate(
                 X_calib,
@@ -300,6 +314,7 @@ def run_dataset(dataset, args, seeds):
         "run_config": {
             "qnn_hidden_layers": QNN_HIDDEN_LAYERS,
             "qnn_dropout_credo": QNN_DROPOUT_CREDO,
+            "qnn_dropout_during_fit": args.credo_dropout_training,
             "weight_decay": 1e-6,
             "step_size": args.step_size,
             "scheduler_gamma": 0.99,
@@ -329,7 +344,7 @@ def parse_args():
     parser.add_argument("--gamma_min", type=float, default=0.05)
     parser.add_argument("--gamma_max", type=float, default=0.9)
     parser.add_argument("--tau_gamma", type=float, default=1.0)
-    parser.add_argument("--n_rep", type=int, default=30)
+    parser.add_argument("--n_rep", type=int, default=50)
     parser.add_argument("--n_mcmc", type=int, default=1000)
     parser.add_argument("--n_predict_samples", type=int, default=500)
     parser.add_argument("--seed_initial", type=int, default=125)
@@ -342,6 +357,12 @@ def parse_args():
     parser.add_argument("--step_size", type=int, default=10)
     parser.add_argument("--verbose", type=int, default=0)
     parser.add_argument("--eps", type=float, default=1e-8)
+    parser.add_argument(
+        "--credo_dropout_training",
+        type=str2bool,
+        default=False,
+        help="keep QNN dropout active during fitting; default False, while MC-dropout remains active for the envelope",
+    )
     return parser.parse_args()
 
 

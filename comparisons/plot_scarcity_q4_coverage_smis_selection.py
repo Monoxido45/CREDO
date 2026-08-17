@@ -135,12 +135,19 @@ def interval_distance_to_target(low: float, high: float, target: float) -> float
     return min(abs(low - target), abs(high - target))
 
 
-def metric_path(dataset: str, model: str, metric: str) -> Path:
-    return RESULTS_DIR / f"{dataset}_{model}_summary" / f"{dataset}_{metric}_summary.csv"
+def metric_path(dataset: str, model: str, metric: str, suffix: str = "") -> Path:
+    return RESULTS_DIR / f"{dataset}_{model}_summary" / f"{dataset}_{metric}{suffix}_summary.csv"
 
 
-def read_dataset(dataset: str, model: str, n_rep: int, target: float) -> pd.DataFrame | None:
-    coverage_path = metric_path(dataset, model, "scarcity_coverage")
+def read_dataset(
+    dataset: str,
+    model: str,
+    n_rep: int,
+    target: float,
+    scarcity_method: str,
+) -> pd.DataFrame | None:
+    scarcity_suffix = "" if scarcity_method == "knn" else "_isolation_forest"
+    coverage_path = metric_path(dataset, model, "scarcity_coverage", scarcity_suffix)
     smis_path = metric_path(dataset, model, "isl")
     if not coverage_path.exists() or not smis_path.exists():
         return None
@@ -288,11 +295,17 @@ def draw_heatmap_panel(
             )
 
 
-def collect_data(datasets: list[str], model: str, n_rep: int, target: float) -> tuple[list[str], pd.DataFrame]:
+def collect_data(
+    datasets: list[str],
+    model: str,
+    n_rep: int,
+    target: float,
+    scarcity_method: str,
+) -> tuple[list[str], pd.DataFrame]:
     rows = []
     valid_datasets = []
     for dataset in datasets:
-        data = read_dataset(dataset, model, n_rep, target)
+        data = read_dataset(dataset, model, n_rep, target, scarcity_method)
         if data is None:
             continue
         rows.append(data)
@@ -331,7 +344,12 @@ def matrices(datasets: list[str], data: pd.DataFrame) -> dict[str, np.ndarray]:
     return output
 
 
-def plot_heatmap(datasets: list[str], data: pd.DataFrame, extra_formats: bool) -> None:
+def plot_heatmap(
+    datasets: list[str],
+    data: pd.DataFrame,
+    extra_formats: bool,
+    scarcity_method: str,
+) -> None:
     method_labels = [label for _, label in METHODS]
     mats = matrices(datasets, data)
     fig, axes = plt.subplots(1, 2, figsize=(23.5, 8.0), constrained_layout=False)
@@ -340,7 +358,7 @@ def plot_heatmap(datasets: list[str], data: pd.DataFrame, extra_formats: bool) -
         mats["coverage_values"],
         mats["coverage_hw"],
         mats["coverage_highlight"],
-        "Scarcity-Q4 Coverage",
+        f"Scarcity-Q4 Coverage ({'KNN' if scarcity_method == 'knn' else 'Isolation Forest'})",
         [dataset_label(dataset) for dataset in datasets],
         method_labels,
         "#D99AA5",
@@ -360,9 +378,10 @@ def plot_heatmap(datasets: list[str], data: pd.DataFrame, extra_formats: bool) -
     fig.tight_layout(rect=(0, 0.02, 1, 0.985), w_pad=1.5)
 
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
-    png_path = FIGURES_DIR / "scarcity_q4_coverage_smis_heatmap.png"
-    pdf_path = FIGURES_DIR / "scarcity_q4_coverage_smis_heatmap.pdf"
-    csv_path = FIGURES_DIR / "scarcity_q4_coverage_smis_heatmap.csv"
+    suffix = "" if scarcity_method == "knn" else "_isolation_forest"
+    png_path = FIGURES_DIR / f"scarcity_q4_coverage_smis_heatmap{suffix}.png"
+    pdf_path = FIGURES_DIR / f"scarcity_q4_coverage_smis_heatmap{suffix}.pdf"
+    csv_path = FIGURES_DIR / f"scarcity_q4_coverage_smis_heatmap{suffix}.csv"
     fig.savefig(png_path, dpi=300, bbox_inches="tight")
     print(f"Saved {png_path}")
     if extra_formats:
@@ -373,7 +392,12 @@ def plot_heatmap(datasets: list[str], data: pd.DataFrame, extra_formats: bool) -
     plt.close(fig)
 
 
-def plot_summary_barplot(datasets: list[str], data: pd.DataFrame, extra_formats: bool) -> None:
+def plot_summary_barplot(
+    datasets: list[str],
+    data: pd.DataFrame,
+    extra_formats: bool,
+    scarcity_method: str,
+) -> None:
     method_labels = [label for _, label in METHODS]
     coverage_counts = (
         data.loc[data["coverage_eligible"]]
@@ -417,7 +441,13 @@ def plot_summary_barplot(datasets: list[str], data: pd.DataFrame, extra_formats:
     emphasize_method_tick_labels(ax)
     ax.set_ylabel("Number of datasets", fontsize=14)
     ax.set_ylim(0, max(denominator, int(coverage_counts.max()) + 2))
-    ax.set_title("Scarcity-Q4 Coverage-Adjusted SMIS Summary", fontsize=17, fontweight="bold", pad=42)
+    method_label = "KNN" if scarcity_method == "knn" else "Isolation Forest"
+    ax.set_title(
+        f"Scarcity-Q4 Coverage-Adjusted SMIS Summary ({method_label})",
+        fontsize=17,
+        fontweight="bold",
+        pad=42,
+    )
     ax.grid(axis="y", alpha=0.22)
     ax.legend(
         frameon=False,
@@ -435,9 +465,10 @@ def plot_summary_barplot(datasets: list[str], data: pd.DataFrame, extra_formats:
             "selected_datasets": selected_counts.to_numpy(),
         }
     )
-    png_path = FIGURES_DIR / "scarcity_q4_coverage_smis_summary.png"
-    pdf_path = FIGURES_DIR / "scarcity_q4_coverage_smis_summary.pdf"
-    csv_path = FIGURES_DIR / "scarcity_q4_coverage_smis_summary.csv"
+    suffix = "" if scarcity_method == "knn" else "_isolation_forest"
+    png_path = FIGURES_DIR / f"scarcity_q4_coverage_smis_summary{suffix}.png"
+    pdf_path = FIGURES_DIR / f"scarcity_q4_coverage_smis_summary{suffix}.pdf"
+    csv_path = FIGURES_DIR / f"scarcity_q4_coverage_smis_summary{suffix}.csv"
     fig.savefig(png_path, dpi=300, bbox_inches="tight")
     print(f"Saved {png_path}")
     if extra_formats:
@@ -454,6 +485,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="qnn")
     parser.add_argument("--n-rep", type=int, default=50)
     parser.add_argument("--target", type=float, default=0.9)
+    parser.add_argument(
+        "--scarcity-method",
+        choices=["knn", "isolation_forest"],
+        default="knn",
+        help="Scarcity score used for the Q4 coverage panel.",
+    )
     parser.add_argument("--extra-formats", action="store_true", help="Also save PDF and CSV outputs.")
     return parser.parse_args()
 
@@ -461,9 +498,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     set_plot_style()
     args = parse_args()
-    datasets, data = collect_data(args.datasets, args.model, args.n_rep, args.target)
-    plot_heatmap(datasets, data, args.extra_formats)
-    plot_summary_barplot(datasets, data, args.extra_formats)
+    datasets, data = collect_data(
+        args.datasets,
+        args.model,
+        args.n_rep,
+        args.target,
+        args.scarcity_method,
+    )
+    plot_heatmap(datasets, data, args.extra_formats, args.scarcity_method)
+    plot_summary_barplot(datasets, data, args.extra_formats, args.scarcity_method)
     print("\nSelected methods by dataset:")
     for dataset, dataset_data in data.groupby("dataset", sort=False):
         labels = ", ".join(dataset_data.loc[dataset_data["selected"], "label"].tolist())

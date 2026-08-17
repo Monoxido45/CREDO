@@ -24,3 +24,5 @@ src/credal_cp/__pycache__/
 /results
 backups
 .vscode
+old_results/
+logs

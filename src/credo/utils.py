@@ -1,18 +1,27 @@
 import numpy as np
 from sklearn.base import BaseEstimator
+from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 
 # Interval score loss
-def interval_score_loss(high_est, low_est, actual, alpha):
+def interval_score_components(high_est, low_est, actual, alpha):
+    """Return width, lower-tail miss, and upper-tail miss contributions."""
     high_est = np.asarray(high_est).reshape(-1)
     low_est = np.asarray(low_est).reshape(-1)
     actual = np.asarray(actual).reshape(-1)
+    width = high_est - low_est
+    lower_miss = 2 / alpha * (low_est - actual) * (actual < low_est)
+    upper_miss = 2 / alpha * (actual - high_est) * (actual > high_est)
+    return width, lower_miss, upper_miss
+
+
+def interval_score_loss(high_est, low_est, actual, alpha):
+    width, lower_miss, upper_miss = interval_score_components(
+        high_est, low_est, actual, alpha
+    )
     return (
-        high_est
-        - low_est
-        + 2 / alpha * (low_est - actual) * (actual < low_est)
-        + 2 / alpha * (actual - high_est) * (actual > high_est)
+        width + lower_miss + upper_miss
     )
 
 def average_interval_score_loss(high_est, low_est, actual, alpha):
@@ -53,82 +62,6 @@ def average_coverage(high_est, low_est, actual):
     return np.mean(coverage_indicators(high_est, low_est, actual))
 
 
-def _min_average_subarray_at_least(values, min_count, tol=1e-6, max_iter=40):
-    low = float(np.min(values))
-    high = float(np.max(values))
-    for _ in range(max_iter):
-        mid = (low + high) / 2
-        transformed = values - mid
-        prefix = np.concatenate([[0.0], np.cumsum(transformed)])
-        max_prefix = prefix[0]
-        has_average_below_mid = False
-        for end in range(min_count, values.shape[0] + 1):
-            max_prefix = max(max_prefix, prefix[end - min_count])
-            if prefix[end] - max_prefix <= 0:
-                has_average_below_mid = True
-                break
-        if has_average_below_mid:
-            high = mid
-        else:
-            low = mid
-        if high - low <= tol:
-            break
-    return high
-
-
-def worst_slab_coverage(
-    X,
-    high_est,
-    low_est,
-    actual,
-    n_directions=100,
-    min_fraction=0.1,
-    random_state=0,
-    include_axes=False,
-):
-    """Random-projection approximation to worst-slab coverage."""
-    X = np.asarray(X)
-    if X.ndim == 1:
-        X = X.reshape(-1, 1)
-    covered = coverage_indicators(high_est, low_est, actual).astype(float)
-    n, d = X.shape
-    if covered.shape[0] != n:
-        raise ValueError("X and interval arrays must have the same number of rows")
-
-    if n == 0 or d == 0:
-        return np.nan
-
-    min_count = int(np.ceil(min_fraction * n))
-    min_count = max(1, min(min_count, n))
-
-    X_scaled = StandardScaler().fit_transform(X)
-    directions = []
-    if include_axes:
-        directions.append(np.eye(d))
-
-    n_random = max(0, int(n_directions))
-    if n_random > 0:
-        rng = np.random.default_rng(random_state)
-        random_dirs = rng.normal(size=(n_random, d))
-        norms = np.linalg.norm(random_dirs, axis=1, keepdims=True)
-        random_dirs = random_dirs / np.maximum(norms, 1e-12)
-        directions.append(random_dirs)
-
-    if not directions:
-        directions.append(np.eye(d))
-    directions = np.vstack(directions)
-
-    worst_coverage = np.inf
-    for direction in directions:
-        projected = X_scaled @ direction
-        order = np.argsort(projected)
-        covered_sorted = covered[order]
-        slab_coverage = _min_average_subarray_at_least(covered_sorted, min_count)
-        worst_coverage = min(worst_coverage, slab_coverage)
-
-    return worst_coverage
-
-
 def scarcity_scores_knn(
     X_reference,
     X_query,
@@ -164,6 +97,65 @@ def scarcity_scores_knn(
     nn.fit(X_reference_scaled)
     distances, _ = nn.kneighbors(X_query_scaled)
     score = distances[:, -1]
+    return score / (np.median(score) + eps)
+
+
+def scarcity_scores_isolation_forest(
+    X_reference,
+    X_query,
+    n_estimators=200,
+    max_samples="auto",
+    max_features=1.0,
+    bootstrap=False,
+    random_state=None,
+    eps=1e-8,
+):
+    """Estimate covariate scarcity from an Isolation Forest fitted on reference data.
+
+    The returned score is larger for observations that are easier to isolate.
+    The forest is fitted only on ``X_reference`` (the training covariates), so
+    the test-set scarcity ranking does not use test-set labels or detector
+    assignments. ``score_samples`` is used instead of ``decision_function`` so
+    the score remains a continuous support diagnostic rather than a thresholded
+    outlier decision.
+    """
+    X_reference = np.asarray(X_reference)
+    X_query = np.asarray(X_query)
+    if X_reference.ndim == 1:
+        X_reference = X_reference.reshape(-1, 1)
+    if X_query.ndim == 1:
+        X_query = X_query.reshape(-1, 1)
+
+    if X_reference.shape[0] == 0 or X_query.shape[0] == 0:
+        return np.full(X_query.shape[0], np.nan)
+
+    if max_samples != "auto":
+        try:
+            numeric_max_samples = float(max_samples)
+        except (TypeError, ValueError):
+            numeric_max_samples = max_samples
+        if isinstance(numeric_max_samples, float) and numeric_max_samples.is_integer():
+            max_samples = int(numeric_max_samples)
+        else:
+            max_samples = numeric_max_samples
+
+    scaler = StandardScaler()
+    X_reference_scaled = scaler.fit_transform(X_reference)
+    X_query_scaled = scaler.transform(X_query)
+
+    detector = IsolationForest(
+        n_estimators=int(n_estimators),
+        max_samples=max_samples,
+        max_features=float(max_features),
+        bootstrap=bool(bootstrap),
+        random_state=random_state,
+        n_jobs=-1,
+    )
+    detector.fit(X_reference_scaled)
+
+    # Isolation Forest assigns lower score_samples values to more isolated
+    # points; negate them so that larger values consistently mean more scarce.
+    score = -detector.score_samples(X_query_scaled)
     return score / (np.median(score) + eps)
 
 
@@ -606,4 +598,3 @@ class AdaptiveGammaCQR(BaseEstimator):
 
         self.gamma_test_ = gamma_values
         return np.column_stack((lower_bound, upper_bound))
-    

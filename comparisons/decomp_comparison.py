@@ -24,9 +24,22 @@ from outlier_detection import detector_suffix, select_outlier_inlier_indices
 os.chdir(original_path)
 
 parser = ArgumentParser()
+
+
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    value = value.lower()
+    if value in ("yes", "true", "t", "1", "y"):
+        return True
+    if value in ("no", "false", "f", "0", "n"):
+        return False
+    raise ValueError("Boolean value expected.")
+
+
 parser.add_argument("-alpha", "--alpha",type=float, default=0.1, help="miscoverage level for conformal prediction")
 parser.add_argument("-gamma","--gamma", type=float, default=0.2, help="fixed CREDO gamma parameter")
-parser.add_argument("-n_rep", "--n_rep", type=int, default=30, help="number of repetitions for the experiment")
+parser.add_argument("-n_rep", "--n_rep", type=int, default=50, help="number of repetitions for the experiment")
 parser.add_argument("-n_MCMC", "--n_MCMC", type=int, default=1000, help="number of MCMC samples")
 parser.add_argument("-seed_initial", "--seed_initial", type=int, default=125,
                      help="initial seed for random generator to create seeds for repetitions")
@@ -39,7 +52,7 @@ parser.add_argument("-kernel_noise", "--kernel_noise", type=str, default="RBF",
 parser.add_argument("-activation_noise", "--activation_noise", type=str, default="softplus", 
                     help="activation function for noise in Gaussian Process")
 parser.add_argument("-gamma_max", "--gamma_max", type=float, default=0.9, help="maximum adaptive gamma value")
-parser.add_argument("-gamma_min", "--gamma_min", type=float, default=0.05, help="minimum adaptive gamma value")
+parser.add_argument("-gamma_min", "--gamma_min", type=float, default=0.1, help="minimum adaptive gamma value")
 parser.add_argument("-tau_gamma", "--tau_gamma", type=float, default=1.0, help="temperature for the scarcity-to-gamma map")
 parser.add_argument("-outlier_detector", "--outlier_detector", choices=["lof", "isolation_forest"], default="lof")
 parser.add_argument("-outlier_contamination", "--outlier_contamination", type=float, default=0.05)
@@ -51,6 +64,13 @@ parser.add_argument("-iforest_n_estimators", "--iforest_n_estimators", type=int,
 parser.add_argument("-iforest_max_samples", "--iforest_max_samples", default="auto")
 parser.add_argument("-iforest_max_features", "--iforest_max_features", type=float, default=1.0)
 parser.add_argument("-iforest_bootstrap", "--iforest_bootstrap", action="store_true")
+parser.add_argument(
+    "-credo_dropout_training",
+    "--credo_dropout_training",
+    type=str2bool,
+    default=False,
+    help="keep dropout active while fitting the QNN; default False, with MC-dropout retained for the envelope",
+)
 args = parser.parse_args()
 
 alpha = args.alpha
@@ -76,6 +96,7 @@ iforest_n_estimators = args.iforest_n_estimators
 iforest_max_samples = args.iforest_max_samples
 iforest_max_features = args.iforest_max_features
 iforest_bootstrap = args.iforest_bootstrap
+credo_dropout_training = args.credo_dropout_training
 
 DISENTANGLEMENT_INLIER_SIZE = 0.2
 
@@ -135,8 +156,9 @@ def fit_methods(
         weight_decay=1e-6,
         step_size=5,
         gamma=0.99,
-        hidden_layers=[64, 64],
-        dropout=0.2,
+        hidden_layers=[64, 64, 32],
+        dropout=0.1,
+        dropout_during_fit=credo_dropout_training,
         epochs=2000,
         patience=50,
         lr=1e-3, 
@@ -302,6 +324,7 @@ def run_experiment(dataset,
                     "inlier_size": inlier_size,
                     "outlier_detector": outlier_detector,
                     "contamination": contamination,
+                    "credo_dropout_training": credo_dropout_training,
                 }
                 chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
                 os.makedirs(chk_dir, exist_ok=True)
@@ -447,13 +470,19 @@ if __name__ == "__main__":
                 checkpoint_data = pickle.load(f)
             checkpoint_inlier_size = checkpoint_data.get("inlier_size")
             checkpoint_detector = checkpoint_data.get("outlier_detector", "lof")
-            if checkpoint_inlier_size != inlier_size_arg or checkpoint_detector != outlier_detector:
+            checkpoint_dropout_training = checkpoint_data.get("credo_dropout_training")
+            if (
+                checkpoint_inlier_size != inlier_size_arg
+                or checkpoint_detector != outlier_detector
+                or checkpoint_dropout_training != credo_dropout_training
+            ):
                 checkpoint_flag = False
                 checkpoint_data = None
                 print(
                     f"Ignoring checkpoint for dataset '{dataset}' because "
                     f"inlier_size={checkpoint_inlier_size} or "
-                    f"outlier_detector={checkpoint_detector} does not match "
+                    f"outlier_detector={checkpoint_detector} or "
+                    f"credo_dropout_training={checkpoint_dropout_training} does not match "
                     f"the current configuration."
                 )
             else:

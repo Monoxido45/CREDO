@@ -117,15 +117,31 @@ def format_mean_se(mean, sd, n_rep=DEFAULT_CATBOOST_N_REP, digits=3):
     return f"{round(float(mean), digits)} ({round(se, digits)})"
 
 
-def metric_file(dataset, model, metric, outlier=False, outlier_detector="lof"):
+def metric_file(
+    dataset,
+    model,
+    metric,
+    outlier=False,
+    outlier_detector="lof",
+    scarcity_method="knn",
+):
     if outlier:
         suffix = f"_{metric}_outlier{detector_suffix(outlier_detector)}_summary.csv"
+    elif metric in {"scarcity_coverage", "scarcity_worst_coverage"} and scarcity_method == "isolation_forest":
+        suffix = f"_{metric}_isolation_forest_summary.csv"
     else:
         suffix = f"_{metric}_summary.csv"
     return RESULTS_DIR / f"{dataset}_{model}_summary" / f"{dataset}{suffix}"
 
 
-def datasets_with_metric(datasets, model, metric, outlier=False, outlier_detector="lof"):
+def datasets_with_metric(
+    datasets,
+    model,
+    metric,
+    outlier=False,
+    outlier_detector="lof",
+    scarcity_method="knn",
+):
     return [
         dataset
         for dataset in datasets
@@ -135,6 +151,7 @@ def datasets_with_metric(datasets, model, metric, outlier=False, outlier_detecto
             metric,
             outlier=outlier,
             outlier_detector=outlier_detector,
+            scarcity_method=scarcity_method,
         ).exists()
     ]
 
@@ -147,6 +164,7 @@ def read_metrics_files(
     outlier=False,
     n_rep=DEFAULT_CATBOOST_N_REP,
     outlier_detector="lof",
+    scarcity_method="knn",
 ):
     dataframe = pd.DataFrame({"Dataset": datasets})
     for dataset in datasets:
@@ -156,6 +174,7 @@ def read_metrics_files(
             metric,
             outlier=outlier,
             outlier_detector=outlier_detector,
+            scarcity_method=scarcity_method,
         )
         if not file_path.exists():
             for method in methods:
@@ -186,12 +205,18 @@ def read_scarcity_coverage_files(
     model="qnn",
     bins=("Q3", "Q4"),
     n_rep=DEFAULT_QNN_N_REP,
+    scarcity_method="knn",
 ):
     tables = {}
     for bin_name in bins:
         dataframe = pd.DataFrame({"Dataset": datasets})
         for dataset in datasets:
-            file_path = metric_file(dataset, model, "scarcity_coverage")
+            file_path = metric_file(
+                dataset,
+                model,
+                "scarcity_coverage",
+                scarcity_method=scarcity_method,
+            )
             if not file_path.exists():
                 for method in methods:
                     dataframe.loc[dataframe["Dataset"] == dataset, method] = None
@@ -326,8 +351,8 @@ def save_qnn_tables(
     table_prefix=None,
     model_label=None,
     include_outlier=True,
-    include_wsc=False,
     scarcity_bins=("Q4",),
+    scarcity_method="knn",
 ):
     if table_prefix is None:
         table_prefix = f"result_{model}"
@@ -341,8 +366,12 @@ def save_qnn_tables(
     smis_datasets = datasets_with_metric(datasets, model, "isl")
     length_datasets = datasets_with_metric(datasets, model, "interval_length")
     coverage_datasets = datasets_with_metric(datasets, model, "coverage")
-    scarcity_worst_datasets = datasets_with_metric(datasets, model, "scarcity_worst_coverage")
-    scarcity_datasets = datasets_with_metric(datasets, model, "scarcity_coverage")
+    scarcity_worst_datasets = datasets_with_metric(
+        datasets, model, "scarcity_worst_coverage", scarcity_method=scarcity_method
+    )
+    scarcity_datasets = datasets_with_metric(
+        datasets, model, "scarcity_coverage", scarcity_method=scarcity_method
+    )
     suffix = detector_suffix(outlier_detector)
 
     tables = {
@@ -354,12 +383,14 @@ def save_qnn_tables(
             coverage_datasets, methods, model, metric="coverage", n_rep=n_rep
         ),
         f"{table_prefix}_scarcity_worst_coverage": read_metrics_files(
-            scarcity_worst_datasets, methods, model, metric="scarcity_worst_coverage", n_rep=n_rep
+            scarcity_worst_datasets,
+            methods,
+            model,
+            metric="scarcity_worst_coverage",
+            n_rep=n_rep,
+            scarcity_method=scarcity_method,
         ),
     }
-    if include_wsc:
-        wsc_datasets = datasets_with_metric(datasets, model, "wsc")
-        tables[f"{table_prefix}_wsc"] = read_metrics_files(wsc_datasets, methods, model, metric="wsc", n_rep=n_rep)
     if include_outlier:
         coverage_outlier_datasets = datasets_with_metric(
             datasets, model, "coverage", outlier=True, outlier_detector=outlier_detector
@@ -387,7 +418,12 @@ def save_qnn_tables(
         )
 
     scarcity_tables = read_scarcity_coverage_files(
-        scarcity_datasets, methods, model=model, bins=scarcity_bins, n_rep=n_rep
+        scarcity_datasets,
+        methods,
+        model=model,
+        bins=scarcity_bins,
+        n_rep=n_rep,
+        scarcity_method=scarcity_method,
     )
     for scarcity_bin, table in scarcity_tables.items():
         tables[f"{table_prefix}_scarcity_coverage_{scarcity_bin}"] = table
@@ -401,8 +437,6 @@ def save_qnn_tables(
         f"{table_prefix}_coverage_outlier{suffix}": f"Outlier coverage results with {model_label} base models.",
         f"{table_prefix}_ratio_outlier{suffix}": f"Outlier-to-inlier interval-length ratio results with {model_label} base models.",
     }
-    if include_wsc:
-        captions[f"{table_prefix}_wsc"] = f"Worst-slab coverage results with {model_label} base models."
     if "Q3" in scarcity_bins:
         captions[f"{table_prefix}_scarcity_coverage_Q3"] = (
             f"Scarcity coverage in the third scarcity quantile with {model_label} base models."
@@ -422,10 +456,20 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--outlier_detector", choices=["lof", "isolation_forest"], default="lof")
     parser.add_argument("--model", choices=["qnn", "qnn_mc"], default="qnn")
+    parser.add_argument(
+        "--model-slug",
+        default=None,
+        help="Optional result-folder slug, e.g. qnn_scarcity_iforest or qnn_no_train_dropout.",
+    )
+    parser.add_argument(
+        "--scarcity-method",
+        choices=["knn", "isolation_forest"],
+        default="knn",
+        help="Scarcity score used by the requested scarcity tables.",
+    )
     parser.add_argument("--output-dir", type=Path, default=FINAL_TABLES_DIR)
     parser.add_argument("--write-pickle", action="store_true", help="Also write legacy pickle table files.")
     parser.add_argument("--include-catboost", action="store_true", help="Also generate legacy CatBoost tables.")
-    parser.add_argument("--include-wsc", action="store_true", help="Also generate the legacy worst-slab coverage table.")
     parser.add_argument("--include-q3", action="store_true", help="Also generate scarcity Q3 coverage tables.")
     parser.add_argument(
         "--n_rep",
@@ -448,6 +492,8 @@ if __name__ == "__main__":
 
     FINAL_TABLES_DIR = args.output_dir
     WRITE_PICKLE = args.write_pickle
+    model_slug = args.model_slug or args.model
+    table_model_label = "QNN_MC" if args.model == "qnn_mc" else "QNN"
 
     catboost_tables = {}
     if args.include_catboost:
@@ -458,13 +504,13 @@ if __name__ == "__main__":
         )
     qnn_tables = save_qnn_tables(
         outlier_detector=args.outlier_detector,
-        model=args.model,
+        model=model_slug,
         n_rep=args.n_rep,
-        table_prefix=f"result_{args.model}",
-        model_label="QNN_MC" if args.model == "qnn_mc" else "QNN",
+        table_prefix=f"result_{model_slug}",
+        model_label=table_model_label,
         include_outlier=not args.main_only,
-        include_wsc=args.include_wsc,
         scarcity_bins=("Q3", "Q4") if args.include_q3 else ("Q4",),
+        scarcity_method=args.scarcity_method,
     )
 
     if catboost_tables:
@@ -472,9 +518,9 @@ if __name__ == "__main__":
         for name in catboost_tables:
             print(f"- {FINAL_TABLES_DIR / name}")
 
-    print(f"\nSaved {args.model.upper()} tables:")
+    print(f"\nSaved {model_slug.upper()} tables:")
     for name, dataframe in qnn_tables.items():
         print(f"- {FINAL_TABLES_DIR / name} ({len(dataframe)} datasets)")
 
-    print(f"\nPreview: {args.model.upper()} SMIS")
-    print(latex_table(qnn_tables[f"result_{args.model}_smis"], METHODS))
+    print(f"\nPreview: {model_slug.upper()} SMIS")
+    print(latex_table(qnn_tables[f"result_{model_slug}_smis"], METHODS))

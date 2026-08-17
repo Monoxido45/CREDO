@@ -17,7 +17,7 @@ PLOTS_PATH = ROOT / "paper_results" / "figures"
 
 DEFAULT_DATASETS = ["airfoil", "concrete", "winered", "winewhite", "meps19"]
 DEFAULT_FIXED_GAMMA = 0.2
-DEFAULT_ADAPTIVE_GAMMA_MIN = 0.05
+DEFAULT_ADAPTIVE_GAMMA_MIN = 0.1
 DEFAULT_ADAPTIVE_GAMMA_MAX = 0.9
 DEFAULT_ADAPTIVE_TAU = 1.0
 METRICS = [

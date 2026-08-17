@@ -1541,6 +1541,10 @@ class QuantileRegressionNN(BaseEstimator):
             verbose=1, 
             split_random_state=42,
             fit_random_state=1250,
+            dropout_during_fit=True,
+            epoch_model_tracking=False,
+            min_saved_models=None,
+            max_saved_models=1000,
             ):
         # Preprocessing
         x_train, x_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=split_random_state)
@@ -1565,9 +1569,16 @@ class QuantileRegressionNN(BaseEstimator):
         best_val_loss = float('inf')
         best_model_state = None
         counter = 0
+        self.saved_models = []
 
         for epoch in tqdm(range(epochs), disable=(verbose==0)):
             self.model.train()
+            if not dropout_during_fit:
+                # Keep batch normalization in training mode, but disable only
+                # stochastic dropout masks during optimization.
+                for module in self.model.modules():
+                    if isinstance(module, nn.Dropout):
+                        module.eval()
             for bx, by in train_loader:
                 optimizer.zero_grad()
                 pred = self.model(bx)
@@ -1589,13 +1600,26 @@ class QuantileRegressionNN(BaseEstimator):
                 counter = 0
             else:
                 counter += 1
+
+            if epoch_model_tracking:
+                self.saved_models.append(deepcopy(self.model.state_dict()))
+                if max_saved_models is not None and len(self.saved_models) > max_saved_models:
+                    self.saved_models.pop(0)
+
+            enough_tracked_epochs = (
+                not epoch_model_tracking
+                or min_saved_models is None
+                or len(self.saved_models) >= min_saved_models
+            )
             
-            if counter >= patience:
+            if counter >= patience and enough_tracked_epochs:
                 if verbose: print(f"Early stopping at epoch {epoch}")
                 break
 
         if best_model_state:
             self.model.load_state_dict(best_model_state)
+        if epoch_model_tracking and not self.saved_models:
+            self.saved_models.append(deepcopy(self.model.state_dict()))
     
     def predict(self, X, n_mc=500, use_mcdropout=True):
         """
@@ -2900,8 +2924,6 @@ class BART_model(BaseEstimator):
             quantile_results = self.scaler_y.inverse_transform(quantile_results)
 
         return quantile_results
-
-
 
 
 

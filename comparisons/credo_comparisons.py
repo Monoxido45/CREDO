@@ -4,22 +4,26 @@ import pandas as pd
 import torch
 from argparse import ArgumentParser
 import gc
+from copy import deepcopy
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+from sklearn.base import BaseEstimator
 from tqdm import tqdm
 
 original_path = os.getcwd()
 os.chdir(os.path.join(original_path, "comparisons"))
 
 from credo.credal_cp import CredalCPRegressor
+from credo.epistemic_models import QuantileRegressionNN as CredoQuantileRegressionNN
 from credo.utils import (
     average_interval_score_loss,
+    interval_score_components,
     average_coverage,
     average_interval_width,
     compute_interval_length,
     coverage_by_score_quantile,
+    scarcity_scores_isolation_forest,
     scarcity_scores_knn,
-    worst_slab_coverage,
 )
 from jaxtyping import install_import_hook
 with install_import_hook("gpjax", "beartype.beartype"):
@@ -27,6 +31,7 @@ with install_import_hook("gpjax", "beartype.beartype"):
 
 # uacqr part
 from uacqr import uacqr
+from helper import QuantileRegressionNN as SharedQuantileRegressionNN
 # EPIC part
 from epic import QuantileScore, EPIC_split
 from outlier_detection import detector_suffix, select_outlier_inlier_indices
@@ -45,6 +50,13 @@ def str2bool(value):
     if value in ("no", "false", "f", "0", "n"):
         return False
     raise ValueError("Boolean value expected.")
+
+
+def expand_choice(value, choices):
+    """Expand a single detector/score choice while preserving deterministic order."""
+    if value == "both":
+        return list(choices)
+    return [value]
 
 
 parser = ArgumentParser()
@@ -69,16 +81,49 @@ parser.add_argument("-activation_noise", "--activation_noise", type=str, default
 parser.add_argument("-outlier_same_time", "--outlier_same_time", type=str2bool, default=False, 
                     help="whether to analyze outliers at the same time as fitting the models or as a separate step after fitting")
 parser.add_argument("-gamma_max", "--gamma_max", type=float, default=0.9, help="maximum adaptive gamma value")
-parser.add_argument("-gamma_min", "--gamma_min", type=float, default=0.05, help="minimum adaptive gamma value; defaults to --gamma")
+parser.add_argument("-gamma_min", "--gamma_min", type=float, default=0.1, help="minimum adaptive gamma value; defaults to --gamma")
 parser.add_argument("-tau_gamma", "--tau_gamma", type=float, default=1.0, help="temperature for the scarcity-to-gamma map")
+parser.add_argument("-credo_dropout", "--credo_dropout", type=float, default=0.1, help="MC-dropout rate used to construct the CREDO envelope")
+parser.add_argument(
+    "-qnn_hidden_layers",
+    "--qnn_hidden_layers",
+    type=int,
+    nargs=3,
+    default=[64, 64, 32],
+    metavar=("H1", "H2", "H3"),
+    help="Hidden-layer widths for the shared QNN backbone (default: 64 64 32)",
+)
 parser.add_argument("-k_gamma", "--k_gamma", type=int, default=None, help="fixed k for kNN scarcity; defaults to the selected heuristic")
 parser.add_argument("-heuristic_gamma", "--heuristic_gamma", type=str, default="log", help="k heuristic for adaptive gamma: 'log' or 'exp'")
-parser.add_argument("-wsc_directions", "--wsc_directions", type=int, default=1000, help="number of projection directions for approximate worst-slab coverage")
-parser.add_argument("-wsc_min_fraction", "--wsc_min_fraction", type=float, default=None, help="minimum fraction of test points in each slab for approximate worst-slab coverage; defaults to max(0.1, 50 / n_test)")
 parser.add_argument("-scarcity_bins", "--scarcity_bins", type=int, default=4, help="number of scarcity-score quantile bins for stratified coverage")
 parser.add_argument("-scarcity_k", "--scarcity_k", type=int, default=None, help="fixed k for diagnostic kNN scarcity score; defaults to --scarcity_heuristic")
 parser.add_argument("-scarcity_heuristic", "--scarcity_heuristic", type=str, default="log", help="k heuristic for diagnostic scarcity score: 'log' or 'exp'")
-parser.add_argument("-outlier_detector", "--outlier_detector", choices=["lof", "isolation_forest"], default="lof", help="Detector used for outlier/inlier diagnostics.")
+parser.add_argument("-scarcity_method", "--scarcity_method", choices=["knn", "isolation_forest", "both"], default="both", help="method used to define the diagnostic scarcity score")
+parser.add_argument("-scarcity_iforest_n_estimators", "--scarcity_iforest_n_estimators", type=int, default=200, help="number of trees for the Isolation Forest scarcity score")
+parser.add_argument("-scarcity_iforest_max_samples", "--scarcity_iforest_max_samples", default="auto", help="max_samples for the Isolation Forest scarcity score")
+parser.add_argument("-scarcity_iforest_max_features", "--scarcity_iforest_max_features", type=float, default=1.0, help="max_features for the Isolation Forest scarcity score")
+parser.add_argument("-scarcity_iforest_bootstrap", "--scarcity_iforest_bootstrap", action="store_true", help="bootstrap samples for the Isolation Forest scarcity score")
+parser.add_argument("-credo_dropout_training", "--credo_dropout_training", type=str2bool, default=False, help="whether CREDO's QNN dropout is active during training; MC-dropout remains used for the credal envelope")
+parser.add_argument(
+    "--shared-qnn-backbone",
+    dest="shared_qnn_backbone",
+    action="store_true",
+    default=False,
+    help="reuse one QNN backbone (kept for pilot compatibility; disabled by default)",
+)
+parser.add_argument(
+    "--separate-qnn-backbone",
+    dest="shared_qnn_backbone",
+    action="store_false",
+    help="fit separate QNNs; intended only for ablation or backward-compatibility checks",
+)
+parser.add_argument(
+    "--credo-first-qnn-backbone",
+    dest="credo_first_qnn_backbone",
+    action="store_true",
+    help="fit the original CREDO QNN first and reuse it for CQR/UACQR/EPIC (experimental)",
+)
+parser.add_argument("-outlier_detector", "--outlier_detector", choices=["lof", "isolation_forest", "both"], default="both", help="Detector used for outlier/inlier diagnostics.")
 parser.add_argument("-outlier_contamination", "--outlier_contamination", type=float, default=0.05)
 parser.add_argument("-outlier_neighbors", "--outlier_neighbors", type=int, default=15)
 parser.add_argument("-inlier_size", "--inlier_size", type=float, default=0.2)
@@ -123,6 +168,16 @@ results_tag = "".join(
 )
 if results_tag:
     base_model_slug = f"{base_model_slug}_{results_tag}"
+scarcity_methods = expand_choice(args.scarcity_method, ["knn", "isolation_forest"])
+if args.scarcity_method == "isolation_forest":
+    base_model_slug = f"{base_model_slug}_scarcity_iforest"
+# With both diagnostics enabled, keep the standard model folder and distinguish
+# the KNN/Isolation Forest outputs in the metric filenames instead.
+scarcity_result_suffixes = {
+    "knn": "",
+    "isolation_forest": "_isolation_forest",
+}
+scarcity_result_suffix = scarcity_result_suffixes.get(args.scarcity_method, "")
 outlier_analysis = args.outlier_analysis
 n_cores = args.n_cores
 kernel = args.kernel
@@ -132,15 +187,23 @@ outlier_same_time = args.outlier_same_time
 gamma_max = args.gamma_max
 gamma_min = args.gamma_min
 tau_gamma = args.tau_gamma
+credo_dropout = args.credo_dropout
 k_gamma = args.k_gamma
 heuristic_gamma = args.heuristic_gamma
-wsc_directions = args.wsc_directions
-wsc_min_fraction = args.wsc_min_fraction
 scarcity_bins = args.scarcity_bins
 scarcity_k = args.scarcity_k
 scarcity_heuristic = args.scarcity_heuristic
+scarcity_method = args.scarcity_method
+scarcity_iforest_n_estimators = args.scarcity_iforest_n_estimators
+scarcity_iforest_max_samples = args.scarcity_iforest_max_samples
+scarcity_iforest_max_features = args.scarcity_iforest_max_features
+scarcity_iforest_bootstrap = args.scarcity_iforest_bootstrap
+credo_dropout_training = args.credo_dropout_training
+shared_qnn_backbone = args.shared_qnn_backbone
+credo_first_qnn_backbone = args.credo_first_qnn_backbone
 outlier_detector = args.outlier_detector
-outlier_result_suffix = detector_suffix(outlier_detector)
+outlier_detectors = expand_choice(outlier_detector, ["lof", "isolation_forest"])
+outlier_result_suffix = "_both" if outlier_detector == "both" else detector_suffix(outlier_detector)
 outlier_contamination = args.outlier_contamination
 outlier_neighbors = args.outlier_neighbors
 outlier_inlier_size = args.inlier_size
@@ -151,8 +214,8 @@ iforest_max_samples = args.iforest_max_samples
 iforest_max_features = args.iforest_max_features
 iforest_bootstrap = args.iforest_bootstrap
 
-QNN_HIDDEN_LAYERS = [128, 128, 64]
-QNN_DROPOUT_CREDO = 0.2
+QNN_HIDDEN_LAYERS = list(args.qnn_hidden_layers)
+QNN_DROPOUT_CREDO = credo_dropout
 QNN_DROPOUT_COMPETITORS = QNN_DROPOUT_CREDO if base_model_is_qnn_mc else 0.0
 QNN_COMPETITOR_EPOCH_MODEL_TRACKING = base_model_is_qnn_mc
 
@@ -178,12 +241,112 @@ def make_competitor_qnn_params(batch_size, B=100):
         "max_saved_models": 1000,
     }
 
-def resolve_wsc_min_fraction(n_test):
-    if wsc_min_fraction is not None:
-        return wsc_min_fraction
-    if n_test <= 0:
-        return 0.1
-    return max(0.1, 50 / n_test)
+
+class SharedQNNAdapter(BaseEstimator):
+    """Expose the shared helper QNN through CREDO's base-model interface."""
+
+    def __init__(self, model):
+        self.model = model
+
+    def predict(self, X, n_mc=500, use_mcdropout=True):
+        ensemble_size = n_mc if use_mcdropout else None
+        predictions = self.model.predict(
+            X,
+            ensembling=ensemble_size,
+            use_mcdropout=use_mcdropout,
+        )
+        return predictions[0], predictions[-1]
+
+
+class CredoQNNUACQRAdapter:
+    """Expose the CREDO QNN and its saved training states to UACQR.
+
+    CREDO uses MC-dropout for its own envelope. UACQR instead receives the
+    deterministic predictions from the QNN states saved during training,
+    matching its epoch-based neural-network ensemble protocol.
+    """
+
+    def __init__(self, model):
+        self.model = model
+
+    def predict(self, X, ensembling=None, use_mcdropout=False):
+        X = np.asarray(X)
+        if ensembling is None:
+            lower, upper = self.model.predict(X, n_mc=1, use_mcdropout=False)
+            return lower[:, 0], upper[:, 0]
+
+        states = self.model.saved_models[-int(ensembling):]
+        if len(states) < int(ensembling):
+            raise RuntimeError(
+                "The CREDO QNN has fewer saved training states than the "
+                "UACQR ensemble requires."
+            )
+
+        current_state = deepcopy(self.model.model.state_dict())
+        lower_samples = []
+        upper_samples = []
+        try:
+            for state in states:
+                self.model.model.load_state_dict(state)
+                lower, upper = self.model.predict(X, n_mc=1, use_mcdropout=False)
+                lower_samples.append(lower[:, 0])
+                upper_samples.append(upper[:, 0])
+        finally:
+            self.model.model.load_state_dict(current_state)
+            self.model.model.eval()
+
+        return np.stack((np.stack(lower_samples, axis=1),
+                         np.stack(upper_samples, axis=1)), axis=0)
+
+
+def fit_credo_qnn_backbone(X_train, y_train, batch_size, random_state):
+    """Fit the original CREDO QNN once for the inheritance pilot."""
+
+    model = CredoQuantileRegressionNN(
+        input_size=np.asarray(X_train).shape[1],
+        alpha=alpha,
+        dropout=QNN_DROPOUT_CREDO,
+        hidden_layers=QNN_HIDDEN_LAYERS,
+        use_gpu=True,
+        undo_crossing=True,
+    )
+    model.fit(
+        np.asarray(X_train),
+        np.asarray(y_train),
+        weight_decay=1e-6,
+        scheduler_step=10,
+        scheduler_gamma=0.99,
+        epochs=2000,
+        lr=1e-3,
+        batch_size=batch_size,
+        patience=50,
+        verbose=0,
+        split_random_state=0,
+        fit_random_state=random_state,
+        dropout_during_fit=credo_dropout_training,
+        epoch_model_tracking=True,
+        min_saved_models=101,
+        max_saved_models=1000,
+    )
+    return model
+
+
+def fit_shared_qnn(X_train, y_train, batch_size, random_state):
+    """Fit the common QNN once; dropout is used for the envelope, not training."""
+
+    params = make_competitor_qnn_params(batch_size, B=100)
+    params.update(
+        dropout=QNN_DROPOUT_CREDO,
+        epoch_model_tracking=True,
+        dropout_during_fit=False,
+    )
+    model = SharedQuantileRegressionNN(
+        quantiles=[alpha / 2, "mean", 1 - alpha / 2],
+        random_state=random_state,
+        **params,
+    )
+    model.fit(X_train, y_train)
+    return model
 
 def generate_seeds(seed_initial, n_rep):
     np.random.seed(seed_initial)
@@ -218,6 +381,76 @@ def resolve_outlier_embedding(dataset, outlier_detector, outlier_embedding="tsne
         return "original"
     return outlier_embedding
 
+
+def compute_outlier_metrics_for_detector(
+        X_test,
+        y_test,
+        interval_map,
+        detector,
+        inlier_size,
+        n_neighbors,
+        contamination,
+        tsne_random_state,
+        n_components,
+        outlier_embedding,
+        iforest_n_estimators,
+        iforest_max_samples,
+        iforest_max_features,
+        iforest_bootstrap,
+        random_state,
+):
+    """Compute outlier coverage and width ratios from already-fitted intervals."""
+    outlier_space = "t-SNE" if outlier_embedding == "tsne" else "standardized original feature space"
+    print(f"Performing outlier detection with {outlier_space} and {detector}")
+    outlier_indexes, inlier_indexes = select_outlier_inlier_indices(
+        X_test,
+        y_test,
+        outlier_detector=detector,
+        outlier_embedding=outlier_embedding,
+        contamination=contamination,
+        inlier_size=inlier_size,
+        n_neighbors=n_neighbors,
+        n_components=n_components,
+        tsne_random_state=tsne_random_state,
+        iforest_n_estimators=iforest_n_estimators,
+        iforest_max_samples=iforest_max_samples,
+        iforest_max_features=iforest_max_features,
+        iforest_bootstrap=iforest_bootstrap,
+        random_state=random_state,
+    )
+
+    y_test = np.asarray(y_test)
+    cover_values = []
+    ratio_values = []
+    for method, interval in interval_map.items():
+        interval = np.asarray(interval)
+        finite = np.isfinite(interval[:, 0]) & np.isfinite(interval[:, 1])
+        out_idx = outlier_indexes[finite[outlier_indexes]]
+        in_idx = inlier_indexes[finite[inlier_indexes]]
+
+        if len(out_idx) == 0:
+            cover_values.append(np.nan)
+            ratio_values.append(np.nan)
+            continue
+
+        cover_values.append(
+            average_coverage(
+                interval[out_idx, 1], interval[out_idx, 0], y_test[out_idx]
+            )
+        )
+        if len(in_idx) == 0:
+            ratio_values.append(np.nan)
+        else:
+            out_width = np.mean(compute_interval_length(
+                interval[out_idx, 1], interval[out_idx, 0]
+            ))
+            in_width = np.mean(compute_interval_length(
+                interval[in_idx, 1], interval[in_idx, 0]
+            ))
+            ratio_values.append(out_width / in_width if in_width != 0 else np.nan)
+
+    return np.asarray(cover_values), np.asarray(ratio_values)
+
 def fit_methods(
         X_train,
         y_train,
@@ -241,7 +474,17 @@ def fit_methods(
         iforest_max_samples = "auto",
         iforest_max_features = 1.0,
         iforest_bootstrap = False,
+        scarcity_method = "knn",
+        scarcity_iforest_n_estimators = 200,
+        scarcity_iforest_max_samples = "auto",
+        scarcity_iforest_max_features = 1.0,
+        scarcity_iforest_bootstrap = False,
+        credo_dropout_training = False,
+        shared_qnn_backbone = None,
 ): 
+    if shared_qnn_backbone is None:
+        shared_qnn_backbone = globals()["shared_qnn_backbone"]
+
     if scale_y:
         y_scaler = StandardScaler().set_output(transform="pandas")
         y_train = y_scaler.fit_transform(y_train.to_frame())
@@ -324,7 +567,30 @@ def fit_methods(
     else:
         raise ValueError(f"Unknown uacqr_model={uacqr_model}")
     
-    uacqr_results.fit(X_train, y_train)
+    shared_qnn = None
+    credo_qnn_backbone = None
+    if credo_first_qnn_backbone and uacqr_model in ["neural_net", "qnn"]:
+        print("Using the original CREDO QNN as the shared backbone")
+        credo_qnn_backbone = fit_credo_qnn_backbone(
+            X_train,
+            y_train,
+            batch_size,
+            i,
+        )
+        inherited_qnn = CredoQNNUACQRAdapter(credo_qnn_backbone)
+        uacqr_results.nn_model = inherited_qnn
+        uacqr_results.cqr_base_model = inherited_qnn
+        uacqr_results.models_B = []
+        uacqr_results.modeled_quantiles = [alpha / 2, 1 - alpha / 2]
+    elif shared_qnn_backbone and uacqr_model in ["neural_net", "qnn"]:
+        print("Using one shared QNN backbone for UACQR, EPIC, and CREDO")
+        shared_qnn = fit_shared_qnn(X_train, y_train, batch_size, i)
+        uacqr_results.nn_model = shared_qnn
+        uacqr_results.cqr_base_model = shared_qnn
+        uacqr_results.models_B = []
+        uacqr_results.modeled_quantiles = [alpha / 2, "mean", 1 - alpha / 2]
+    else:
+        uacqr_results.fit(X_train, y_train)
     uacqr_results.calibrate(X_calib, y_calib)
     uacqr_pred_test = uacqr_results.predict_uacqr(X_test)
 
@@ -366,59 +632,125 @@ def fit_methods(
 
     print(f"Fitting vanilla CREDO with QNN")
     # Fitting CREDO with QNN
-    credal_CP_qnn = CredalCPRegressor(
-        nc_type = 'Quantile',
-        base_model = "QNN",
-        alpha = alpha,
-        adaptive_gamma = False,
-        gamma = gamma,
+    if credo_qnn_backbone is not None:
+        credal_CP_qnn = CredalCPRegressor(
+            nc_type="Quantile",
+            base_model=credo_qnn_backbone,
+            alpha=alpha,
+            adaptive_gamma=False,
+            gamma=gamma,
+            is_fitted=True,
         )
-    
-    credal_CP_qnn.fit(
-        X_train, 
-        y_train,
-        weight_decay=1e-6,
-        step_size=10,
-        gamma=0.99,
-        hidden_layers=QNN_HIDDEN_LAYERS,
-        dropout=QNN_DROPOUT_CREDO,
-        epochs=2000,
-        patience=50,
-        lr=1e-3, 
-        batch_size=batch_size,
-        verbose=1,
-        random_seed_fit=i,
-    )
+        credal_CP_qnn.fit(
+            X_train,
+            y_train,
+            nn_type="MC_Dropout",
+            base_model_type="QNN",
+        )
+    elif shared_qnn is not None:
+        credal_CP_qnn = CredalCPRegressor(
+            nc_type="Quantile",
+            base_model=SharedQNNAdapter(shared_qnn),
+            alpha=alpha,
+            adaptive_gamma=False,
+            gamma=gamma,
+            is_fitted=True,
+        )
+        credal_CP_qnn.fit(
+            X_train,
+            y_train,
+            nn_type="MC_Dropout",
+            base_model_type="QNN",
+        )
+    else:
+        credal_CP_qnn = CredalCPRegressor(
+            nc_type="Quantile",
+            base_model="QNN",
+            alpha=alpha,
+            adaptive_gamma=False,
+            gamma=gamma,
+        )
+        credal_CP_qnn.fit(
+            X_train,
+            y_train,
+            weight_decay=1e-6,
+            step_size=10,
+            gamma=0.99,
+            hidden_layers=QNN_HIDDEN_LAYERS,
+            dropout=QNN_DROPOUT_CREDO,
+            dropout_during_fit=credo_dropout_training,
+            epochs=2000,
+            patience=50,
+            lr=1e-3,
+            batch_size=batch_size,
+            verbose=1,
+            random_seed_fit=i,
+        )
 
     credal_CP_qnn.calibrate(X_calib, y_calib, N_samples_MC=n_MCMC)
     credo_CP_qnn_pred = credal_CP_qnn.predict(X_test)
 
     print(f"Fitting adaptive CREDO with QNN")
-    credal_CP_qnn_adaptive = CredalCPRegressor(
-    nc_type = 'Quantile',
-    base_model = "QNN",
-    alpha = alpha,
-    adaptive_gamma = True,
-    gamma = gamma,
-    )
-
-    credal_CP_qnn_adaptive.fit(
-         X_train, 
-        y_train,
-        weight_decay=1e-6,
-        step_size=10,
-        gamma=0.99,
-        hidden_layers=QNN_HIDDEN_LAYERS,
-        dropout=QNN_DROPOUT_CREDO,
-        epochs=2000,
-        patience=50,
-        lr=1e-3, 
-        batch_size=batch_size,
-        verbose=1,
-        random_seed_fit=i,
-        heuristic_gamma=heuristic_gamma,
-        k=k_gamma,
-    )
+    if credo_qnn_backbone is not None:
+        credal_CP_qnn_adaptive = CredalCPRegressor(
+            nc_type="Quantile",
+            base_model=credo_qnn_backbone,
+            alpha=alpha,
+            adaptive_gamma=True,
+            gamma=gamma,
+            is_fitted=True,
+        )
+        credal_CP_qnn_adaptive.fit(
+            X_train,
+            y_train,
+            nn_type="MC_Dropout",
+            base_model_type="QNN",
+            heuristic_gamma=heuristic_gamma,
+            k=k_gamma,
+        )
+    elif shared_qnn is not None:
+        credal_CP_qnn_adaptive = CredalCPRegressor(
+            nc_type="Quantile",
+            base_model=SharedQNNAdapter(shared_qnn),
+            alpha=alpha,
+            adaptive_gamma=True,
+            gamma=gamma,
+            is_fitted=True,
+        )
+        credal_CP_qnn_adaptive.fit(
+            X_train,
+            y_train,
+            nn_type="MC_Dropout",
+            base_model_type="QNN",
+            heuristic_gamma=heuristic_gamma,
+            k=k_gamma,
+        )
+    else:
+        credal_CP_qnn_adaptive = CredalCPRegressor(
+            nc_type="Quantile",
+            base_model="QNN",
+            alpha=alpha,
+            adaptive_gamma=True,
+            gamma=gamma,
+        )
+        credal_CP_qnn_adaptive.fit(
+            X_train,
+            y_train,
+            weight_decay=1e-6,
+            step_size=10,
+            gamma=0.99,
+            hidden_layers=QNN_HIDDEN_LAYERS,
+            dropout=QNN_DROPOUT_CREDO,
+            dropout_during_fit=credo_dropout_training,
+            epochs=2000,
+            patience=50,
+            lr=1e-3,
+            batch_size=batch_size,
+            verbose=1,
+            random_seed_fit=i,
+            heuristic_gamma=heuristic_gamma,
+            k=k_gamma,
+        )
     credal_CP_qnn_adaptive.calibrate(X_calib, 
                                   y_calib,
                                   N_samples_MC=n_MCMC, 
@@ -541,12 +873,43 @@ def fit_methods(
         pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0]
     )
 
-    scarcity_scores = scarcity_scores_knn(
-        X_train,
-        X_test,
-        k=scarcity_k,
-        heuristic=scarcity_heuristic,
-    )
+    if scarcity_method == "knn":
+        scarcity_scores = scarcity_scores_knn(
+            X_train,
+            X_test,
+            k=scarcity_k,
+            heuristic=scarcity_heuristic,
+        )
+    elif scarcity_method == "isolation_forest":
+        scarcity_scores = scarcity_scores_isolation_forest(
+            X_train,
+            X_test,
+            n_estimators=scarcity_iforest_n_estimators,
+            max_samples=scarcity_iforest_max_samples,
+            max_features=scarcity_iforest_max_features,
+            bootstrap=scarcity_iforest_bootstrap,
+            random_state=i,
+        )
+    elif scarcity_method == "both":
+        # Keep the legacy calculation below on KNN while recomputing both
+        # diagnostics together after the common interval quantities exist.
+        scarcity_scores_by_method = {
+            "knn": scarcity_scores_knn(
+                X_train, X_test, k=scarcity_k, heuristic=scarcity_heuristic
+            ),
+            "isolation_forest": scarcity_scores_isolation_forest(
+                X_train,
+                X_test,
+                n_estimators=scarcity_iforest_n_estimators,
+                max_samples=scarcity_iforest_max_samples,
+                max_features=scarcity_iforest_max_features,
+                bootstrap=scarcity_iforest_bootstrap,
+                random_state=i,
+            ),
+        }
+        scarcity_scores = scarcity_scores_by_method["knn"]
+    else:
+        raise ValueError(f"Unknown scarcity_method={scarcity_method}")
     _, _, scarcity_bin_edges = coverage_by_score_quantile(
         credo_CP_qnn_pred[:, 1],
         credo_CP_qnn_pred[:, 0],
@@ -555,72 +918,6 @@ def fit_methods(
         n_bins=scarcity_bins,
     )
     scarcity_scores_uacqr = scarcity_scores[good_mask]
-    wsc_min_fraction_resolved = resolve_wsc_min_fraction(y_test.shape[0])
-
-    wsc_credo_qnn = worst_slab_coverage(
-        X_test,
-        credo_CP_qnn_pred[:, 1],
-        credo_CP_qnn_pred[:, 0],
-        y_test,
-        n_directions=wsc_directions,
-        min_fraction=wsc_min_fraction_resolved,
-        random_state=i,
-    )
-    wsc_credo_qnn_adaptive = worst_slab_coverage(
-        X_test,
-        credo_CP_qnn_pred_adaptive[:, 1],
-        credo_CP_qnn_pred_adaptive[:, 0],
-        y_test,
-        n_directions=wsc_directions,
-        min_fraction=wsc_min_fraction_resolved,
-        random_state=i,
-    )
-    wsc_cqr = worst_slab_coverage(
-        X_test,
-        cqr_int[:, 1],
-        cqr_int[:, 0],
-        y_test,
-        n_directions=wsc_directions,
-        min_fraction=wsc_min_fraction_resolved,
-        random_state=i,
-    )
-    wsc_cqrr = worst_slab_coverage(
-        X_test,
-        cqrr_int[:, 1],
-        cqrr_int[:, 0],
-        y_test,
-        n_directions=wsc_directions,
-        min_fraction=wsc_min_fraction_resolved,
-        random_state=i,
-    )
-    wsc_uacqrs = worst_slab_coverage(
-        X_test[good_mask],
-        uacqrs_int[:, 1],
-        uacqrs_int[:, 0],
-        y_test_uacqr,
-        n_directions=wsc_directions,
-        min_fraction=wsc_min_fraction_resolved,
-        random_state=i,
-    )
-    wsc_uacqrp = worst_slab_coverage(
-        X_test[good_mask],
-        uacqrp_int[:, 1],
-        uacqrp_int[:, 0],
-        y_test_uacqr,
-        n_directions=wsc_directions,
-        min_fraction=wsc_min_fraction_resolved,
-        random_state=i,
-    )
-    wsc_epic_mdn = worst_slab_coverage(
-        X_test,
-        pred_epic_mdn_test[:, 1],
-        pred_epic_mdn_test[:, 0],
-        y_test,
-        n_directions=wsc_directions,
-        min_fraction=wsc_min_fraction_resolved,
-        random_state=i,
-    )
-
     scarcity_cover_credo_qnn, _, _ = coverage_by_score_quantile(
         credo_CP_qnn_pred[:, 1],
         credo_CP_qnn_pred[:, 0],
@@ -676,7 +973,6 @@ def fit_methods(
       isl_uacqrs, isl_uacqrp= np.nan, np.nan
       cover_uacqrs, cover_uacqrp = np.nan, np.nan
       length_uacqrs, length_uacqrp = np.nan, np.nan
-      wsc_uacqrs, wsc_uacqrp = np.nan, np.nan
       scarcity_cover_uacqrs[:] = np.nan
       scarcity_cover_uacqrp[:] = np.nan
     
@@ -707,15 +1003,6 @@ def fit_methods(
         length_uacqrp,
         length_epic_mdn,
     ])
-    wsc_array = np.array([
-        wsc_credo_qnn,
-        wsc_credo_qnn_adaptive,
-        wsc_cqr,
-        wsc_cqrr,
-        wsc_uacqrs,
-        wsc_uacqrp,
-        wsc_epic_mdn,
-    ])
     scarcity_cover_array = np.vstack([
         scarcity_cover_credo_qnn,
         scarcity_cover_credo_qnn_adaptive,
@@ -729,6 +1016,116 @@ def fit_methods(
         np.nan if np.all(np.isnan(row)) else np.nanmin(row)
         for row in scarcity_cover_array
     ])
+    if scarcity_method == "both":
+        scarcity_cover_arrays = {"knn": scarcity_cover_array}
+        scarcity_worst_cover_arrays = {"knn": scarcity_worst_cover_array}
+        score = scarcity_scores_by_method["isolation_forest"]
+        _, _, if_edges = coverage_by_score_quantile(
+            credo_CP_qnn_pred[:, 1], credo_CP_qnn_pred[:, 0], y_test,
+            score, n_bins=scarcity_bins,
+        )
+        score_uacqr = score[good_mask]
+        if_cover_rows = []
+        for upper, lower, y_values, score_values in [
+            (credo_CP_qnn_pred[:, 1], credo_CP_qnn_pred[:, 0], y_test, score),
+            (credo_CP_qnn_pred_adaptive[:, 1], credo_CP_qnn_pred_adaptive[:, 0], y_test, score),
+            (cqr_int[:, 1], cqr_int[:, 0], y_test, score),
+            (cqrr_int[:, 1], cqrr_int[:, 0], y_test, score),
+            (uacqrs_int[:, 1], uacqrs_int[:, 0], y_test_uacqr, score_uacqr),
+            (uacqrp_int[:, 1], uacqrp_int[:, 0], y_test_uacqr, score_uacqr),
+            (pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0], y_test, score),
+        ]:
+            if len(y_values) == 0:
+                if_cover_rows.append(np.full(scarcity_bins, np.nan))
+            else:
+                row, _, _ = coverage_by_score_quantile(
+                    upper, lower, y_values, score_values, bin_edges=if_edges
+                )
+                if_cover_rows.append(row)
+        if_cover_array = np.vstack(if_cover_rows)
+        scarcity_cover_arrays["isolation_forest"] = if_cover_array
+        scarcity_worst_cover_arrays["isolation_forest"] = np.array([
+            np.nan if np.all(np.isnan(row)) else np.nanmin(row)
+            for row in if_cover_array
+        ])
+    else:
+        scarcity_cover_arrays = {scarcity_method: scarcity_cover_array}
+        scarcity_worst_cover_arrays = {scarcity_method: scarcity_worst_cover_array}
+
+    # Keep the interval score auditable: SMIS is the sum of interval width and
+    # the two one-sided miscoverage penalties. These means are saved per run so
+    # a poor score can be attributed to width or to misses, rather than inferred
+    # from coverage alone.
+    def _smis_component_means(upper, lower, y_values):
+        if len(y_values) == 0:
+            return np.full(3, np.nan)
+        width, lower_miss, upper_miss = interval_score_components(
+            upper, lower, y_values, alpha
+        )
+        return np.array([
+            np.nanmean(width),
+            np.nanmean(lower_miss),
+            np.nanmean(upper_miss),
+        ])
+
+    smis_components_array = np.vstack([
+        _smis_component_means(credo_CP_qnn_pred[:, 1], credo_CP_qnn_pred[:, 0], y_test),
+        _smis_component_means(credo_CP_qnn_pred_adaptive[:, 1], credo_CP_qnn_pred_adaptive[:, 0], y_test),
+        _smis_component_means(cqr_int[:, 1], cqr_int[:, 0], y_test),
+        _smis_component_means(cqrr_int[:, 1], cqrr_int[:, 0], y_test),
+        _smis_component_means(uacqrs_int[:, 1], uacqrs_int[:, 0], y_test_uacqr),
+        _smis_component_means(uacqrp_int[:, 1], uacqrp_int[:, 0], y_test_uacqr),
+        _smis_component_means(pred_epic_mdn_test[:, 1], pred_epic_mdn_test[:, 0], y_test),
+    ])
+
+    if outlier_same_time and outlier_analysis and outlier_detector == "both":
+        interval_map = {
+            "credo_QNN": credo_CP_qnn_pred,
+            "credo_QNN_adaptive": credo_CP_qnn_pred_adaptive,
+            "cqr": cqr_int,
+            "cqrr": cqrr_int,
+            "uacqrs": np.column_stack((
+                uacqr_pred_test["UACQR-S"]["lower"],
+                uacqr_pred_test["UACQR-S"]["upper"],
+            )),
+            "uacqrp": np.column_stack((
+                uacqr_pred_test["UACQR-P"]["lower"],
+                uacqr_pred_test["UACQR-P"]["upper"],
+            )),
+            "EPIC": pred_epic_mdn_test,
+        }
+        outlier_metrics = {}
+        for detector in outlier_detectors:
+            detector_embedding = resolve_outlier_embedding(
+                dataset, detector, outlier_embedding
+            )
+            outlier_metrics[detector] = compute_outlier_metrics_for_detector(
+                X_test,
+                y_test,
+                interval_map,
+                detector,
+                inlier_size,
+                n_neighbors,
+                contamination,
+                tsne_random_state,
+                n_components,
+                detector_embedding,
+                iforest_n_estimators,
+                iforest_max_samples,
+                iforest_max_features,
+                iforest_bootstrap,
+                i,
+            )
+        return (
+            cover_array,
+            isl_array,
+            length_array,
+            scarcity_cover_arrays,
+            scarcity_worst_cover_arrays,
+            smis_components_array,
+            outlier_metrics,
+        )
+
     if outlier_same_time and outlier_analysis:
         outlier_space = "t-SNE" if outlier_embedding == "tsne" else "standardized original feature space"
         print(f"Performing outlier detection with {outlier_space} and {outlier_detector}")
@@ -948,9 +1345,25 @@ def fit_methods(
             epic_mdn_ratio,
         ])
 
-        return cover_array, isl_array, length_array, wsc_array, scarcity_cover_array, scarcity_worst_cover_array, wsc_min_fraction_resolved, cover_outlier_array, ratio_array
+        return (
+            cover_array,
+            isl_array,
+            length_array,
+            scarcity_cover_array,
+            scarcity_worst_cover_array,
+            smis_components_array,
+            cover_outlier_array,
+            ratio_array,
+        )
 
-    return cover_array, isl_array, length_array, wsc_array, scarcity_cover_array, scarcity_worst_cover_array, wsc_min_fraction_resolved
+    return (
+        cover_array,
+        isl_array,
+        length_array,
+        scarcity_cover_array,
+        scarcity_worst_cover_array,
+        smis_components_array,
+    )
 
 def fit_methods_outlier(
         X_train,
@@ -1445,11 +1858,12 @@ def run_experiment_outlier(
         outlier_detector,
         iforest_max_samples,
     )
-    outlier_embedding = resolve_outlier_embedding(
-        dataset,
-        outlier_detector,
-        outlier_embedding,
-    )
+    if outlier_detector == "isolation_forest":
+        outlier_embedding = resolve_outlier_embedding(
+            dataset,
+            outlier_detector,
+            outlier_embedding,
+        )
 
     if checkpoint_flag:
         resume_from = int(checkpoint_data.get("iteration", -1)) + 1
@@ -1523,7 +1937,7 @@ def run_experiment_outlier(
                 }
                 chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
                 os.makedirs(chk_dir, exist_ok=True)
-                filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier{detector_suffix(outlier_detector)}.pkl")
+                filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier{outlier_result_suffix}.pkl")
                 with open(filepath, "wb") as f:
                     pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
             except Exception as e:
@@ -1611,16 +2025,9 @@ def run_experiment(dataset,
         mdn_params["batch_size"] = 250
         batch_size = 250
     if outlier_analysis:
-        iforest_max_samples = resolve_iforest_max_samples(
-            dataset,
-            outlier_detector,
-            iforest_max_samples,
-        )
-        outlier_embedding = resolve_outlier_embedding(
-            dataset,
-            outlier_detector,
-            outlier_embedding,
-        )
+        if "isolation_forest" in outlier_detectors:
+            if dataset == "WEC" and str(iforest_max_samples).lower() == "auto":
+                iforest_max_samples = 2048
     
 
     if checkpoint_flag:
@@ -1629,16 +2036,13 @@ def run_experiment(dataset,
         cover_results = checkpoint_data.get("cover_results", [])
         isl_results = checkpoint_data.get("isl_results", [])
         length_results = checkpoint_data.get("length_results", [])
-        wsc_results = checkpoint_data.get("wsc_results", None)
+        smis_components_results = checkpoint_data.get("smis_components_results", None)
         scarcity_coverage_results = checkpoint_data.get("scarcity_coverage_results", None)
         scarcity_worst_coverage_results = checkpoint_data.get("scarcity_worst_coverage_results", None)
-        wsc_min_fraction_results = checkpoint_data.get("wsc_min_fraction_results", None)
         seeds = checkpoint_data.get("seeds", None)
         if (
-            wsc_results is None
-            or scarcity_coverage_results is None
+            scarcity_coverage_results is None
             or scarcity_worst_coverage_results is None
-            or wsc_min_fraction_results is None
         ):
             print("Checkpoint does not include local coverage diagnostics. Restarting this run to keep summaries aligned.")
             local_diagnostics_restart = True
@@ -1646,23 +2050,38 @@ def run_experiment(dataset,
             cover_results = []
             isl_results = []
             length_results = []
-            wsc_results = []
-            scarcity_coverage_results = []
-            scarcity_worst_coverage_results = []
-            wsc_min_fraction_results = []
+            smis_components_results = []
+            scarcity_coverage_results = {method: [] for method in scarcity_methods}
+            scarcity_worst_coverage_results = {method: [] for method in scarcity_methods}
             if seeds is None:
                 seeds = generate_seeds(seed_initial, n_rep)
         print(f"Resuming from iteration {resume_from}. Loaded {len(cover_results)} results so far.")
         if outlier_same_time and outlier_analysis:
             if local_diagnostics_restart:
-                ratio_results = []
-                coverage_outlier_results = []
+                ratio_results = {detector: [] for detector in outlier_detectors}
+                coverage_outlier_results = {detector: [] for detector in outlier_detectors}
             else:
                 resume_from = int(checkpoint_data_outlier.get("iteration", -1)) + 1
                 ratio_results = checkpoint_data_outlier.get("ratio_results", [])
                 coverage_outlier_results = checkpoint_data_outlier.get("coverage_results", [])
+                if not isinstance(ratio_results, dict):
+                    ratio_results = {outlier_detector: ratio_results}
+                    coverage_outlier_results = {outlier_detector: coverage_outlier_results}
                 seeds = checkpoint_data_outlier.get("seeds", None)
             print(f"Resuming from iteration {resume_from}. Loaded {len(coverage_outlier_results)} results so far.")
+
+        if smis_components_results is None:
+            print("Checkpoint does not include SMIS components. Restarting to collect width/miscoverage diagnostics.")
+            resume_from = 0
+            cover_results = []
+            isl_results = []
+            length_results = []
+            smis_components_results = []
+            scarcity_coverage_results = {method: [] for method in scarcity_methods}
+            scarcity_worst_coverage_results = {method: [] for method in scarcity_methods}
+            if outlier_same_time and outlier_analysis:
+                ratio_results = {detector: [] for detector in outlier_detectors}
+                coverage_outlier_results = {detector: [] for detector in outlier_detectors}
 
     else:
         resume_from = 0
@@ -1670,13 +2089,12 @@ def run_experiment(dataset,
         cover_results = []
         isl_results = []
         length_results = []
-        wsc_results = []
-        scarcity_coverage_results = []
-        scarcity_worst_coverage_results = []
-        wsc_min_fraction_results = []
+        smis_components_results = []
+        scarcity_coverage_results = {method: [] for method in scarcity_methods}
+        scarcity_worst_coverage_results = {method: [] for method in scarcity_methods}
         if outlier_same_time and outlier_analysis:
-            ratio_results = []
-            coverage_outlier_results = []
+            ratio_results = {detector: [] for detector in outlier_detectors}
+            coverage_outlier_results = {detector: [] for detector in outlier_detectors}
 
     for i in tqdm(range(resume_from, n_rep), desc = f"Running methods for dataset: {dataset}"):
         print(f"Repetition {i+1}/{n_rep}")
@@ -1700,7 +2118,7 @@ def run_experiment(dataset,
             scale_y = False
 
         if not outlier_same_time:
-            cover_array, isl_array, length_array, wsc_array, scarcity_cover_array, scarcity_worst_cover_array, wsc_min_fraction_used = fit_methods(
+            cover_array, isl_array, length_array, scarcity_cover_array, scarcity_worst_cover_array, smis_components_array = fit_methods(
                 X_train,
                 y_train,
                 X_calib,
@@ -1711,14 +2129,23 @@ def run_experiment(dataset,
                 i,
                 batch_size = batch_size,
                 scale_y = scale_y,
+                scarcity_method = scarcity_method,
+                scarcity_iforest_n_estimators = scarcity_iforest_n_estimators,
+                scarcity_iforest_max_samples = scarcity_iforest_max_samples,
+                scarcity_iforest_max_features = scarcity_iforest_max_features,
+                scarcity_iforest_bootstrap = scarcity_iforest_bootstrap,
+                credo_dropout_training = credo_dropout_training,
             )
             cover_results.append(cover_array)
             isl_results.append(isl_array)
             length_results.append(length_array)
-            wsc_results.append(wsc_array)
-            scarcity_coverage_results.append(scarcity_cover_array)
-            scarcity_worst_coverage_results.append(scarcity_worst_cover_array)
-            wsc_min_fraction_results.append(wsc_min_fraction_used)
+            smis_components_results.append(smis_components_array)
+            if not isinstance(scarcity_cover_array, dict):
+                scarcity_cover_array = {scarcity_method: scarcity_cover_array}
+                scarcity_worst_cover_array = {scarcity_method: scarcity_worst_cover_array}
+            for method in scarcity_methods:
+                scarcity_coverage_results[method].append(scarcity_cover_array[method])
+                scarcity_worst_coverage_results[method].append(scarcity_worst_cover_array[method])
 
             def save_checkpoint(iteration, seeds):
                 try:
@@ -1726,16 +2153,21 @@ def run_experiment(dataset,
                         "cover_results": cover_results,
                         "isl_results": isl_results,
                         "length_results": length_results,
-                        "wsc_results": wsc_results,
+                        "smis_components_results": smis_components_results,
                         "scarcity_coverage_results": scarcity_coverage_results,
                         "scarcity_worst_coverage_results": scarcity_worst_coverage_results,
-                        "wsc_min_fraction_results": wsc_min_fraction_results,
                         "iteration": iteration,
                         "seeds": seeds,
                         "alpha": alpha,
                         "gamma": gamma,
                         "dataset": dataset,
                         "base_model": base_model_label,
+                        "shared_qnn_backbone": shared_qnn_backbone,
+                        "credo_first_qnn_backbone": credo_first_qnn_backbone,
+                        "credo_dropout_training": credo_dropout_training,
+                        "scarcity_method": scarcity_method,
+                        "outlier_detector": outlier_detector,
+                        "protocol_version": 3,
                     }
                     chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
                     os.makedirs(chk_dir, exist_ok=True)
@@ -1748,7 +2180,7 @@ def run_experiment(dataset,
             # save checkpoint after each repetition
             save_checkpoint(i, seeds)
         elif outlier_same_time and outlier_analysis:
-            cover_array, isl_array, length_array, wsc_array, scarcity_cover_array, scarcity_worst_cover_array, wsc_min_fraction_used, cover_outlier_array, ratio_array = fit_methods(
+            cover_array, isl_array, length_array, scarcity_cover_array, scarcity_worst_cover_array, smis_components_array, outlier_metrics = fit_methods(
             X_train,
             y_train, 
             X_calib, 
@@ -1759,6 +2191,12 @@ def run_experiment(dataset,
             i, 
             batch_size = batch_size,
             scale_y = scale_y,
+            scarcity_method = scarcity_method,
+            scarcity_iforest_n_estimators = scarcity_iforest_n_estimators,
+            scarcity_iforest_max_samples = scarcity_iforest_max_samples,
+            scarcity_iforest_max_features = scarcity_iforest_max_features,
+            scarcity_iforest_bootstrap = scarcity_iforest_bootstrap,
+            credo_dropout_training = credo_dropout_training,
             outlier_same_time = outlier_same_time, 
             inlier_size = inlier_size,
             n_neighbors = n_neighbors,
@@ -1775,12 +2213,16 @@ def run_experiment(dataset,
             cover_results.append(cover_array)
             isl_results.append(isl_array)
             length_results.append(length_array)
-            wsc_results.append(wsc_array)
-            scarcity_coverage_results.append(scarcity_cover_array)
-            scarcity_worst_coverage_results.append(scarcity_worst_cover_array)
-            wsc_min_fraction_results.append(wsc_min_fraction_used)
-            coverage_outlier_results.append(cover_outlier_array)
-            ratio_results.append(ratio_array)
+            smis_components_results.append(smis_components_array)
+            if not isinstance(scarcity_cover_array, dict):
+                scarcity_cover_array = {scarcity_method: scarcity_cover_array}
+                scarcity_worst_cover_array = {scarcity_method: scarcity_worst_cover_array}
+            for method in scarcity_methods:
+                scarcity_coverage_results[method].append(scarcity_cover_array[method])
+                scarcity_worst_coverage_results[method].append(scarcity_worst_cover_array[method])
+            for detector in outlier_detectors:
+                coverage_outlier_results[detector].append(outlier_metrics[detector][0])
+                ratio_results[detector].append(outlier_metrics[detector][1])
 
             def save_checkpoint(iteration, seeds):
                 try:
@@ -1788,10 +2230,9 @@ def run_experiment(dataset,
                         "cover_results": cover_results,
                         "isl_results": isl_results,
                         "length_results": length_results,
-                        "wsc_results": wsc_results,
+                        "smis_components_results": smis_components_results,
                         "scarcity_coverage_results": scarcity_coverage_results,
                         "scarcity_worst_coverage_results": scarcity_worst_coverage_results,
-                        "wsc_min_fraction_results": wsc_min_fraction_results,
                         "iteration": iteration,
                         "seeds": seeds,
                         "alpha": alpha,
@@ -1799,6 +2240,11 @@ def run_experiment(dataset,
                         "dataset": dataset,
                         "base_model": base_model_label,
                         "outlier_detector": outlier_detector,
+                        "shared_qnn_backbone": shared_qnn_backbone,
+                        "credo_first_qnn_backbone": credo_first_qnn_backbone,
+                        "credo_dropout_training": credo_dropout_training,
+                        "scarcity_method": scarcity_method,
+                        "protocol_version": 3,
                     }
                     chk_dir = os.path.join(RESULTS_PATH, "checkpoints")
                     os.makedirs(chk_dir, exist_ok=True)
@@ -1816,8 +2262,13 @@ def run_experiment(dataset,
                         "dataset": dataset,
                         "base_model": base_model_label,
                         "outlier_detector": outlier_detector,
+                        "shared_qnn_backbone": shared_qnn_backbone,
+                        "credo_first_qnn_backbone": credo_first_qnn_backbone,
+                        "credo_dropout_training": credo_dropout_training,
+                        "scarcity_method": scarcity_method,
+                        "protocol_version": 3,
                     }
-                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier{detector_suffix(outlier_detector)}.pkl")
+                    filepath = os.path.join(chk_dir, f"{dataset}_checkpoint_{base_model_slug}_outlier{outlier_result_suffix}.pkl")
                     with open(filepath, "wb") as f:
                         pickle.dump(checkpoint_outlier, f, protocol=pickle.HIGHEST_PROTOCOL)
                         
@@ -1830,10 +2281,7 @@ def run_experiment(dataset,
     cover_results = np.array(cover_results)
     isl_results = np.array(isl_results)
     length_results = np.array(length_results)
-    wsc_results = np.array(wsc_results)
-    scarcity_coverage_results = np.array(scarcity_coverage_results)
-    scarcity_worst_coverage_results = np.array(scarcity_worst_coverage_results)
-    wsc_min_fraction_results = np.array(wsc_min_fraction_results)
+    smis_components_results = np.array(smis_components_results)
 
     def mean_sd(arr):
         mean = np.nanmean(arr, axis=0, )
@@ -1852,97 +2300,96 @@ def run_experiment(dataset,
     cover_mean, cover_sd = mean_sd(cover_results)
     isl_mean, isl_sd = mean_sd(isl_results)
     length_mean, length_sd = mean_sd(length_results)
-    wsc_mean, wsc_sd = mean_sd(wsc_results)
-    scarcity_worst_mean, scarcity_worst_sd = mean_sd(scarcity_worst_coverage_results)
+    smis_components_mean, smis_components_sd = mean_sd(smis_components_results)
 
     # create summary dataframes and save to CSV
     df_cover = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": cover_mean, "sd": cover_sd})
     df_isl = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": isl_mean, "sd": isl_sd})
     df_length = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": length_mean, "sd": length_sd})
-    df_wsc = pd.DataFrame({
+    df_smis_components = pd.DataFrame({
         "base_model": base_model_label,
         "methods": methods,
-        "mean": wsc_mean,
-        "sd": wsc_sd,
-        "n_directions": wsc_directions,
-        "min_fraction": wsc_min_fraction,
-        "effective_min_fraction_mean": np.nanmean(wsc_min_fraction_results),
-        "effective_min_fraction_sd": (
-            np.nanstd(wsc_min_fraction_results, ddof=1)
-            if wsc_min_fraction_results.shape[0] > 1
-            else 0.0
-        ),
-        "min_fraction_rule": "max(0.1, 50 / n_test)" if wsc_min_fraction is None else "fixed",
+        "width_mean": smis_components_mean[:, 0],
+        "width_sd": smis_components_sd[:, 0],
+        "lower_miscoverage_mean": smis_components_mean[:, 1],
+        "lower_miscoverage_sd": smis_components_sd[:, 1],
+        "upper_miscoverage_mean": smis_components_mean[:, 2],
+        "upper_miscoverage_sd": smis_components_sd[:, 2],
+        "smis_mean": np.sum(smis_components_mean, axis=1),
     })
-    df_scarcity_worst = pd.DataFrame({
-        "base_model": base_model_label,
-        "methods": methods,
-        "mean": scarcity_worst_mean,
-        "sd": scarcity_worst_sd,
-        "n_bins": scarcity_bins,
-        "scarcity_k": scarcity_k,
-        "scarcity_heuristic": scarcity_heuristic,
-    })
-
-    scarcity_mean = np.nanmean(scarcity_coverage_results, axis=0)
-    scarcity_sd = (
-        np.nanstd(scarcity_coverage_results, axis=0, ddof=1)
-        if scarcity_coverage_results.shape[0] > 1
-        else np.zeros_like(scarcity_mean)
-    )
-    scarcity_rows = []
-    for method_idx, method in enumerate(methods):
-        for bin_idx in range(scarcity_mean.shape[1]):
-            scarcity_rows.append({
-                "base_model": base_model_label,
-                "methods": method,
-                "scarcity_bin": f"Q{bin_idx + 1}",
-                "mean": scarcity_mean[method_idx, bin_idx],
-                "sd": scarcity_sd[method_idx, bin_idx],
-                "n_bins": scarcity_bins,
-                "scarcity_k": scarcity_k,
-                "scarcity_heuristic": scarcity_heuristic,
-            })
-    df_scarcity = pd.DataFrame(scarcity_rows)
-
     data_dir = os.path.join(RESULTS_PATH, f"{dataset}_{base_model_slug}_summary")
     os.makedirs(data_dir, exist_ok=True)
 
     df_cover.to_csv(os.path.join(data_dir, f"{dataset}_coverage_summary.csv"))
     df_isl.to_csv(os.path.join(data_dir, f"{dataset}_isl_summary.csv"))
     df_length.to_csv(os.path.join(data_dir, f"{dataset}_interval_length_summary.csv"))
-    df_wsc.to_csv(os.path.join(data_dir, f"{dataset}_wsc_summary.csv"))
-    df_scarcity_worst.to_csv(os.path.join(data_dir, f"{dataset}_scarcity_worst_coverage_summary.csv"))
-    df_scarcity.to_csv(os.path.join(data_dir, f"{dataset}_scarcity_coverage_summary.csv"))
+    df_smis_components.to_csv(os.path.join(data_dir, f"{dataset}_smis_components_summary.csv"))
+
+    for scarcity_name in scarcity_methods:
+        scarcity_coverage_array = np.asarray(scarcity_coverage_results[scarcity_name])
+        scarcity_worst_array = np.asarray(scarcity_worst_coverage_results[scarcity_name])
+        scarcity_worst_mean, scarcity_worst_sd = mean_sd(scarcity_worst_array)
+        df_scarcity_worst = pd.DataFrame({
+            "base_model": base_model_label,
+            "methods": methods,
+            "mean": scarcity_worst_mean,
+            "sd": scarcity_worst_sd,
+            "scarcity_method": scarcity_name,
+            "n_bins": scarcity_bins,
+            "scarcity_k": scarcity_k,
+            "scarcity_heuristic": scarcity_heuristic,
+            "scarcity_iforest_n_estimators": scarcity_iforest_n_estimators,
+            "scarcity_iforest_max_samples": scarcity_iforest_max_samples,
+            "scarcity_iforest_max_features": scarcity_iforest_max_features,
+            "scarcity_iforest_bootstrap": scarcity_iforest_bootstrap,
+        })
+        scarcity_mean, scarcity_sd = mean_sd(scarcity_coverage_array)
+        scarcity_rows = []
+        for method_idx, method in enumerate(methods):
+            for bin_idx in range(scarcity_mean.shape[1]):
+                scarcity_rows.append({
+                    "base_model": base_model_label,
+                    "methods": method,
+                    "scarcity_bin": f"Q{bin_idx + 1}",
+                    "mean": scarcity_mean[method_idx, bin_idx],
+                    "sd": scarcity_sd[method_idx, bin_idx],
+                    "scarcity_method": scarcity_name,
+                    "n_bins": scarcity_bins,
+                    "scarcity_k": scarcity_k,
+                    "scarcity_heuristic": scarcity_heuristic,
+                    "scarcity_iforest_n_estimators": scarcity_iforest_n_estimators,
+                    "scarcity_iforest_max_samples": scarcity_iforest_max_samples,
+                    "scarcity_iforest_max_features": scarcity_iforest_max_features,
+                    "scarcity_iforest_bootstrap": scarcity_iforest_bootstrap,
+                })
+        suffix = scarcity_result_suffixes[scarcity_name]
+        df_scarcity_worst.to_csv(os.path.join(data_dir, f"{dataset}_scarcity_worst_coverage{suffix}_summary.csv"))
+        pd.DataFrame(scarcity_rows).to_csv(os.path.join(data_dir, f"{dataset}_scarcity_coverage{suffix}_summary.csv"))
 
     if outlier_same_time and outlier_analysis:
-        coverage_outlier_results = np.array(coverage_outlier_results)
-        ratio_results = np.array(ratio_results)
-        
         print("Saving outliers df")
-        cover_mean_outlier, cover_sd_outlier = mean_sd(coverage_outlier_results)
-        ratio_mean_outlier, ratio_sd_outlier = mean_sd(ratio_results)
-
-        df_cover_out = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": cover_mean_outlier, "sd": cover_sd_outlier})
-        df_ratio_out = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": ratio_mean_outlier, "sd": ratio_sd_outlier})
-
-        suffix = detector_suffix(outlier_detector)
-        df_cover_out.to_csv(os.path.join(data_dir, f"{dataset}_coverage_outlier{suffix}_summary.csv"))
-        df_ratio_out.to_csv(os.path.join(data_dir, f"{dataset}_ratio_outlier{suffix}_summary.csv"))
+        for detector in outlier_detectors:
+            detector_cover = np.asarray(coverage_outlier_results[detector])
+            detector_ratio = np.asarray(ratio_results[detector])
+            cover_mean_outlier, cover_sd_outlier = mean_sd(detector_cover)
+            ratio_mean_outlier, ratio_sd_outlier = mean_sd(detector_ratio)
+            df_cover_out = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": cover_mean_outlier, "sd": cover_sd_outlier})
+            df_ratio_out = pd.DataFrame({"base_model": base_model_label, "methods": methods ,"mean": ratio_mean_outlier, "sd": ratio_sd_outlier})
+            suffix = detector_suffix(detector)
+            df_cover_out.to_csv(os.path.join(data_dir, f"{dataset}_coverage_outlier{suffix}_summary.csv"))
+            df_ratio_out.to_csv(os.path.join(data_dir, f"{dataset}_ratio_outlier{suffix}_summary.csv"))
 
 
         return np.array(cover_results), np.array(isl_results), \
-                np.array(length_results), np.array(wsc_results), \
-                np.array(scarcity_coverage_results), \
-                np.array(scarcity_worst_coverage_results), \
-                np.array(wsc_min_fraction_results), \
-                np.array(coverage_outlier_results), np.array(ratio_results)
+                np.array(length_results), \
+                scarcity_coverage_results, scarcity_worst_coverage_results, \
+                np.array(smis_components_results), \
+                coverage_outlier_results, ratio_results
 
     return np.array(cover_results), np.array(isl_results), \
-            np.array(length_results), np.array(wsc_results), \
-            np.array(scarcity_coverage_results), \
-            np.array(scarcity_worst_coverage_results), \
-            np.array(wsc_min_fraction_results)
+            np.array(length_results), \
+            scarcity_coverage_results, scarcity_worst_coverage_results, \
+            np.array(smis_components_results)
 
 
 if __name__ == "__main__":
@@ -2026,6 +2473,41 @@ if __name__ == "__main__":
         seeds = checkpoint.get("seeds")
         return seeds is not None and len(seeds) >= required_n_rep
 
+    def checkpoint_matches_protocol(checkpoint):
+        """Do not resume a checkpoint produced with a different backbone/diagnostic setup."""
+        if checkpoint is None:
+            return False
+        return (
+            checkpoint.get("protocol_version") == 3
+            and checkpoint.get("shared_qnn_backbone") == shared_qnn_backbone
+            and checkpoint.get("credo_first_qnn_backbone") == credo_first_qnn_backbone
+            and checkpoint.get("credo_dropout_training") == credo_dropout_training
+            and checkpoint.get("scarcity_method") == scarcity_method
+            and checkpoint.get("outlier_detector") == outlier_detector
+        )
+
+    if checkpoint_flag and not checkpoint_matches_protocol(checkpoint_data):
+        print(
+            f"Ignoring checkpoint '{chk_file}' because it was produced with "
+            "a different QNN-sharing or diagnostic configuration."
+        )
+        checkpoint_flag = False
+        checkpoint_data = None
+        checkpoint_data_outlier = None
+    elif (
+        checkpoint_flag
+        and outlier_same_time
+        and outlier_analysis
+        and not checkpoint_matches_protocol(checkpoint_data_outlier)
+    ):
+        print(
+            f"Ignoring outlier checkpoint '{chk_file_outlier}' because it was produced with "
+            "a different QNN-sharing or diagnostic configuration."
+        )
+        checkpoint_flag = False
+        checkpoint_data = None
+        checkpoint_data_outlier = None
+
     if checkpoint_flag and not checkpoint_has_enough_seeds(checkpoint_data, n_rep):
         print(
             f"Ignoring checkpoint '{chk_file}' because it has fewer seeds than n_rep={n_rep}. "
@@ -2049,7 +2531,7 @@ if __name__ == "__main__":
         checkpoint_data_outlier = None
 
     if not outlier_analysis:
-        cover, isl, length, wsc, scarcity_cover, scarcity_worst_cover, wsc_min_fraction_used = run_experiment(
+        cover, isl, length, scarcity_cover, scarcity_worst_cover, smis_components = run_experiment(
             dataset = dataset, 
             n_rep = n_rep, 
             target_column = "target",
@@ -2064,15 +2546,21 @@ if __name__ == "__main__":
             "cover": cover,
             "isl": isl,
             "length": length,
-            "wsc": wsc,
-            "scarcity_cover": scarcity_cover,
-            "scarcity_worst_cover": scarcity_worst_cover,
-            "wsc_min_fraction": wsc_min_fraction_used,
+            "smis_components": smis_components,
         }
         for name, arr in to_save.items():
             filepath = os.path.join(raw_dir, f"{dataset}_{name}_{base_model_slug}_raw.pkl")
             with open(filepath, "wb") as f:
                 pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
+        for scarcity_name in scarcity_methods:
+            suffix = scarcity_result_suffixes[scarcity_name]
+            for name, values in [
+                ("scarcity_cover", scarcity_cover[scarcity_name]),
+                ("scarcity_worst_cover", scarcity_worst_cover[scarcity_name]),
+            ]:
+                filepath = os.path.join(raw_dir, f"{dataset}_{name}{suffix}_{base_model_slug}_raw.pkl")
+                with open(filepath, "wb") as f:
+                    pickle.dump(values, f, protocol=pickle.HIGHEST_PROTOCOL)
     
     
         chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{base_model_slug}.pkl")
@@ -2087,7 +2575,7 @@ if __name__ == "__main__":
     
     elif outlier_analysis and outlier_same_time:
         print("Running main experiment with outlier analysis at the same time")
-        cover, isl, length, wsc, scarcity_cover, scarcity_worst_cover, wsc_min_fraction_used, cover_out, ratio_out = run_experiment(
+        cover, isl, length, scarcity_cover, scarcity_worst_cover, smis_components, cover_out, ratio_out = run_experiment(
             dataset = dataset, 
             n_rep = n_rep, 
             target_column = "target", 
@@ -2109,18 +2597,31 @@ if __name__ == "__main__":
         to_save = {"cover": cover, 
                    "isl": isl, 
                    "length": length,
-                   "wsc": wsc,
-                   "scarcity_cover": scarcity_cover,
-                   "scarcity_worst_cover": scarcity_worst_cover,
-                   "wsc_min_fraction": wsc_min_fraction_used,
-                   f"cover_out{outlier_result_suffix}": cover_out,
-                   f"ratio_out{outlier_result_suffix}": ratio_out
+                   "smis_components": smis_components,
                    }
         for name, arr in to_save.items(): 
             filepath = os.path.join(
                 raw_dir, f"{dataset}_{name}_{base_model_slug}_raw.pkl")
             with open(filepath, "wb") as f:
                 pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
+        for scarcity_name in scarcity_methods:
+            suffix = scarcity_result_suffixes[scarcity_name]
+            for name, values in [
+                ("scarcity_cover", scarcity_cover[scarcity_name]),
+                ("scarcity_worst_cover", scarcity_worst_cover[scarcity_name]),
+            ]:
+                filepath = os.path.join(raw_dir, f"{dataset}_{name}{suffix}_{base_model_slug}_raw.pkl")
+                with open(filepath, "wb") as f:
+                    pickle.dump(values, f, protocol=pickle.HIGHEST_PROTOCOL)
+        for detector in outlier_detectors:
+            suffix = detector_suffix(detector)
+            for name, values in [
+                ("cover_out", cover_out[detector]),
+                ("ratio_out", ratio_out[detector]),
+            ]:
+                filepath = os.path.join(raw_dir, f"{dataset}_{name}{suffix}_{base_model_slug}_raw.pkl")
+                with open(filepath, "wb") as f:
+                    pickle.dump(values, f, protocol=pickle.HIGHEST_PROTOCOL)
         
         chk_file = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{base_model_slug}.pkl")
         chk_file_out = os.path.join(RESULTS_PATH, "checkpoints", f"{dataset}_checkpoint_{base_model_slug}_outlier{outlier_result_suffix}.pkl")

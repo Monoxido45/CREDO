@@ -196,7 +196,8 @@ class QuantileRegressionNN:
                  weight_decay=0, hidden_size=100, batch_norm=True, gamma=0.999, step_size=10,random_state=None,
                  epoch_model_tracking=False, verbose=False, use_gpu=True, undo_quantile_crossing=False,
                  drop_last=False, running_batch_norm=False, train_first_batch_norm=False, hidden_layers=None,
-                 patience=50, validation_fraction=0.2, min_saved_models=None, max_saved_models=None):
+                 patience=50, validation_fraction=0.2, min_saved_models=None, max_saved_models=None,
+                 dropout_during_fit=True):
         self.quantiles = quantiles
         self.lr = lr
         self.epochs = epochs
@@ -225,6 +226,7 @@ class QuantileRegressionNN:
         self.validation_fraction = validation_fraction
         self.min_saved_models = min_saved_models
         self.max_saved_models = max_saved_models
+        self.dropout_during_fit = dropout_during_fit
         self.scaler_x = StandardScaler()
         self.scaler_y = StandardScaler()
         if random_state is not None:
@@ -286,6 +288,10 @@ class QuantileRegressionNN:
         for epoch in range(self.epochs):
             epoch_losses=[]
             self.net.train()
+            if not self.dropout_during_fit:
+                for module in self.net.modules():
+                    if isinstance(module, nn.Dropout):
+                        module.eval()
             if self.running_batch_norm and not(self.train_first_batch_norm):
                 for m in self.net.modules():
                     if isinstance(m, nn.BatchNorm1d):
@@ -349,7 +355,7 @@ class QuantileRegressionNN:
                 loss += torch.max((q - 1) * error, q * error).mean()
         return loss
 
-    def predict(self, X, ensembling=None, use_seed=True, undo_normalization=True):
+    def predict(self, X, ensembling=None, use_seed=True, undo_normalization=True, use_mcdropout=False):
         if use_seed and self.random_state is not None:
             torch.manual_seed(self.random_state)
         X = np.asarray(X, dtype=np.float32)
@@ -357,7 +363,20 @@ class QuantileRegressionNN:
             X = self.scaler_x.transform(X)
         X = torch.tensor(X, dtype=torch.float32).to(self.device)
         
-        if ensembling and not(self.epoch_model_tracking):
+        if ensembling and use_mcdropout:
+            self.net.train()
+            for m in self.net.modules():
+                if isinstance(m, nn.BatchNorm1d):
+                    m.eval()
+
+            y_pred = list()
+            with torch.no_grad():
+                for _ in range(ensembling):
+                    y_pred.append(self.net(X).cpu())
+
+            y_pred = torch.stack(y_pred)
+
+        elif ensembling and not(self.epoch_model_tracking):
             self.net.train()
             for m in self.net.modules():
                 if isinstance(m, nn.BatchNorm1d):
