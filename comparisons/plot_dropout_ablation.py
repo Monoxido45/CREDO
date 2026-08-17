@@ -14,7 +14,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS_PATH = ROOT / "results"
-PLOTS_PATH = RESULTS_PATH / "dropout_ablation_figures"
+PLOTS_PATH = ROOT / "paper_results" / "figures"
 DEFAULT_DATASETS = ["airfoil", "concrete", "winered", "winewhite", "meps19"]
 DEFAULT_DROPOUT = 0.1
 METRICS = [
@@ -22,10 +22,10 @@ METRICS = [
     ("outlier_coverage", "Outlier coverage"),
     ("outlier_inlier_ratio", "Outlier/inlier ratio"),
 ]
-TITLE_FONTSIZE = 17
-LABEL_FONTSIZE = 15
-TICK_FONTSIZE = 12
-LEGEND_FONTSIZE = 13
+TITLE_FONTSIZE = 18
+LABEL_FONTSIZE = 17
+TICK_FONTSIZE = 14
+LEGEND_FONTSIZE = 15
 
 
 def format_value(value):
@@ -82,7 +82,7 @@ def plot_detector(datasets, detector, study_selection):
     fig, axes = plt.subplots(
         len(studies_to_plot) * len(METRICS),
         len(summaries),
-        figsize=(4.6 * len(summaries), 14.0),
+        figsize=(4.9 * len(summaries), 9.8 * len(studies_to_plot) / 1.0),
         squeeze=False,
         sharex=False,
     )
@@ -104,34 +104,33 @@ def plot_detector(datasets, detector, study_selection):
                 ax = axes[row_idx, col]
                 y = frame[f"{metric}_mean"].to_numpy()
                 lows, highs = zip(*(interval(row, metric) for _, row in frame.iterrows()))
-                ax.plot(
-                    x_positions,
-                    y,
-                    color="#277da1",
-                    linewidth=2.0,
-                    marker="o",
-                    markersize=5.5,
-                    alpha=0.9,
-                )
+                ax.plot(x_positions, y, marker="o", linewidth=2, color="C0")
                 ax.fill_between(
                     x_positions,
                     lows,
                     highs,
-                    color="#277da1",
-                    alpha=0.16,
+                    color="C0",
+                    alpha=0.15,
                     linewidth=0,
                 )
                 default = np.where(np.isclose(x_values, DEFAULT_DROPOUT))[0]
                 if len(default):
                     pos = default[0]
-                    ax.axvline(pos, color="black", linestyle=":", linewidth=1.4, zorder=1)
+                    ax.axvline(
+                        pos,
+                        color="black",
+                        linestyle=":",
+                        linewidth=1.6,
+                        alpha=0.9,
+                        zorder=1,
+                    )
                     ax.scatter(
                         [pos],
                         [y[pos]],
                         color="black",
                         edgecolor="white",
-                        linewidth=0.7,
-                        s=58,
+                        linewidth=0.8,
+                        s=64,
                         zorder=5,
                     )
                 ax.set_xticks(x_positions)
@@ -145,32 +144,32 @@ def plot_detector(datasets, detector, study_selection):
                     ax.set_ylabel(label, fontsize=LABEL_FONTSIZE)
                 if metric_idx == len(METRICS) - 1:
                     ax.set_xlabel("MC-dropout rate", fontsize=LABEL_FONTSIZE)
-                if col == 0 and metric_idx == 0:
+                if len(studies_to_plot) > 1 and col == 0 and metric_idx == 0:
                     ax.text(
                         -0.42,
-                        1.18,
+                        1.12,
                         "Fixed CREDO" if study == "fixed" else "Adaptive CREDO",
                         transform=ax.transAxes,
-                        fontsize=LABEL_FONTSIZE + 1,
+                        fontsize=LABEL_FONTSIZE,
                         fontweight="bold",
                         va="bottom",
                     )
 
     handles = [
-        Line2D([0], [0], color="#277da1", linewidth=2, marker="o"),
+        Line2D([0], [0], color="C0", linewidth=2, marker="o"),
         Line2D(
             [0],
             [0],
             color="black",
             linestyle=":",
-            linewidth=1.4,
+            linewidth=1.6,
             marker="o",
             markerfacecolor="black",
             markeredgecolor="white",
         ),
     ]
     labels = [
-        "mean with 95% CI",
+        "tested dropout",
         rf"default dropout $={format_value(DEFAULT_DROPOUT)}$",
     ]
     fig.legend(
@@ -179,15 +178,11 @@ def plot_detector(datasets, detector, study_selection):
         loc="upper center",
         ncol=2,
         frameon=False,
-        bbox_to_anchor=(0.5, 0.998),
+        bbox_to_anchor=(0.5, 1.005),
         fontsize=LEGEND_FONTSIZE,
+        handlelength=2.2,
     )
-    fig.suptitle(
-        f"CREDO dropout sensitivity ({detector.replace('_', ' ').title()})",
-        fontsize=TITLE_FONTSIZE + 2,
-        y=1.02,
-    )
-    fig.tight_layout(rect=[0, 0, 1, 0.975])
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
     save_figure(fig, detector, study_selection)
     plt.close(fig)
 
